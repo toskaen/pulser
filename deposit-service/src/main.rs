@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use log::{info, error};
+use log::{info, warn, error, debug};
 
 mod types;
 mod config;
@@ -26,6 +26,7 @@ use handlers::{
     get_deposit_events,
     process_withdrawal,
     sign_psbt,
+    check_psbt_status,
     initiate_channel_opening,
     get_service_status,
     wallet_sync_task,
@@ -52,6 +53,9 @@ struct Opt {
     
     #[structopt(long)]
     debug: bool,
+    
+    #[structopt(long, default_value = "user")]
+    role: String,
 }
 
 #[actix_web::main]
@@ -81,6 +85,9 @@ async fn main() -> std::io::Result<()> {
     if !opt.data_dir.is_empty() {
         config.data_dir = opt.data_dir;
     }
+    if !opt.role.is_empty() {
+        config.role = opt.role;
+    }
     
     // Initialize logging
     init_logging(&config, opt.debug);
@@ -91,10 +98,19 @@ async fn main() -> std::io::Result<()> {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
     }
     
-    info!("Starting Pulser Deposit Service...");
+    info!("Starting Pulser Deposit Service in {} mode on {} network...", 
+          config.role, config.network);
+    
+    // Determine network
+    let network = match config.network.as_str() {
+        "testnet" => Network::Testnet,
+        "regtest" => Network::Regtest,
+        "signet" => Network::Signet,
+        _ => Network::Bitcoin,
+    };
     
     // Create blockchain client
-    let blockchain = match create_esplora_client(&config.esplora_url) {
+    let blockchain = match create_esplora_client(&config.get_esplora_url()) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create blockchain client: {}", e);
@@ -109,19 +125,32 @@ async fn main() -> std::io::Result<()> {
         .build()
         .unwrap();
     
+    // Initialize price feeds with placeholder values
+    // These will be updated by the price_update_task before they're used
+    let current_price = Arc::new(RwLock::new(50000.0));
+    let synthetic_price = Arc::new(RwLock::new(50000.0));
+    
     // Create application state
     let app_state = web::Data::new(AppState {
         config: Arc::new(RwLock::new(config.clone())),
         wallets: Arc::new(RwLock::new(HashMap::new())),
         blockchain: blockchain.clone(),
         http_client: http_client.clone(),
-        current_price: Arc::new(RwLock::new(50000.0)), // Initial placeholder values
-        synthetic_price: Arc::new(RwLock::new(50000.0)),
+        current_price: current_price.clone(),
+        synthetic_price: synthetic_price.clone(),
+        network,
+        role: config.role.clone(),
     });
     
-    // Start price update task
+    // Start price update task with immediate initial fetch
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
+        // Immediate first fetch
+        if let Err(e) = update_prices(&app_state_clone).await {
+            warn!("Initial price update failed: {}", e);
+        }
+        
+        // Then start regular updates
         price_update_task(app_state_clone).await;
     });
     
@@ -144,6 +173,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/deposit/{user_id}/events").route(web::get().to(get_deposit_events)))
             .service(web::resource("/withdraw").route(web::post().to(process_withdrawal)))
             .service(web::resource("/sign_psbt").route(web::post().to(sign_psbt)))
+            .service(web::resource("/check_psbt").route(web::post().to(check_psbt_status)))
             .service(web::resource("/initiate_channel/{user_id}").route(web::post().to(initiate_channel_opening)))
             .service(web::resource("/status").route(web::get().to(get_service_status)))
     })
@@ -152,31 +182,52 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
+// Helper function for immediate price update
+async fn update_prices(app_state: &web::Data<AppState>) -> Result<(), PulserError> {
+    // Use the common library's price feed
+    match common::price_feed::fetch_btc_price(&app_state.http_client).await {
+        Ok(price_info) => {
+            // Update current price
+            *app_state.current_price.write().unwrap() = price_info.raw_btc_usd;
+            
+            // Calculate synthetic price if we have one
+            if let Some(synthetic) = price_info.synthetic_price {
+                *app_state.synthetic_price.write().unwrap() = synthetic;
+                info!("Updated prices: BTC-USD ${:.2}, Synthetic ${:.2}", 
+                     price_info.raw_btc_usd, synthetic);
+            } else {
+                // If no synthetic price available, calculate a simple one
+                // This is just a placeholder until we have a proper synthetic price
+                let synthetic = calculate_simple_synthetic_price(price_info.raw_btc_usd);
+                *app_state.synthetic_price.write().unwrap() = synthetic;
+                info!("Updated prices: BTC-USD ${:.2}, Simple Synthetic ${:.2}", 
+                     price_info.raw_btc_usd, synthetic);
+            }
+            Ok(())
+        },
+        Err(e) => {
+            warn!("Failed to update price: {}", e);
+            Err(e)
+        }
+    }
+}
+
+// Simple synthetic price calculation for testing
+fn calculate_simple_synthetic_price(raw_btc_usd: f64) -> f64 {
+    // For testing, just apply a small adjustment to raw price
+    // In production, this would be calculated based on various market indicators
+    raw_btc_usd * 0.99 // 1% discount for demonstration
+}
+
 // Price update task
 async fn price_update_task(app_state: web::Data<AppState>) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60)); // Every minute
+    let mut interval = tokio::time::interval(Duration::from_secs(60)); // Every minute
     
     loop {
         interval.tick().await;
         
-        // Use the common library's price feed
-        match common::price_feed::fetch_btc_price(&app_state.http_client).await {
-            Ok(price_info) => {
-                // Update current price
-                *app_state.current_price.write().unwrap() = price_info.raw_btc_usd;
-                
-                // Calculate synthetic price if we have one
-                if let Some(synthetic) = price_info.synthetic_price {
-                    *app_state.synthetic_price.write().unwrap() = synthetic;
-                    info!("Updated prices: BTC-USD ${:.2}, Synthetic ${:.2}", 
-                         price_info.raw_btc_usd, synthetic);
-                } else {
-                    info!("Updated price: BTC-USD ${:.2}", price_info.raw_btc_usd);
-                }
-            },
-            Err(e) => {
-                log::warn!("Failed to update price: {}", e);
-            }
+        if let Err(e) = update_prices(&app_state).await {
+            warn!("Price update failed: {}", e);
         }
     }
 }
