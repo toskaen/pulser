@@ -1,14 +1,11 @@
 // common/src/lib.rs
-pub mod types;
 pub mod error;
 pub mod price_feed;
-pub mod utils;
 
 // Re-export the minimal set of types needed
 pub use error::PulserError;
-pub use types::{USD, Amount, Event};
 
-// common/src/types.rs
+// Define basic types in this file (instead of in a separate module)
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -93,109 +90,6 @@ pub struct HedgePositionInfo {
     pub position_btc: f64,
     pub order_id: String,
     pub is_channel: bool,
-}
-
-// common/src/error.rs
-use thiserror::Error;
-use std::fmt;
-
-#[derive(Error, Debug)]
-pub enum PulserError {
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
-    
-    #[error("Network error: {0}")]
-    NetworkError(String),
-    
-    #[error("API error: {0}")]
-    ApiError(String),
-    
-    #[error("User not found: {0}")]
-    UserNotFound(String),
-    
-    #[error("Transaction error: {0}")]
-    TransactionError(String),
-    
-    #[error("Wallet error: {0}")]
-    WalletError(String),
-    
-    #[error("Authentication error: {0}")]
-    AuthError(String),
-    
-    #[error("Internal error: {0}")]
-    InternalError(String),
-    
-    #[error("Invalid request: {0}")]
-    InvalidRequest(String),
-    
-    #[error("Insufficient funds: {0}")]
-    InsufficientFunds(String),
-    
-    #[error("Price feed error: {0}")]
-    PriceFeedError(String),
-    
-    #[error("Storage error: {0}")]
-    StorageError(String),
-}
-
-// common/src/utils.rs - Simplified inter-service communication
-use crate::error::PulserError;
-use reqwest::Client;
-use serde::{Serialize, de::DeserializeOwned};
-use std::time::Duration;
-
-pub struct ServiceClient {
-    client: Client,
-    base_url: String,
-    api_key: String,
-}
-
-impl ServiceClient {
-    pub fn new(base_url: &str, api_key: &str) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("Pulser/0.1.0")
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-            
-        Self {
-            client,
-            base_url: base_url.to_string(),
-            api_key: api_key.to_string(),
-        }
-    }
-    
-    pub async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T, PulserError> {
-        let url = format!("{}{}", self.base_url, endpoint);
-        
-        self.client.get(&url)
-            .header("X-API-Key", &self.api_key)
-            .send()
-            .await
-            .map_err(|e| PulserError::NetworkError(format!("Request failed: {}", e)))?
-            .error_for_status()
-            .map_err(|e| PulserError::ApiError(format!("API error: {}", e)))?
-            .json::<T>()
-            .await
-            .map_err(|e| PulserError::ApiError(format!("JSON parse failed: {}", e)))
-    }
-    
-    pub async fn post<T: DeserializeOwned, D: Serialize>(&self, endpoint: &str, data: &D) -> Result<T, PulserError> {
-        let url = format!("{}{}", self.base_url, endpoint);
-        
-        self.client.post(&url)
-            .header("X-API-Key", &self.api_key)
-            .json(data)
-            .send()
-            .await
-            .map_err(|e| PulserError::NetworkError(format!("Request failed: {}", e)))?
-            .error_for_status()
-            .map_err(|e| PulserError::ApiError(format!("API error: {}", e)))?
-            .json::<T>()
-            .await
-            .map_err(|e| PulserError::ApiError(format!("JSON parse failed: {}", e)))
-    }
 }
 
 // Helper function to get current timestamp
