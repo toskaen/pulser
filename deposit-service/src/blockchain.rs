@@ -6,10 +6,19 @@ use common::PulserError;
 use std::sync::Arc;
 
 /// Create an Esplora blockchain client
-pub fn create_esplora_client(url: &str) -> Result<Arc<dyn BlockChain + Send + Sync>, PulserError> {
+pub fn create_esplora_client(network: Network) -> Result<Arc<dyn BlockChain + Send + Sync>, PulserError> {
+    let url = match network {
+        Network::Bitcoin => "https://blockstream.info/api/",
+        Network::Testnet => "https://blockstream.info/testnet/api/",
+        Network::Signet => "https://mempool.space/signet/api/",
+        Network::Regtest => "http://localhost:3002/",
+    };
+    
     let config = BlockChainConfig::Esplora {
         base_url: url.to_string(),
         concurrency: Some(4),
+        timeout: Some(Duration::from_secs(30)),
+        proxy: None,
     };
     
     let blockchain = EsploraBlockchain::from_config(&config)
