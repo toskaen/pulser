@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "deposit-service",
+    "common"
+]
+resolver = "2"
