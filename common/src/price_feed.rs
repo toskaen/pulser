@@ -1,6 +1,6 @@
 // common/src/price_feed.rs
 use crate::error::PulserError;
-use crate::types::PriceInfo;
+use crate::PriceInfo;
 use reqwest::Client;
 use std::collections::HashMap;
 use log::{debug, warn};
@@ -49,7 +49,7 @@ pub async fn fetch_btc_price(client: &Client) -> Result<PriceInfo, PulserError> 
     Ok(PriceInfo {
         raw_btc_usd,
         synthetic_price: None, // Will be calculated separately
-        timestamp: crate::utils::now_timestamp(),
+        timestamp: crate::now_timestamp(),
         price_feeds: prices,
     })
 }
@@ -90,26 +90,17 @@ async fn fetch_from_source(client: &Client, url: &str, path: &str) -> Result<f64
     }
 }
 
-/// Calculate synthetic price using various market indicators
-pub fn calculate_synthetic_price(
-    price_info: &PriceInfo,
-    base_price_info: &PriceInfo
-) -> Result<f64, PulserError> {
-    // Simplified - just implementing basic DXY adjustment
-    // In production you would implement your full formula
-    let raw_btc_usd = price_info.raw_btc_usd;
-    
-    // Check if we have DXY in both current and base
-    let dxy = match (price_info.price_feeds.get("DXY"), base_price_info.price_feeds.get("DXY")) {
-        (Some(current), Some(base)) => current / base,
-        _ => 1.0, // No adjustment if DXY not available
+/// Calculate synthetic price based on various indicators
+pub fn calculate_synthetic_price(prices: HashMap<String, f64>) -> Result<f64, PulserError> {
+    // Get raw BTC price
+    let raw_btc_usd = match prices.get("BTC-USD") {
+        Some(price) => *price,
+        None => return Err(PulserError::PriceFeedError("Missing BTC-USD price".to_string())),
     };
     
-    // Simple synthetic price calculation
-    let synthetic_price = raw_btc_usd / dxy;
-    
-    debug!("Synthetic price: ${:.2} (Raw: ${:.2}, DXY ratio: {:.4})", 
-        synthetic_price, raw_btc_usd, dxy);
+    // For now, this is a simplified version - you can replace with your full algorithm later
+    // Apply a small adjustment for demonstration
+    let synthetic_price = raw_btc_usd * 0.99; // 1% discount
     
     Ok(synthetic_price)
 }
