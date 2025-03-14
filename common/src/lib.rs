@@ -1,6 +1,7 @@
 // common/src/lib.rs
 pub mod error;
 pub mod price_feed;
+pub mod utils; // Add this line
 
 // Re-export the minimal set of types needed
 pub use error::PulserError;
