@@ -1,15 +1,12 @@
 use bitcoin::Network;
-use bdk_esplora::{
+use bdk_esplora::esplora_client::{
     Builder as EsploraBuilder, 
     EsploraClient,
-    Error as EsploraError,
-    EsploraExt
 };
-use common::PulserError;
+use common::error::PulserError;
 use std::time::Duration;
 use std::str::FromStr;
-use bitcoin::{Transaction, Txid, Address, Script};
-use sha2::Digest;
+use bitcoin::{Transaction, Txid, Address, script::Script};
 
 /// Create an Esplora blockchain client
 pub fn create_esplora_client(network: Network) -> Result<EsploraClient, PulserError> {
@@ -18,6 +15,7 @@ pub fn create_esplora_client(network: Network) -> Result<EsploraClient, PulserEr
         Network::Testnet => "https://blockstream.info/testnet/api/",
         Network::Signet => "https://mempool.space/signet/api/",
         Network::Regtest => "http://localhost:3002/",
+        _ => return Err(PulserError::ConfigError("Unsupported network".to_string())),
     };
     
     let client = EsploraBuilder::new(url)
@@ -37,7 +35,8 @@ pub async fn fetch_address_utxos(
         .map_err(|e| PulserError::InvalidRequest(format!("Invalid address: {}", e)))?;
     
     // Get the script pubkey for the address
-    let script = addr.assume_checked().script_pubkey();
+    let script_bytes = addr.script_pubkey().as_bytes();
+    let script = Script::from_bytes(script_bytes);
     
     // Get UTXOs for the script
     let utxos = blockchain.get_scriptpubkey_utxos(&script)
@@ -71,7 +70,7 @@ pub async fn fetch_address_utxos(
         
         result.push((
             utxo.txid.to_string(),
-            utxo.vout,
+            utxo.value(),
             confirmations as u32
         ));
     }
