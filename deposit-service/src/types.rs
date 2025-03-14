@@ -1,12 +1,10 @@
 // deposit-service/src/types.rs
-use bitcoin::Address as BitcoinAddress;
-use common::{Amount, USD, Event};
-use serde::{Serialize, Deserialize};
+use common::types::{Amount, USD, Event};
 use std::collections::HashMap;
 use std::fmt;
 
 /// Represents a Bitcoin amount in satoshis.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bitcoin {
     pub sats: u64,
 }
@@ -34,7 +32,7 @@ impl Amount for Bitcoin {
 }
 
 /// UTXO information
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Utxo {
     pub txid: String,
     pub vout: u32,
@@ -46,7 +44,7 @@ pub struct Utxo {
 }
 
 /// Represents a multisig deposit pool for a USER.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StableChain {
     pub user_id: u32,
     pub is_stable_receiver: bool,
@@ -99,7 +97,7 @@ impl StableChain {
 }
 
 /// Deposit address information
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DepositAddressInfo {
     pub address: String,
     pub descriptor: String,
@@ -110,17 +108,18 @@ pub struct DepositAddressInfo {
 }
 
 /// Create deposit request
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreateDepositRequest {
     pub user_id: u32,
     pub lsp_pubkey: Option<String>,
     pub trustee_pubkey: Option<String>,
+    pub user_pubkey: Option<String>,
     pub expected_amount_usd: Option<f64>,
     pub metadata: Option<HashMap<String, String>>,
 }
 
 /// Withdrawal request
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalRequest {
     pub user_id: u32,
     pub amount_usd: f64,
@@ -131,7 +130,7 @@ pub struct WithdrawalRequest {
 }
 
 /// Response for withdrawal
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalResponse {
     pub request_id: String,
     pub txid: Option<String>,
@@ -145,7 +144,7 @@ pub struct WithdrawalResponse {
 }
 
 /// Notification to hedge service
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HedgeNotification {
     pub user_id: u32,
     pub action: String,
@@ -157,7 +156,7 @@ pub struct HedgeNotification {
 }
 
 /// PSBT signing request
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PsbtSignRequest {
     pub user_id: u32,
     pub psbt: String,
@@ -165,8 +164,17 @@ pub struct PsbtSignRequest {
     pub manual_review: Option<bool>,
 }
 
+/// Request struct for PSBT status check
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PsbtStatusRequest {
+    pub user_id: u32,
+    pub txid: String,
+    pub purpose: String,
+    pub amount_usd: Option<f64>,
+}
+
 /// Channel opening request to channel service
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChannelOpenRequest {
     pub user_id: u32,
     pub lsp_pubkey: String,
