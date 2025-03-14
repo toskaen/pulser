@@ -1,6 +1,7 @@
 // common/src/price_feed.rs
 use crate::error::PulserError;
-use crate::PriceInfo;
+use crate::types::PriceInfo;
+use crate::utils::now_timestamp;
 use reqwest::Client;
 use std::collections::HashMap;
 use log::{debug, warn};
@@ -49,7 +50,7 @@ btc_prices.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
     Ok(PriceInfo {
         raw_btc_usd,
         synthetic_price: None, // Will be calculated separately
-        timestamp: crate::now_timestamp(),
+        timestamp: now_timestamp(),
         price_feeds: prices,
     })
 }
