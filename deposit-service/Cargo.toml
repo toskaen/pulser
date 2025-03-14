@@ -10,11 +10,20 @@ lsp = []
 trustee = []
 
 [dependencies]
-# Keep the newer BDK version
-bdk = { version = "0.30.2", features = ["keys-bip39", "all-keys"] }
-# Add the esplora client directly
-esplora-client = "0.6.0"
-bdk_wallet = { version = "1.1.0" }
+# The new BDK wallet
+bdk_wallet = "1.1.0"
+# Re-exported by bdk_wallet, but we specify exact versions to ensure compatibility
+bitcoin = "0.30.0" 
+miniscript = "10.0.0"
+
+# Blockchain access - use the bdk_esplora crate
+bdk_esplora = "0.20.1"
+
+# Storage for wallet persistence
+bdk_file_store = "0.18.1" 
+
+# For hashing
+sha2 = { version = "0.10", features = ["std"] }
 
 # HTTP, serialization, utilities
 tokio = { version = "1", features = ["full"] }
@@ -25,18 +34,14 @@ reqwest = { version = "0.11", features = ["json"] }
 log = "0.4"
 env_logger = "0.10"
 thiserror = "1.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 structopt = "0.3"
 rand = "0.8"
 toml = "0.7"
-sha2 = "0.10"
-base64 = "0.21"
+base64 = { version = "0.21", features = ["std"] }
 hmac = "0.12"
 retry = "1.3"
-# Keep using the same Bitcoin version as BDK
-bitcoin = "0.30.0"
-miniscript = "10.0.0"
 
-# Only use types from common, not bitcoin-specific functionality
+# Common library
 common = { path = "../common" }
