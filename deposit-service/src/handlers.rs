@@ -54,7 +54,8 @@ pub async fn get_service_status(
     HttpResponse::Ok().json(response)
 }
 
-// Update the wallet sync task function
+// Updated wallet_sync_task function that aligns with the new BDK Wallet API
+
 pub async fn wallet_sync_task(app_state: web::Data<AppState>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
     
@@ -78,12 +79,20 @@ pub async fn wallet_sync_task(app_state: web::Data<AppState>) {
                     
                     // Update UTXOs after sync
                     match wallet.list_utxos() {
-                        Ok(utxos) => {
+                        Ok(mut utxos) => {
                             let old_utxo_count = chain.utxos.len();
+                            
+                            // Update UTXO confirmations from blockchain
+                            if let Err(e) = wallet.update_utxo_confirmations(&mut utxos).await {
+                                warn!("Failed to update UTXO confirmations: {}", e);
+                            }
                             
                             // Update accumulated_btc from UTXOs
                             let total_sats = utxos.iter().map(|u| u.amount).sum();
                             chain.accumulated_btc = Bitcoin::from_sats(total_sats);
+                            
+                            // Update stabilized USD value
+                            chain.stabilized_usd = USD(chain.accumulated_btc.sats as f64 / 100_000_000.0 * chain.raw_btc_usd);
                             
                             // Update utxos in chain
                             if utxos.len() != old_utxo_count {
@@ -91,7 +100,6 @@ pub async fn wallet_sync_task(app_state: web::Data<AppState>) {
                                       user_id, old_utxo_count, utxos.len());
                                 
                                 chain.utxos = utxos;
-                                chain.stabilized_usd = USD(chain.accumulated_btc.sats as f64 / 100_000_000.0 * chain.raw_btc_usd);
                                 
                                 // Log event for new deposits
                                 if utxos.len() > old_utxo_count {
@@ -103,25 +111,54 @@ pub async fn wallet_sync_task(app_state: web::Data<AppState>) {
                                                         chain.accumulated_btc.sats, chain.stabilized_usd.0),
                                     });
                                 }
+                            }
+                            
+                            // Save updated chain state to disk
+                            let wallet_dir = Path::new(&app_state.config.read().unwrap().data_dir)
+                                .join(&app_state.config.read().unwrap().wallet_dir);
+                            let wallet_path = wallet_dir.join(format!("user_{}.json", user_id));
+                            
+                            if let Ok(wallet_data) = serde_json::to_string_pretty(&chain) {
+                                if let Err(e) = std::fs::write(&wallet_path, wallet_data) {
+                                    error!("Failed to save wallet data for user {}: {}", user_id, e);
+                                }
+                            }
+                            
+                            // Check if channel threshold is met and notify
+                            let config = app_state.config.read().unwrap();
+                            if chain.stabilized_usd.0 >= config.channel_threshold_usd {
+                                let confirmed_sats = chain.utxos.iter()
+                                    .filter(|u| u.confirmations >= config.min_confirmations)
+                                    .map(|u| u.amount)
+                                    .sum::<u64>();
                                 
-                                // Save updated chain state to disk
-                                let wallet_dir = Path::new(&app_state.config.read().unwrap().data_dir)
-                                    .join(&app_state.config.read().unwrap().wallet_dir);
-                                let wallet_path = wallet_dir.join(format!("user_{}.json", user_id));
-                                
-                                if let Ok(wallet_data) = serde_json::to_string_pretty(&chain) {
-                                    if let Err(e) = std::fs::write(&wallet_path, wallet_data) {
-                                        error!("Failed to save wallet data for user {}: {}", user_id, e);
-                                    }
+                                if confirmed_sats > 0 && 
+                                   !chain.events.iter().any(|e| e.kind == "ChannelThresholdMet") {
+                                    info!("Channel threshold met for user {}: ${:.2}", 
+                                         user_id, chain.stabilized_usd.0);
+                                    
+                                    chain.events.push(Event {
+                                        timestamp: common::utils::now_timestamp(),
+                                        source: "DepositService".to_string(),
+                                        kind: "ChannelThresholdMet".to_string(),
+                                        details: format!(
+                                            "Ready for channel opening: {} sats (${:.2}) confirmed", 
+                                            confirmed_sats, 
+                                            confirmed_sats as f64 / 100_000_000.0 * chain.raw_btc_usd
+                                        ),
+                                    });
                                 }
                             }
                         },
-                       Err(e) => error!("Failed to list UTXOs for user {}: {}", user_id, e),
+                        Err(e) => error!("Failed to list UTXOs for user {}: {}", user_id, e),
                     }
                 },
                 Err(e) => error!("Wallet sync failed for user {}: {}", user_id, e),
             }
         }
+        
+        // Drop the lock before the next sleep
+        drop(wallets);
     }
 }
 
@@ -169,7 +206,50 @@ pub async fn create_deposit(
         let secp = bitcoin::secp256k1::Secp256k1::new();
         let mut rng = rand::thread_rng();
         let (secret_key, _) = secp.generate_keypair(&mut rng);
-        let user_pk = bitcoin::PublicKey::from_private_key(&secp, &secret_key);
+        
+        // Convert to xonly for taproot
+        let user_pk = bitcoin::key::XOnlyPublicKey::from_keypair(
+            &bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key)
+        );
+        
+        // Store the secret key securely
+        let wallet_dir = Path::new(&config.data_dir).join("secrets");
+        if !wallet_dir.exists() {
+            std::fs::create_dir_all(&wallet_dir)
+                .map_err(|e| PulserError::StorageError(format!("Failed to create secrets directory: {}", e)))?;
+            
+            // Set secure permissions on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o700);
+                std::fs::set_permissions(&wallet_dir, perms)
+                    .map_err(|e| PulserError::StorageError(format!("Failed to set directory permissions: {}", e)))?;
+            }
+        }
+        
+        // Save the secret key
+        let key_path = wallet_dir.join(format!("user_{}_key.json", user_id));
+        let key_data = serde_json::json!({
+            "user_id": user_id,
+            "secret_key": secret_key.display_secret(),
+            "public_key": user_pk.to_string(),
+            "network": network.to_string(),
+            "created_at": common::utils::now_timestamp()
+        });
+        
+        std::fs::write(&key_path, serde_json::to_string_pretty(&key_data).unwrap())
+            .map_err(|e| PulserError::StorageError(format!("Failed to save key: {}", e)))?;
+        
+        // Set secure permissions on the key file
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&key_path, perms)
+                .map_err(|e| PulserError::StorageError(format!("Failed to set file permissions: {}", e)))?;
+        }
+        
         user_pk.to_string()
     } else {
         // For LSP/trustee mode, this would be provided by the user
@@ -199,7 +279,8 @@ pub async fn create_deposit(
     
     // Initialize stable chain
     let current_price = *app_state.current_price.read().unwrap();
-    let now = chrono::Utc::now().timestamp();
+    let synthetic_price = *app_state.synthetic_price.read().unwrap();
+    let now = common::utils::now_timestamp();
     
     let expected_usd = req.expected_amount_usd.unwrap_or(0.0);
     
@@ -210,10 +291,10 @@ pub async fn create_deposit(
         accumulated_btc: Bitcoin::from_sats(0),
         stabilized_usd: USD(0.0),
         timestamp: now,
-        formatted_datetime: chrono::Utc::now().to_rfc3339(),
+        formatted_datetime: common::utils::format_timestamp(now),
         sc_dir: format!("./data/stable_chain_{}", user_id),
         raw_btc_usd: current_price,
-        synthetic_price: Some(*app_state.synthetic_price.read().unwrap()),
+        synthetic_price: Some(synthetic_price),
         prices: HashMap::new(),  // Will be updated during syncs
         multisig_addr: deposit_info.address.clone(),
         utxos: Vec::new(),
@@ -259,7 +340,9 @@ pub async fn create_deposit(
         "user_id": user_id,
         "deposit_address": deposit_info.address,
         "expected_amount_usd": expected_usd,
-        "created_at": chrono::Utc::now().to_rfc3339(),
+        "current_btc_price": current_price,
+        "synthetic_price": synthetic_price,
+        "created_at": common::utils::format_timestamp(now),
         "network": config.network,
         "deposit_info": {
             "lsp_pubkey": deposit_info.lsp_pubkey,
@@ -665,9 +748,7 @@ async fn notify_signers_for_cosigning(
         "channel_opening" => wallet_dir.join(format!("sweep_{}_{}.psbt", user_id, txid)),
         _ => wallet_dir.join(format!("psbt_{}_{}.psbt", user_id, txid)),
     };
-            }
     
-    let psbt_hex = hex::encode(&psbt_bytes);
     
     // Create notification payload
     let payload = serde_json::json!({
@@ -773,6 +854,7 @@ async fn notify_signers_for_cosigning(
             warn!("Unknown service role: {}", service_role);
         }
     }
+     }
 
 // Update the check_psbt_status handler function
 pub async fn check_psbt_status(
