@@ -41,6 +41,13 @@ pub struct Config {
     pub hedge_service_url: String,
     pub api_key: String,
     pub request_timeout_secs: u64,
+    
+    pub role: String,           // Service role (user, lsp, trustee)
+    pub lsp_endpoint: String,    // LSP service endpoint
+    pub trustee_endpoint: String, // Trustee service endpoint
+    pub kraken_btc_address: Option<String>, // Kraken BTC address for USDT withdrawals
+    pub ldk_address: String,     // LDK node address for channel opening
+    pub max_fee_percent: f64,    // Maximum fee percentage allowed for transactions
 }
 
 // Default configuration for testnet
@@ -57,15 +64,20 @@ impl Default for Config {
             wallet_dir: "wallets".to_string(),
             event_log_dir: "events".to_string(),
             log_level: "info".to_string(),
-            lsp_pubkey: "".to_string(),  // This must be set in config file
-            trustee_pubkey: "".to_string(), // This must be set in config file
-            min_confirmations: 2,   // 2 confirmations for testnet (faster than mainnet)
-            channel_threshold_usd: 420.0, // $420 minimum for channel opening
-            fee_percentage: 0.21,   // 0.21% maximum fee percentage
+            min_confirmations: 2,
+            channel_threshold_usd: 420.0,
+            fee_percentage: 0.21,
             channel_service_url: "http://127.0.0.1:8082".to_string(),
             hedge_service_url: "http://127.0.0.1:8083".to_string(),
             api_key: "test_api_key".to_string(),
             request_timeout_secs: 30,
+            // Added fields
+            role: "user".to_string(),
+            lsp_endpoint: "http://127.0.0.1:9737".to_string(),
+            trustee_endpoint: "http://127.0.0.1:9738".to_string(),
+            kraken_btc_address: None,
+            ldk_address: "".to_string(),
+            max_fee_percent: 2.0,
         }
     }
 }
