@@ -110,20 +110,31 @@ async fn main() -> std::io::Result<()> {
     };
     
     // Create blockchain client
-    let blockchain = match create_esplora_client(&config.get_esplora_url()) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create blockchain client: {}", e);
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
-        }
-    };
+let blockchain = match create_esplora_client(network) {
+    Ok(client) => Arc::new(client),
+    Err(e) => {
+        error!("Failed to create blockchain client: {}", e);
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+    }
+};
+    
+    // Create application state
+let app_state = web::Data::new(AppState {
+    config: Arc::new(RwLock::new(config.clone())),
+    wallets: Arc::new(RwLock::new(HashMap::new())),
+    http_client: http_client.clone(),
+    current_price: Arc::new(RwLock::new(50000.0)),
+    synthetic_price: Arc::new(RwLock::new(50000.0)),
+    network,
+    role: config.role.clone(),
+});
     
     // Create HTTP client
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("Pulser/0.1.0")
-        .build()
-        .unwrap();
+let http_client = reqwest::Client::builder()
+    .timeout(Duration::from_secs(30))
+    .user_agent("Pulser/0.1.0")
+    .build()
+    .unwrap();
     
     // Initialize price feeds with placeholder values
     // These will be updated by the price_update_task before they're used
