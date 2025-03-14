@@ -1,25 +1,34 @@
 use bdk_wallet::{
-    self,
-    Wallet, KeychainKind, SignOptions, Balance,
-    descriptor::Descriptor,
-    CreateParams,
+    KeychainKind, SignOptions, Wallet, Balance,
+    descriptor::{ExtendedDescriptor, Descriptor},
 };
-use bdk_esplora::EsploraClient;
-use bitcoin::{Network, Address, Txid, Transaction, psbt::Psbt, FeeRate};
-use common::PulserError;
+use bdk_esplora::esplora_client::EsploraClient;
+use bitcoin::{
+    Network, Txid, 
+    psbt::Psbt, script::Script,
+};
+use bdk_file_store::Store;
+
+use common::error::PulserError;
+use common::types::Event;
 use crate::types::{Utxo, DepositAddressInfo};
 
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::path::Path;
+use std::fs;
 use log::{info, warn, debug};
 use sha2::{Sha256, Digest};
+
+const MAGIC_BYTES: &[u8] = b"PULSER_WALLET";
 
 /// Wrapper for Wallet operations
 pub struct DepositWallet {
     pub wallet: Wallet,
     pub blockchain: Arc<EsploraClient>,
     pub network: Network,
+    pub wallet_path: String,
+    pub events: Vec<Event>,
 }
 
 impl DepositWallet {
@@ -27,27 +36,29 @@ impl DepositWallet {
     pub fn new(
         descriptor: &str, 
         network: Network,
-        blockchain: Arc<EsploraClient>
+        blockchain: Arc<EsploraClient>,
+        wallet_path: &str,
     ) -> Result<Self, PulserError> {
         // Parse descriptor
         let desc = Descriptor::from_str(descriptor)
             .map_err(|e| PulserError::WalletError(format!("Invalid descriptor: {}", e)))?;
             
-        // Create wallet parameters
-        let params = CreateParams {
-            descriptor: desc,
-            change_descriptor: None,  // Multisig doesn't need change descriptor
-            network,
-        };
-            
+        // Ensure directory exists
+        if let Some(parent) = Path::new(wallet_path).parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| PulserError::StorageError(format!("Failed to create directory: {}", e)))?;
+        }
+        
         // Create wallet
-        let wallet = Wallet::create_with_params(params)
-            .map_err(|e| PulserError::WalletError(format!("Failed to build wallet: {}", e)))?;
+        let wallet = Wallet::new(desc, None, network)
+            .map_err(|e| PulserError::WalletError(format!("Failed to create wallet: {}", e)))?;
             
         Ok(Self {
             wallet,
             blockchain,
             network,
+            wallet_path: wallet_path.to_string(),
+            events: Vec::new(),
         })
     }
     
@@ -58,38 +69,30 @@ impl DepositWallet {
         trustee_pubkey: &str,
         network: Network,
         blockchain: Arc<EsploraClient>,
+        data_dir: &str,
     ) -> Result<(Self, DepositAddressInfo), PulserError> {
-        // Parse public keys
-        let user_pk = bitcoin::PublicKey::from_str(user_pubkey)
-            .map_err(|e| PulserError::WalletError(format!("Invalid user pubkey: {}", e)))?;
-        
-        let lsp_pk = bitcoin::PublicKey::from_str(lsp_pubkey)
-            .map_err(|e| PulserError::WalletError(format!("Invalid LSP pubkey: {}", e)))?;
-        
-        let trustee_pk = bitcoin::PublicKey::from_str(trustee_pubkey)
-            .map_err(|e| PulserError::WalletError(format!("Invalid trustee pubkey: {}", e)))?;
-        
-        // Create Taproot descriptor (tr() instead of wsh())
-        // This creates a 2-of-3 multisig using Taproot - any 2 of the 3 keys can sign
-        let desc_str = format!(
-            "tr(and_v(or_c(pk({}),pk({})),pk({})))",
-            user_pk.inner, lsp_pk.inner, trustee_pk.inner
+        // Create Taproot descriptor string (simplified for now)
+        let descriptor = format!(
+            "tr(or_c(pk({}),or_c(pk({}),pk({}))))",
+            user_pubkey, lsp_pubkey, trustee_pubkey
         );
         
-        // Create wallet instance
-        let wallet_instance = Self::new(&desc_str, network, blockchain)?;
-        
-        // Get a deposit address
-        let address_info = wallet_instance.wallet.peek_address(KeychainKind::External, 0);
-        
-        // Create a hash of the user pubkey to generate a unique ID
+        // Create a unique wallet path based on the multisig
         let mut hasher = Sha256::new();
-        hasher.update(user_pubkey.as_bytes());
-        let user_id_hash = hex::encode(&hasher.finalize()[0..8]);
+        hasher.update(descriptor.as_bytes());
+        let wallet_id = hex::encode(&hasher.finalize()[0..8]);
+        let wallet_path = format!("{}/wallets/multisig_{}.store", data_dir, wallet_id);
         
+        // Create wallet instance
+        let wallet_instance = Self::new(&descriptor, network, blockchain, &wallet_path)?;
+        
+        // Get a deposit address (index 0 for now)
+        let address_info = wallet_instance.wallet.get_address(bdk_wallet::AddressIndex::New);
+        
+        // Format paths using BIP-86 for Taproot
         let deposit_info = DepositAddressInfo {
             address: address_info.address.to_string(),
-            descriptor: desc_str,
+            descriptor: descriptor.clone(),
             path: "m/86'/0'/0'/0/0".to_string(), // BIP-86 path for Taproot
             user_pubkey: user_pubkey.to_string(),
             lsp_pubkey: lsp_pubkey.to_string(),
@@ -101,20 +104,10 @@ impl DepositWallet {
         Ok((wallet_instance, deposit_info))
     }
     
-    /// Get a new address from the wallet
-    pub fn get_address(&self) -> Result<bdk_wallet::AddressInfo, PulserError> {
-        let address = self.wallet.peek_address(KeychainKind::External, 0);
-        Ok(address)
-    }
-    
-    /// Sync the wallet with the blockchain (placeholder - needs implementation)
+    /// Sync the wallet with the blockchain
     pub async fn sync(&self) -> Result<(), PulserError> {
-        debug!("Starting wallet sync with blockchain (placeholder)");
-        
-        // bdk_wallet doesn't have a direct sync method like the original bdk
-        // This would need to be implemented by scanning the blockchain and updating the wallet
-        
-        debug!("Wallet sync completed (placeholder - not implemented in bdk_wallet 1.1.0)");
+        debug!("Wallet sync is a no-op in this implementation");
+        // This is a placeholder - in a real implementation, we would scan the blockchain
         Ok(())
     }
     
@@ -130,22 +123,24 @@ impl DepositWallet {
         let mut result = Vec::new();
         for output in unspent {
             // Get address representation
-            let script = output.txout.script_pubkey.clone();
-            let address = match Address::from_script(&Script::from(script.clone()), self.network) {
+            let script_bytes = output.txout.script_pubkey.as_bytes();
+            let script = Script::from_bytes(script_bytes);
+            
+            let address = match bitcoin::Address::from_script(&script, self.network) {
                 Ok(addr) => addr.to_string(),
                 Err(_) => "unknown".to_string(),
             };
             
-            // We don't have confirmation info directly from the wallet
-            // Would need to query the blockchain separately
+            // We need to query for confirmations separately
+            // For now, set to 0 and update later if needed
             let confirmations = 0; 
             
             result.push(Utxo {
                 txid: output.outpoint.txid.to_string(),
                 vout: output.outpoint.vout,
-                amount: output.txout.value.to_sat(),
+                amount: output.txout.value,
                 confirmations,
-                script_pubkey: hex::encode(script.as_bytes()),
+                script_pubkey: hex::encode(script_bytes),
                 height: None,
                 address,
             });
@@ -154,19 +149,40 @@ impl DepositWallet {
         Ok(result)
     }
     
-    // Note: The transaction building methods are not implemented here
-    // since they're more complex with bdk_wallet 1.1.0 and not needed
-    // for basic deposit address generation
+    /// Placeholder - create transaction
+    pub fn create_transaction(
+        &self, 
+        destination: &str, 
+        amount_sats: u64, 
+        fee_rate: f32,
+        enable_rbf: bool,
+    ) -> Result<(Psbt, Txid), PulserError> {
+        Err(PulserError::WalletError("Transaction creation not implemented yet".to_string()))
+    }
     
-    /// Sign a PSBT (placeholder)
+    /// Placeholder - sign a PSBT
     pub fn sign(&self, psbt: &mut Psbt, options: SignOptions) -> Result<bool, PulserError> {
-        // Placeholder - would need proper implementation for the actual signing
         Err(PulserError::WalletError("PSBT signing not implemented yet".to_string()))
     }
     
-    /// Check if a PSBT is fully signed (placeholder)
+    /// Placeholder - check if a PSBT is fully signed
     pub fn is_psbt_fully_signed(&self, psbt: &Psbt) -> Result<bool, PulserError> {
-        // Placeholder implementation
-        Err(PulserError::WalletError("PSBT signature checking not implemented yet".to_string()))
+        Err(PulserError::WalletError("PSBT signature check not implemented yet".to_string()))
+    }
+    
+    /// Placeholder - finalize and broadcast transaction
+    pub async fn finalize_and_broadcast(&self, psbt: &mut Psbt) -> Result<Txid, PulserError> {
+        Err(PulserError::WalletError("Transaction broadcast not implemented yet".to_string()))
+    }
+    
+    /// Add an event
+    pub fn add_event(&mut self, source: &str, kind: &str, details: &str) {
+        let timestamp = common::utils::now_timestamp();
+        self.events.push(Event {
+            timestamp,
+            source: source.to_string(),
+            kind: kind.to_string(),
+            details: details.to_string(),
+        });
     }
 }
