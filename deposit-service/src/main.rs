@@ -1,7 +1,7 @@
 // deposit-service/src/main.rs
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpServer, middleware};
 use bitcoin::Network;
-use common::PulserError;
+use common::{PulserError, price_feed};
 use structopt::StructOpt;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
@@ -30,6 +30,7 @@ use handlers::{
     initiate_channel_opening,
     get_service_status,
     wallet_sync_task,
+    not_found, // Make sure this is imported
 };
 
 // Command-line arguments
@@ -38,9 +39,6 @@ use handlers::{
 struct Opt {
     #[structopt(short, long, default_value = "8081")]
     port: u16,
-    
-    #[structopt(long, default_value = "https://blockstream.info/api/")]
-    esplora_url: String,
     
     #[structopt(long, default_value = "config/service_config.toml")]
     config: String,
@@ -76,9 +74,6 @@ async fn main() -> std::io::Result<()> {
     if opt.port != 0 {
         config.listening_port = opt.port;
     }
-    if !opt.esplora_url.is_empty() {
-        config.esplora_url = opt.esplora_url;
-    }
     if opt.testnet {
         config.network = "testnet".to_string();
     }
@@ -98,8 +93,9 @@ async fn main() -> std::io::Result<()> {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
     }
     
-    info!("Starting Pulser Deposit Service in {} mode on {} network...", 
-          config.role, config.network);
+    // Log startup information
+    info!("Starting Pulser Deposit Service v{} in {} mode on {} network", 
+          config.version, config.role, config.network);
     
     // Determine network
     let network = match config.network.as_str() {
@@ -109,37 +105,30 @@ async fn main() -> std::io::Result<()> {
         _ => Network::Bitcoin,
     };
     
+    // Create HTTP client with reasonable timeout and retry behavior
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(format!("Pulser/{}", config.version))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(10)
+        .build()
+        .unwrap_or_else(|e| {
+            warn!("Failed to create custom HTTP client: {}, using default", e);
+            reqwest::Client::new()
+        });
+    
     // Create blockchain client
-let blockchain = match create_esplora_client(network) {
-    Ok(client) => Arc::new(client),
-    Err(e) => {
-        error!("Failed to create blockchain client: {}", e);
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
-    }
-};
-    
-    // Create application state
-let app_state = web::Data::new(AppState {
-    config: Arc::new(RwLock::new(config.clone())),
-    wallets: Arc::new(RwLock::new(HashMap::new())),
-    http_client: http_client.clone(),
-    current_price: Arc::new(RwLock::new(50000.0)),
-    synthetic_price: Arc::new(RwLock::new(50000.0)),
-    network,
-    role: config.role.clone(),
-});
-    
-    // Create HTTP client
-let http_client = reqwest::Client::builder()
-    .timeout(Duration::from_secs(30))
-    .user_agent("Pulser/0.1.0")
-    .build()
-    .unwrap();
+    let blockchain = match create_esplora_client(network) {
+        Ok(client) => Arc::new(client),
+        Err(e) => {
+            error!("Failed to create blockchain client: {}", e);
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+        }
+    };
     
     // Initialize price feeds with placeholder values
-    // These will be updated by the price_update_task before they're used
-    let current_price = Arc::new(RwLock::new(50000.0));
-    let synthetic_price = Arc::new(RwLock::new(50000.0));
+    let current_price = Arc::new(RwLock::new(0.0));
+    let synthetic_price = Arc::new(RwLock::new(0.0));
     
     // Create application state
     let app_state = web::Data::new(AppState {
@@ -153,19 +142,41 @@ let http_client = reqwest::Client::builder()
         role: config.role.clone(),
     });
     
-    // Start price update task with immediate initial fetch
+    // Initial price fetch to avoid starting with zeros
+    info!("Performing initial price fetch...");
+    match price_feed::fetch_btc_price(&http_client).await {
+        Ok(price_info) => {
+            *current_price.write().unwrap() = price_info.raw_btc_usd;
+            
+            // Calculate synthetic price
+            let synthetic = price_info.synthetic_price.unwrap_or_else(|| {
+                // If no synthetic price provided, use a simple calculation
+                price_info.raw_btc_usd * 0.99 // 1% discount for simplicity
+            });
+            
+            *synthetic_price.write().unwrap() = synthetic;
+            
+            info!("Initial prices fetched: BTC-USD ${:.2}, Synthetic ${:.2}", 
+                 price_info.raw_btc_usd, synthetic);
+        },
+        Err(e) => {
+            warn!("Initial price fetch failed: {}. Using fallback values.", e);
+            // Set fallback values
+            *current_price.write().unwrap() = 30000.0;
+            *synthetic_price.write().unwrap() = 29700.0;
+        }
+    }
+    
+    // Start background tasks
+    info!("Starting background tasks...");
+    
+    // Price update task
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        // Immediate first fetch
-        if let Err(e) = update_prices(&app_state_clone).await {
-            warn!("Initial price update failed: {}", e);
-        }
-        
-        // Then start regular updates
         price_update_task(app_state_clone).await;
     });
     
-    // Start wallet sync task
+    // Wallet sync task
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
         wallet_sync_task(app_state_clone).await;
@@ -178,6 +189,7 @@ let http_client = reqwest::Client::builder()
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
+            .wrap(middleware::Logger::default())
             .service(web::resource("/deposit").route(web::post().to(create_deposit)))
             .service(web::resource("/deposit/{user_id}").route(web::get().to(get_deposit_status)))
             .service(web::resource("/deposit/{user_id}/utxos").route(web::get().to(get_deposit_utxos)))
@@ -187,47 +199,13 @@ let http_client = reqwest::Client::builder()
             .service(web::resource("/check_psbt").route(web::post().to(check_psbt_status)))
             .service(web::resource("/initiate_channel/{user_id}").route(web::post().to(initiate_channel_opening)))
             .service(web::resource("/status").route(web::get().to(get_service_status)))
+            .service(web::resource("/health").route(web::get().to(|| async { "OK" })))
+            .default_service(web::route().to(not_found))
     })
     .bind(&server_addr)?
+    .workers(4)
     .run()
     .await
-}
-
-// Helper function for immediate price update
-async fn update_prices(app_state: &web::Data<AppState>) -> Result<(), PulserError> {
-    // Use the common library's price feed
-    match common::price_feed::fetch_btc_price(&app_state.http_client).await {
-        Ok(price_info) => {
-            // Update current price
-            *app_state.current_price.write().unwrap() = price_info.raw_btc_usd;
-            
-            // Calculate synthetic price if we have one
-            if let Some(synthetic) = price_info.synthetic_price {
-                *app_state.synthetic_price.write().unwrap() = synthetic;
-                info!("Updated prices: BTC-USD ${:.2}, Synthetic ${:.2}", 
-                     price_info.raw_btc_usd, synthetic);
-            } else {
-                // If no synthetic price available, calculate a simple one
-                // This is just a placeholder until we have a proper synthetic price
-                let synthetic = calculate_simple_synthetic_price(price_info.raw_btc_usd);
-                *app_state.synthetic_price.write().unwrap() = synthetic;
-                info!("Updated prices: BTC-USD ${:.2}, Simple Synthetic ${:.2}", 
-                     price_info.raw_btc_usd, synthetic);
-            }
-            Ok(())
-        },
-        Err(e) => {
-            warn!("Failed to update price: {}", e);
-            Err(e)
-        }
-    }
-}
-
-// Simple synthetic price calculation for testing
-fn calculate_simple_synthetic_price(raw_btc_usd: f64) -> f64 {
-    // For testing, just apply a small adjustment to raw price
-    // In production, this would be calculated based on various market indicators
-    raw_btc_usd * 0.99 // 1% discount for demonstration
 }
 
 // Price update task
@@ -237,8 +215,27 @@ async fn price_update_task(app_state: web::Data<AppState>) {
     loop {
         interval.tick().await;
         
-        if let Err(e) = update_prices(&app_state).await {
-            warn!("Price update failed: {}", e);
+        match price_feed::fetch_btc_price(&app_state.http_client).await {
+            Ok(price_info) => {
+                // Update current price
+                *app_state.current_price.write().unwrap() = price_info.raw_btc_usd;
+                
+                // Calculate synthetic price if we have one
+                if let Some(synthetic) = price_info.synthetic_price {
+                    *app_state.synthetic_price.write().unwrap() = synthetic;
+                    debug!("Updated prices: BTC-USD ${:.2}, Synthetic ${:.2}", 
+                         price_info.raw_btc_usd, synthetic);
+                } else {
+                    // If no synthetic price available, calculate a simple one
+                    let synthetic = price_info.raw_btc_usd * 0.99; // 1% discount for simplicity
+                    *app_state.synthetic_price.write().unwrap() = synthetic;
+                    debug!("Updated prices: BTC-USD ${:.2}, Simple Synthetic ${:.2}", 
+                         price_info.raw_btc_usd, synthetic);
+                }
+            },
+            Err(e) => {
+                warn!("Failed to update price: {}", e);
+            }
         }
     }
 }
