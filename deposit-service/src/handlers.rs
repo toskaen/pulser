@@ -1,12 +1,8 @@
 // deposit-service/src/handlers.rs
 use actix_web::{web, HttpResponse, Responder};
 use bitcoin::{Address, Network, Txid};
-use bdk_wallet::{
-    chain::{BlockChain, Target},
-    keys::KeychainKind,
-    psbt::Psbt,
-    wallet::{SignOptions, Wallet},
-};
+use bdk_wallet::{Blockchain, KeychainKind, SignOptions, Wallet};
+use bdk_wallet::bitcoin::psbt::Psbt;
 use common::{Event, PulserError, USD};
 use rand::{thread_rng, Rng};
 use chrono::Utc;
@@ -16,6 +12,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use log::{info, warn, error, debug};
+use base64::Engine;
+use crate::integration::ServiceConfig;
+use crate::integration::notify_hedge_service;
 
 use crate::types::{
     StableChain, Bitcoin, Utxo, DepositAddressInfo, CreateDepositRequest,
@@ -26,11 +25,9 @@ use crate::blockchain::{create_esplora_client, fetch_address_utxos, fetch_fee_ra
 use crate::config::Config;
 use crate::integration::{notify_hedge_service, initiate_channel_opening};
 
-// Application state
 pub struct AppState {
     pub config: Arc<RwLock<Config>>,
     pub wallets: Arc<RwLock<HashMap<u32, (DepositWallet, StableChain)>>>,
-    pub blockchain: Arc<dyn BlockChain + Send + Sync>,
     pub http_client: reqwest::Client,
     pub current_price: Arc<RwLock<f64>>,
     pub synthetic_price: Arc<RwLock<f64>>,
@@ -38,7 +35,96 @@ pub struct AppState {
     pub role: String,       // Service role (user, lsp, trustee)
 }
 
-// API endpoint to create a new deposit address
+pub async fn get_service_status(
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    let config = app_state.config.read().unwrap();
+    let wallets_count = app_state.wallets.read().unwrap().len();
+    
+    let response = serde_json::json!({
+        "status": "running",
+        "service_name": config.service_name,
+        "version": config.version,
+        "network": config.network,
+        "active_wallets": wallets_count,
+        "current_price": *app_state.current_price.read().unwrap(),
+        "synthetic_price": *app_state.synthetic_price.read().unwrap(),
+    });
+    
+    HttpResponse::Ok().json(response)
+}
+
+// Update the wallet sync task function
+pub async fn wallet_sync_task(app_state: web::Data<AppState>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    
+    loop {
+        interval.tick().await;
+        
+        // Lock wallets for writing since we need to sync and update state
+        let mut wallets = match app_state.wallets.write() {
+            Ok(wallets) => wallets,
+            Err(e) => {
+                error!("Failed to lock wallets for writing: {}", e);
+                continue;
+            }
+        };
+        
+        // Iterate through each wallet and sync
+        for (user_id, (wallet, chain)) in wallets.iter_mut() {
+            match wallet.sync().await {
+                Ok(_) => {
+                    debug!("Wallet sync completed for user {}", user_id);
+                    
+                    // Update UTXOs after sync
+                    match wallet.list_utxos() {
+                        Ok(utxos) => {
+                            let old_utxo_count = chain.utxos.len();
+                            
+                            // Update accumulated_btc from UTXOs
+                            let total_sats = utxos.iter().map(|u| u.amount).sum();
+                            chain.accumulated_btc = Bitcoin::from_sats(total_sats);
+                            
+                            // Update utxos in chain
+                            if utxos.len() != old_utxo_count {
+                                info!("UTXOs changed for user {}: {} -> {}", 
+                                      user_id, old_utxo_count, utxos.len());
+                                
+                                chain.utxos = utxos;
+                                chain.stabilized_usd = USD(chain.accumulated_btc.sats as f64 / 100_000_000.0 * chain.raw_btc_usd);
+                                
+                                // Log event for new deposits
+                                if utxos.len() > old_utxo_count {
+                                    chain.events.push(Event {
+                                        timestamp: common::utils::now_timestamp(),
+                                        source: "DepositService".to_string(),
+                                        kind: "DepositReceived".to_string(),
+                                        details: format!("Received new deposit. Total: {} sats (${:.2})", 
+                                                        chain.accumulated_btc.sats, chain.stabilized_usd.0),
+                                    });
+                                }
+                                
+                                // Save updated chain state to disk
+                                let wallet_dir = Path::new(&app_state.config.read().unwrap().data_dir)
+                                    .join(&app_state.config.read().unwrap().wallet_dir);
+                                let wallet_path = wallet_dir.join(format!("user_{}.json", user_id));
+                                
+                                if let Ok(wallet_data) = serde_json::to_string_pretty(&chain) {
+                                    if let Err(e) = std::fs::write(&wallet_path, wallet_data) {
+                                        error!("Failed to save wallet data for user {}: {}", user_id, e);
+                                    }
+                                }
+                            }
+                        },
+                       Err(e) => error!("Failed to list UTXOs for user {}: {}", user_id, e),
+                    }
+                },
+                Err(e) => error!("Wallet sync failed for user {}: {}", user_id, e),
+            }
+        }
+    }
+}
+
 pub async fn create_deposit(
     req: web::Json<CreateDepositRequest>,
     app_state: web::Data<AppState>,
@@ -60,10 +146,10 @@ pub async fn create_deposit(
     
     // Determine network
     let network = match config.network.as_str() {
-        "testnet" => Network::Testnet,
-        "regtest" => Network::Regtest,
-        "signet" => Network::Signet,
-        _ => Network::Bitcoin,
+        "testnet" => bitcoin::Network::Testnet,
+        "regtest" => bitcoin::Network::Regtest,
+        "signet" => bitcoin::Network::Signet,
+        _ => bitcoin::Network::Bitcoin,
     };
     
     // Get LSP and trustee pubkeys
@@ -81,9 +167,9 @@ pub async fn create_deposit(
     let user_pubkey = if cfg!(feature = "user") {
         // For user mode, generate a random key
         let secp = bitcoin::secp256k1::Secp256k1::new();
-        let mut rng = thread_rng();
-        let user_sk = bitcoin::secp256k1::SecretKey::new(&mut rng);
-        let user_pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &user_sk);
+        let mut rng = rand::thread_rng();
+        let (secret_key, _) = secp.generate_keypair(&mut rng);
+        let user_pk = bitcoin::PublicKey::from_private_key(&secp, &secret_key);
         user_pk.to_string()
     } else {
         // For LSP/trustee mode, this would be provided by the user
@@ -92,13 +178,17 @@ pub async fn create_deposit(
         )?
     };
     
+    // Get blockchain client
+    let blockchain = Arc::new(create_esplora_client(network)?);
+    
     // Create the taproot multisig wallet
     let (wallet, deposit_info) = match DepositWallet::create_taproot_multisig(
         &user_pubkey,
         &lsp_pubkey,
         &trustee_pubkey,
         network,
-        app_state.blockchain.clone(),
+        blockchain,
+        &config.data_dir,
     ) {
         Ok(result) => result,
         Err(e) => {
@@ -120,7 +210,7 @@ pub async fn create_deposit(
         accumulated_btc: Bitcoin::from_sats(0),
         stabilized_usd: USD(0.0),
         timestamp: now,
-        formatted_datetime: Utc::now().to_rfc3339(),
+        formatted_datetime: chrono::Utc::now().to_rfc3339(),
         sc_dir: format!("./data/stable_chain_{}", user_id),
         raw_btc_usd: current_price,
         synthetic_price: Some(*app_state.synthetic_price.read().unwrap()),
@@ -169,7 +259,7 @@ pub async fn create_deposit(
         "user_id": user_id,
         "deposit_address": deposit_info.address,
         "expected_amount_usd": expected_usd,
-        "created_at": Utc::now().to_rfc3339(),
+        "created_at": chrono::Utc::now().to_rfc3339(),
         "network": config.network,
         "deposit_info": {
             "lsp_pubkey": deposit_info.lsp_pubkey,
@@ -181,7 +271,6 @@ pub async fn create_deposit(
     
     Ok(HttpResponse::Ok().json(response))
 }
-
 // API endpoint to get deposit status
 pub async fn get_deposit_status(
     user_id: web::Path<u32>,
@@ -274,7 +363,7 @@ pub async fn get_deposit_events(
     Ok(HttpResponse::Ok().json(response))
 }
 
-// API endpoint to process withdrawals
+// Update the process_withdrawal handler
 pub async fn process_withdrawal(
     req: web::Json<WithdrawalRequest>,
     app_state: web::Data<AppState>,
@@ -323,7 +412,7 @@ pub async fn process_withdrawal(
     let config = app_state.config.read()
         .map_err(|_| PulserError::InternalError("Failed to read config".to_string()))?;
     
-    let fee_rate = match fetch_fee_rate(&app_state.blockchain, Target::Normal).await {
+    let fee_rate = match fetch_fee_rate(&wallet.blockchain).await {
         Ok(fee) => fee,
         Err(e) => {
             warn!("Failed to fetch fee rate, using default: {}", e);
@@ -358,9 +447,9 @@ pub async fn process_withdrawal(
         }
     };
     
-    // Create and sign transaction
+    // Create transaction
     let is_urgent = req.urgent.unwrap_or(false);
-    let (psbt, txid) = match wallet.create_transaction(&destination, sats_amount, fee_rate, is_urgent) {
+    let (mut psbt, txid) = match wallet.create_transaction(&destination, sats_amount, fee_rate, is_urgent) {
         Ok((psbt, txid)) => (psbt, txid),
         Err(e) => {
             error!("Failed to create withdrawal transaction: {}", e);
@@ -369,7 +458,7 @@ pub async fn process_withdrawal(
     };
     
     // For multisig, we need other signatures - save the PSBT for cosigning
-    let psbt_base64 = base64::encode(&psbt.serialize());
+let psbt_base64 = base64::engine::general_purpose::STANDARD.encode(&psbt.serialize());
     let psbt_path = Path::new(&config.data_dir)
         .join(&config.wallet_dir)
         .join(format!("withdrawal_{}_{}.psbt", user_id, txid));
@@ -382,9 +471,9 @@ pub async fn process_withdrawal(
     
     // Generate request ID
     let request_id = format!("wd_{}_{}_{}", 
-                           user_id, 
-                           chrono::Utc::now().timestamp(), 
-                           thread_rng().gen::<u32>());
+                          user_id, 
+                          chrono::Utc::now().timestamp(), 
+                          thread_rng().gen::<u32>());
     
     // Calculate fees - in a real implementation we'd extract this from the PSBT
     // For now, estimate based on the number of inputs and outputs
@@ -398,15 +487,19 @@ pub async fn process_withdrawal(
     let fee_usd = (fee_sats as f64 / 100_000_000.0) * chain.raw_btc_usd;
     
     // Log the event
-    chain.log_event("DepositService", "WithdrawalRequested", 
-                   &format!("Requested ${:.2} {} withdrawal, txid: {}", 
-                           req.amount_usd, req.destination_type, txid));
+    chain.events.push(Event {
+        timestamp: common::utils::now_timestamp(),
+        source: "DepositService".to_string(), 
+        kind: "WithdrawalRequested".to_string(), 
+        details: format!("Requested ${:.2} {} withdrawal, txid: {}", 
+                       req.amount_usd, req.destination_type, txid)
+    });
     
     // Save wallet state to disk
     let wallet_dir = Path::new(&config.data_dir).join(&config.wallet_dir);
     let wallet_path = wallet_dir.join(format!("user_{}.json", user_id));
     
-    let wallet_data = serde_json::to_string_pretty(&chain)
+    let wallet_data = serde_json::to_string_pretty(chain)
         .map_err(|e| PulserError::InternalError(format!("Failed to serialize wallet data: {}", e)))?;
     
     std::fs::write(&wallet_path, wallet_data)
@@ -426,7 +519,7 @@ pub async fn process_withdrawal(
     // Notify cosigners (LSP and/or trustee)
     notify_signers_for_cosigning(&app_state, user_id, txid.to_string(), "withdrawal").await;
     
-        // Notify hedge service (don't block on this)
+    // Notify hedge service (don't block on this)
     let http_client = app_state.http_client.clone();
     let hedge_service_url = config.hedge_service_url.clone();
     let channel_service_url = config.channel_service_url.clone();
@@ -436,7 +529,7 @@ pub async fn process_withdrawal(
     tokio::spawn(async move {
         if let Err(e) = notify_hedge_service(
             &http_client, 
-            &crate::integration::ServiceConfig {
+            &ServiceConfig {
                 hedge_service_url,
                 channel_service_url,
                 api_key,
@@ -471,6 +564,7 @@ pub async fn process_withdrawal(
 }
 
 // API endpoint for PSBT signing (used by LSP or trustee)
+// Update the sign_psbt handler function
 pub async fn sign_psbt(
     req: web::Json<PsbtSignRequest>,
     app_state: web::Data<AppState>,
@@ -478,33 +572,28 @@ pub async fn sign_psbt(
     let user_id = req.user_id;
     
     // Verify the user exists
-    let wallets = app_state.wallets.read()
-        .map_err(|_| PulserError::InternalError("Failed to lock wallets for reading".to_string()))?;
+    let mut wallets = app_state.wallets.write()
+        .map_err(|_| PulserError::InternalError("Failed to lock wallets for writing".to_string()))?;
     
     if !wallets.contains_key(&user_id) {
         return Err(PulserError::UserNotFound(format!("User {} not found", user_id)));
     }
     
     // Parse the PSBT
-    let psbt_bytes = hex::decode(&req.psbt)
-        .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT hex: {}", e)))?;
+let psbt_bytes = base64::engine::general_purpose::STANDARD.decode(psbt_base64.as_bytes())
+    .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT hex: {}", e)))?;
     
-    let mut psbt: Psbt = match Psbt::from_bytes(&psbt_bytes) {
-        Ok(psbt) => psbt,
-        Err(e) => {
-            error!("Invalid PSBT format: {}", e);
-            return Err(PulserError::InvalidRequest(format!("Invalid PSBT format: {}", e)));
-        }
-    };
+    let mut psbt = Psbt::deserialize(&psbt_bytes)
+        .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT format: {}", e)))?;
     
     // Get the wallet for this user
-    let (wallet, _) = wallets.get(&user_id).unwrap();
+    let (wallet, _) = wallets.get_mut(&user_id).unwrap();
     
     // Sign the PSBT with our key
-    match sign_psbt_with_role(&psbt, wallet, &app_state.role).await {
-        Ok(signed_psbt) => {
+    match wallet.sign(&mut psbt, SignOptions::default()) {
+        Ok(finalized) => {
             // Serialize the signed PSBT
-            let signed_psbt_bytes = signed_psbt.serialize();
+            let signed_psbt_bytes = psbt.serialize();
             let signed_psbt_hex = hex::encode(signed_psbt_bytes);
             
             info!("PSBT signed for user {} (purpose: {})", user_id, req.purpose);
@@ -515,13 +604,14 @@ pub async fn sign_psbt(
                 "user_id": user_id,
                 "signed_psbt": signed_psbt_hex,
                 "purpose": req.purpose,
+                "finalized": finalized
             });
             
             Ok(HttpResponse::Ok().json(response))
         },
         Err(e) => {
             error!("Failed to sign PSBT: {}", e);
-            Err(e)
+            Err(PulserError::SigningError(format!("Failed to sign PSBT: {}", e)))
         }
     }
 }
@@ -575,23 +665,7 @@ async fn notify_signers_for_cosigning(
         "channel_opening" => wallet_dir.join(format!("sweep_{}_{}.psbt", user_id, txid)),
         _ => wallet_dir.join(format!("psbt_{}_{}.psbt", user_id, txid)),
     };
-    
-    let psbt_base64 = match std::fs::read_to_string(&psbt_path) {
-        Ok(content) => content,
-        Err(e) => {
-            error!("Failed to read PSBT file for user {}: {}", user_id, e);
-            return;
-        }
-    };
-    
-    // Convert from base64 to hex
-    let psbt_bytes = match base64::decode(&psbt_base64) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            error!("Failed to decode PSBT base64 for user {}: {}", user_id, e);
-            return;
-        }
-    };
+            }
     
     let psbt_hex = hex::encode(&psbt_bytes);
     
@@ -602,7 +676,7 @@ async fn notify_signers_for_cosigning(
         "purpose": purpose,
         "txid": txid
     });
-    
+   
     // Send to appropriate endpoint(s)
     let client = &app_state.http_client;
     
@@ -699,9 +773,8 @@ async fn notify_signers_for_cosigning(
             warn!("Unknown service role: {}", service_role);
         }
     }
-}
 
-// API endpoint to check PSBT status and finalize if fully signed
+// Update the check_psbt_status handler function
 pub async fn check_psbt_status(
     req: web::Json<PsbtStatusRequest>,
     app_state: web::Data<AppState>,
@@ -753,10 +826,10 @@ pub async fn check_psbt_status(
     let psbt_base64 = std::fs::read_to_string(&psbt_path)
         .map_err(|e| PulserError::StorageError(format!("Failed to read PSBT file: {}", e)))?;
     
-    let psbt_bytes = base64::decode(&psbt_base64)
-        .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT base64: {}", e)))?;
+let psbt_bytes = base64::engine::general_purpose::STANDARD.decode(psbt_base64.as_bytes())
+    .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT base64: {}", e)))?;
     
-    let psbt = Psbt::from_bytes(&psbt_bytes)
+    let mut psbt = Psbt::deserialize(&psbt_bytes)
         .map_err(|e| PulserError::InvalidRequest(format!("Invalid PSBT format: {}", e)))?;
     
     // Check if PSBT is fully signed
@@ -765,7 +838,7 @@ pub async fn check_psbt_status(
     
     if is_fully_signed {
         // Finalize and broadcast
-        match wallet.finalize_and_broadcast(&psbt).await {
+        match wallet.finalize_and_broadcast(&mut psbt).await {
             Ok(txid) => {
                 // Update chain state based on purpose
                 match req.purpose.as_str() {
@@ -774,23 +847,35 @@ pub async fn check_psbt_status(
                         chain.pending_sweep_txid = None;
                         // Record the withdrawal
                         chain.total_withdrawn_usd += req.amount_usd.unwrap_or(0.0);
-                        chain.log_event("DepositService", "WithdrawalCompleted", 
-                                      &format!("Withdrawal tx {} broadcast", txid));
+                        chain.events.push(Event {
+                            timestamp: common::utils::now_timestamp(),
+                            source: "DepositService".to_string(), 
+                            kind: "WithdrawalCompleted".to_string(), 
+                            details: format!("Withdrawal tx {} broadcast", txid)
+                        });
                     },
                     "channel_opening" => {
                         // Wait for confirmation before initiating channel
-                        chain.log_event("DepositService", "SweepBroadcast", 
-                                      &format!("Sweep tx {} broadcast for channel opening", txid));
+                        chain.events.push(Event {
+                            timestamp: common::utils::now_timestamp(),
+                            source: "DepositService".to_string(), 
+                            kind: "SweepBroadcast".to_string(), 
+                            details: format!("Sweep tx {} broadcast for channel opening", txid)
+                        });
                     },
                     _ => {
-                        chain.log_event("DepositService", "TransactionBroadcast", 
-                                      &format!("Transaction {} broadcast", txid));
+                        chain.events.push(Event {
+                            timestamp: common::utils::now_timestamp(),
+                            source: "DepositService".to_string(), 
+                            kind: "TransactionBroadcast".to_string(), 
+                            details: format!("Transaction {} broadcast", txid)
+                        });
                     }
                 }
                 
                 // Save updated state
                 let wallet_path = wallet_dir.join(format!("user_{}.json", user_id));
-                let wallet_data = serde_json::to_string_pretty(&chain)
+                let wallet_data = serde_json::to_string_pretty(chain)
                     .map_err(|e| PulserError::InternalError(
                         format!("Failed to serialize wallet data: {}", e)
                     ))?;
@@ -938,7 +1023,7 @@ async fn initiate_channel_sweep(
         Ok(rate) => rate,
         Err(e) => {
             warn!("Failed to fetch fee rate, using default: {}", e);
-            5.0 // Default fallback
+            2.1 // Default fallback
         }
     };
     
@@ -975,7 +1060,7 @@ async fn initiate_channel_sweep(
     )?;
     
     // Save PSBT for cosigning
-    let psbt_base64 = base64::encode(&psbt.serialize());
+let psbt_base64 = base64::engine::general_purpose::STANDARD.encode(&psbt.serialize());
     let psbt_path = Path::new(&config.data_dir)
         .join(&config.wallet_dir)
         .join(format!("sweep_{}.psbt", txid));
@@ -989,3 +1074,4 @@ async fn initiate_channel_sweep(
     info!("Created sweep transaction for channel opening: {} sats, txid: {}", send_amount, txid);
     
     Ok(txid.to_string())
+}
