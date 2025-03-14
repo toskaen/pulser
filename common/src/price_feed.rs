@@ -35,7 +35,7 @@ pub async fn fetch_btc_price(client: &Client) -> Result<PriceInfo, PulserError> 
     }
     
     // Use median price for robustness
-    btc_prices.sort_by(|a, b| a.partial_cmp(b).unwrap());
+btc_prices.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
     let raw_btc_usd = if btc_prices.len() % 2 == 0 {
         (btc_prices[btc_prices.len()/2 - 1] + btc_prices[btc_prices.len()/2]) / 2.0
     } else {
