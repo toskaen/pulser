@@ -1,5 +1,6 @@
-// common/src/error.rs
 use thiserror::Error;
+use actix_web::ResponseError;
+use actix_web::http::StatusCode;
 
 #[derive(Error, Debug)]
 pub enum PulserError {
@@ -53,4 +54,28 @@ pub enum PulserError {
     
     #[error("Taproot error: {0}")]
     TaprootError(String),
+}
+
+impl ResponseError for PulserError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            PulserError::ConfigError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::NetworkError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            PulserError::ApiError(_) => StatusCode::BAD_GATEWAY,
+            PulserError::UserNotFound(_) => StatusCode::NOT_FOUND,
+            PulserError::TransactionError(_) => StatusCode::BAD_REQUEST,
+            PulserError::WalletError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::AuthError(_) => StatusCode::UNAUTHORIZED,
+            PulserError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            PulserError::InsufficientFunds(_) => StatusCode::PAYMENT_REQUIRED,
+            PulserError::PriceFeedError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            PulserError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::PsbtError(_) => StatusCode::BAD_REQUEST,
+            PulserError::SigningError(_) => StatusCode::BAD_REQUEST,
+            PulserError::BroadcastError(_) => StatusCode::BAD_GATEWAY,
+            PulserError::ChannelError(_) => StatusCode::BAD_REQUEST,
+            PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
+        }
+    }
 }
