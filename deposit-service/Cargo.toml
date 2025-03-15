@@ -9,37 +9,48 @@ lsp = []
 trustee = []
 
 [dependencies]
-# BDK Wallet and dependencies - ensure all dependencies use compatible versions
+# BDK Wallet and dependencies
 bdk_wallet = "1.1.0"
-bdk_file_store = "0.18.0"
-bdk_chain = "0.11.0"
-bdk_esplora = { version = "0.20.0", features = ["async-https"] }
+bdk_file_store = "0.18.0" 
+bdk_chain = "0.21.1"
+bdk_esplora = { version = "0.19.0", features = ["async-https"] }
 
-# Bitcoin dependencies - stick with one compatible version
-bitcoin = { version = "0.30.2", features = ["rand"] }
+# Bitcoin dependencies
+bitcoin = { version = "0.32.5", features = ["serde", "rand"] }
+miniscript = "12.0.0"
 
 # For cryptography
-sha2 = { version = "0.10", features = ["std"] }
-hex = "0.4"
-rand = "0.8"
-base64 = "0.21"
+sha2 = "0.10.8"
+hmac = "0.12.1"
+hex = "0.4.3"
+rand = "0.8.5"
+base64 = "0.21.5"
 
 # Async and HTTP/API
-tokio = { version = "1", features = ["full"] }
-actix-web = "4"
-reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.36.0", features = ["full"] }
+actix-web = "4.4.1"
+reqwest = { version = "0.11.24", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.7"
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.112"
 
-# Utilities
-log = "0.4"
-env_logger = "0.10"
-thiserror = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-structopt = "0.3"
-toml = "0.7"
+# Logging
+log = "0.4.20"
+env_logger = "0.10.1"
 
 # Common library
 common = { path = "../common" }
+
+[dev-dependencies]
+tempdir = "0.3.7"
+
+[[example]]
+ name = "test_multisig_deposit"
+ path = "examples/test_multisig_deposit.rs"
+ 
+ [[bin]]
+name = "test_taproot"
+path = "src/bin/test_taproot.rs"

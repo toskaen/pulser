@@ -1,0 +1,62 @@
+warning: unused import: `common::PulserError`
+ --> deposit-service/src/config.rs:3:5
+  |
+3 | use common::PulserError;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `std::fs`
+ --> deposit-service/src/config.rs:5:5
+  |
+5 | use std::fs;
+  |     ^^^^^^^
+
+warning: unused import: `std::path::Path`
+ --> deposit-service/src/config.rs:6:5
+  |
+6 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused imports: `LevelFilter` and `info`
+ --> deposit-service/src/config.rs:7:11
+  |
+7 | use log::{info, LevelFilter};
+  |           ^^^^  ^^^^^^^^^^^
+
+warning: unused import: `bitcoin::Network`
+ --> deposit-service/src/config.rs:8:5
+  |
+8 | use bitcoin::Network;
+  |     ^^^^^^^^^^^^^^^^
+
+warning: `deposit-service` (lib) generated 5 warnings (run `cargo fix --lib -p deposit-service` to apply 5 suggestions)
+warning: unused imports: `Write` and `self`
+ --> deposit-service/src/bin/test_taproot.rs:3:15
+  |
+3 | use std::io::{self, Write};
+  |               ^^^^  ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: `deposit-service` (bin "test_taproot") generated 1 warning (run `cargo fix --bin "test_taproot"` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running `target/debug/test_taproot`
+Taproot Multisig Test - No Blockchain
+=====================================
+Created data directory: ./test_data
+User Public Key:    cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115
+LSP Public Key:     fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556
+Trustee Public Key: a8c5bac163e3f2bd359d95654a95a569c4dd241d3bb9ff9a14063dba0c5d5d10
+
+External descriptor: tr(cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115,multi_a(2,cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115,fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556,a8c5bac163e3f2bd359d95654a95a569c4dd241d3bb9ff9a14063dba0c5d5d10))
+Internal descriptor: tr(fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556,multi_a(2,cc8a4bc64d897bddc5fbc2f670f7a8ba0b386779106cf1223c6fc5d7cd6fc115,fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556,a8c5bac163e3f2bd359d95654a95a569c4dd241d3bb9ff9a14063dba0c5d5d10))
+
+Creating wallet...
+Wallet created successfully!
+
+Getting wallet address...
+
+Taproot Multisig Address: tb1p8dcpehqefem488369c9yh534z09s2e5xswjlqlasttaw4748am3scpx0hw
+
+Test completed successfully!
