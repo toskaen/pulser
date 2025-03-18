@@ -11,9 +11,9 @@ trustee = []
 [dependencies]
 # BDK Wallet and dependencies
 bdk_wallet = "1.1.0"
-bdk_file_store = "0.18.0" 
+bdk_file_store = "0.18.1" 
+bdk_esplora = "0.20.1"
 bdk_chain = "0.21.1"
-bdk_esplora = { version = "0.19.0", features = ["async-https"] }
 
 # Bitcoin dependencies
 bitcoin = { version = "0.32.5", features = ["serde", "rand"] }
@@ -63,3 +63,8 @@ path = "src/bin/test_withdrawal.rs"
 [[bin]]
 name = "check_utxos"
 path = "src/bin/check_utxos.rs"
+
+# In deposit-service/Cargo.toml
+[[bin]]
+name = "monitor_address"
+path = "src/bin/monitor_address.rs"
