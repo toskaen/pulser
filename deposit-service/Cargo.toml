@@ -54,3 +54,12 @@ tempdir = "0.3.7"
  [[bin]]
 name = "test_taproot"
 path = "src/bin/test_taproot.rs"
+
+[[bin]]
+name = "test_withdrawal"
+path = "src/bin/test_withdrawal.rs"
+
+# In deposit-service/Cargo.toml
+[[bin]]
+name = "check_utxos"
+path = "src/bin/check_utxos.rs"

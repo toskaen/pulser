@@ -1,8 +1,8 @@
 // In deposit-service/src/bin/test_taproot.rs
 use bitcoin::Network;
 use deposit_service::blockchain::create_esplora_client;
-use deposit_service::keys::load_or_generate_key_material;
 use deposit_service::wallet::create_taproot_multisig;
+use deposit_service::keys::{load_or_generate_key_material, store_wallet_recovery_info};
 use std::path::Path;
 
 #[tokio::main]
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Generate or load keys for all participants
     println!("\nGenerating or loading keys...");
-    let user_key = load_or_generate_key_material(
+    let mut user_key = load_or_generate_key_material(
         "user", Some(1), network, Path::new(data_dir), true
     )?;
     
@@ -36,7 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("LSP Public Key:     {}", lsp_key.public_key);
     println!("Trustee Public Key: {}", trustee_key.public_key);
     
-    // Create blockchain client (with error handling)
     println!("\nCreating blockchain client...");
     let blockchain = match create_esplora_client(network) {
         Ok(client) => {
@@ -49,15 +48,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     
-    // Create the multisig wallet
     println!("\nCreating taproot multisig wallet...");
-    let (wallet, deposit_info) = create_taproot_multisig(
+    
+    // Create the multisig wallet
+    let (_, deposit_info) = create_taproot_multisig(
         &user_key.public_key,
         &lsp_key.public_key,
         &trustee_key.public_key,
         network,
         blockchain,
         data_dir,
+    )?;
+    
+    // Store wallet recovery info
+    store_wallet_recovery_info(
+        &mut user_key,
+        &deposit_info.descriptor,
+        &lsp_key.public_key,
+        &trustee_key.public_key,
+        Path::new(data_dir)
     )?;
     
     println!("\nTaproot Multisig Address: {}", deposit_info.address);

@@ -2,7 +2,6 @@
 use bitcoin::Network;
 use bdk_esplora::esplora_client;
 use common::error::PulserError;
-use bitcoin::{Transaction, Txid};
 
 /// Create an Esplora blockchain client
 pub fn create_esplora_client(network: Network) -> Result<esplora_client::AsyncClient, PulserError> {
@@ -15,25 +14,10 @@ pub fn create_esplora_client(network: Network) -> Result<esplora_client::AsyncCl
     };
     
     let client = esplora_client::Builder::new(url)
-        .timeout(15) // Set a generous timeout
         .build_async()
         .map_err(|e| PulserError::NetworkError(format!("Failed to create Esplora client: {}", e)))?;
     
     Ok(client)
-}
-
-/// Broadcast a transaction
-pub async fn broadcast_transaction(
-    client: &esplora_client::AsyncClient,
-    tx: &Transaction,
-) -> Result<Txid, PulserError> {
-    // Broadcast the transaction
-    client.broadcast(tx)
-        .await
-        .map_err(|e| PulserError::TransactionError(format!("Failed to broadcast transaction: {}", e)))?;
-    
-    // Return the transaction ID
-    Ok(tx.compute_txid())
 }
 
 /// Fetch fee rate in satoshis per virtual byte

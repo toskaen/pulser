@@ -11,6 +11,8 @@ use std::time::Duration;
 use log::{info, warn, error, debug};
 use bdk_esplora::esplora_client::EsploraClient;
 use crate::monitoring::MonitoringService;
+use crate::events::EventManager;
+use crate::monitoring::StateManager;
 
 
 mod types;
@@ -61,6 +63,7 @@ pub struct AppState {
     pub synthetic_price: Arc<RwLock<f64>>,
     pub network: Network,
     pub role: String,
+    pub event_manager: Arc<EventManager>,
 }
 
 impl AppState {
@@ -80,6 +83,9 @@ impl AppState {
                 warn!("Failed to create custom HTTP client: {}, using default", e);
                 reqwest::Client::new()
             });
+        
+        // Create event manager
+        let event_manager = Arc::new(EventManager::new(&config.data_dir));
             
         Self {
             config: Arc::new(RwLock::new(config.clone())),
@@ -91,6 +97,7 @@ impl AppState {
             synthetic_price: Arc::new(RwLock::new(0.0)),
             network,
             role: config.role,
+            event_manager,
         }
     }
 }
@@ -182,12 +189,12 @@ async fn main() -> std::io::Result<()> {
     let current_price = Arc::new(RwLock::new(30000.0)); // Initial placeholder value
     let synthetic_price = Arc::new(RwLock::new(29700.0)); // Initial placeholder value
     
-     let monitoring_service = MonitoringService::new(
-        wallets.clone(),
-        config_arc.clone(),
-        current_price.clone(),
-        synthetic_price.clone(),
-    );
+let monitoring_service = MonitoringService::new(
+    wallets.clone(),
+    config_arc.clone(),
+    current_price.clone(),
+    synthetic_price.clone(),
+);
     monitoring_service.start().await;
     
     // Create application state
@@ -453,7 +460,7 @@ async fn sync_single_wallet(app_state: &web::Data<AppState>, user_id: u32) -> Re
             }
             
             // Update chain state with UTXOs
-            let old_utxo_count = wallet_and_chain.1.utxos.len();
+            let old_utxos = wallet_and_chain.1.utxos.clone();
             wallet_and_chain.1.utxos = utxos.clone();
             
             // Calculate accumulated BTC
@@ -466,19 +473,47 @@ async fn sync_single_wallet(app_state: &web::Data<AppState>, user_id: u32) -> Re
             );
             
             // Log deposit events if needed
-            if utxos.len() > old_utxo_count {
-                wallet_and_chain.1.events.push(common::types::Event {
-                    timestamp: common::utils::now_timestamp(),
-                    source: "DepositService".to_string(),
-                    kind: "DepositReceived".to_string(),
-                    details: format!(
-                        "Received new deposit. Total: {} sats (${:.2})",
-                        total_sats, wallet_and_chain.1.stabilized_usd.0
-                    ),
-                });
-                
-                info!("New deposit detected for user {}: {} sats (${:.2})",
-                     user_id, total_sats, wallet_and_chain.1.stabilized_usd.0);
+            for utxo in utxos.iter() {
+                if !old_utxos.iter().any(|old| old.txid == utxo.txid && old.vout == utxo.vout) {
+                    // This is a new deposit
+                    let _ = app_state.event_manager.log_deposit_event(
+                        user_id, 
+                        utxo.amount, 
+                        &utxo.txid, 
+                        utxo.vout,
+                        utxo.confirmations
+                    );
+                    
+                    wallet_and_chain.1.events.push(common::types::Event {
+                        timestamp: common::utils::now_timestamp(),
+                        source: "DepositService".to_string(),
+                        kind: "NewDeposit".to_string(),
+                        details: format!(
+                            "Received new deposit: {} sats (txid: {}:{})",
+                            utxo.amount, utxo.txid, utxo.vout
+                        ),
+                    });
+                    
+                    info!("New deposit detected for user {}: {} sats (txid: {}:{})",
+                         user_id, utxo.amount, utxo.txid, utxo.vout);
+                }
+                // Check for confirmation changes
+                if let Some(old_utxo) = old_utxos.iter().find(|old| old.txid == utxo.txid && old.vout == utxo.vout) {
+                    if utxo.confirmations > old_utxo.confirmations {
+                        wallet_and_chain.1.events.push(common::types::Event {
+                            timestamp: common::utils::now_timestamp(),
+                            source: "DepositService".to_string(),
+                            kind: "ConfirmationUpdate".to_string(),
+                            details: format!(
+                                "Deposit confirmation updated: {} sats (txid: {}:{}), confirmations: {} -> {}",
+                                utxo.amount, utxo.txid, utxo.vout, old_utxo.confirmations, utxo.confirmations
+                            ),
+                        });
+                        
+                        info!("Confirmation update for user {}: {} sats (txid: {}:{}), confirmations: {} -> {}",
+                             user_id, utxo.amount, utxo.txid, utxo.vout, old_utxo.confirmations, utxo.confirmations);
+                    }
+                }
             }
         },
         Err(e) => {
