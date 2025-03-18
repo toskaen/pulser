@@ -1,45 +1,17 @@
-// In deposit-service/src/monitoring.rs
-use crate::types::StableChain;
-use log::info;
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
-
+// deposit-service/src/monitoring.rs
 use crate::wallet::DepositWallet;
+use common::error::PulserError;
 
-/// Structure to hold all monitoring state
-pub struct MonitoringService {
-    pub wallets: Arc<RwLock<HashMap<u32, (DepositWallet, StableChain)>>>,
-    pub config: Arc<RwLock<crate::config::Config>>,
-    pub current_price: Arc<RwLock<f64>>,
-    pub synthetic_price: Arc<RwLock<f64>>,
-    pub should_stop: Arc<RwLock<bool>>,
-}
-
-impl MonitoringService {
-    pub fn new(
-        wallets: Arc<RwLock<HashMap<u32, (DepositWallet, StableChain)>>>,
-        config: Arc<RwLock<crate::config::Config>>,
-        current_price: Arc<RwLock<f64>>,
-        synthetic_price: Arc<RwLock<f64>>,
-    ) -> Self {
-        Self {
-            wallets,
-            config,
-            current_price,
-            synthetic_price,
-            should_stop: Arc::new(RwLock::new(false)),
+pub async fn monitor_deposits(mut wallet: DepositWallet) -> Result<(), PulserError> {
+    loop {
+        wallet.sync().await?;
+        let utxos = wallet.list_utxos()?;
+        for utxo in utxos {
+            if utxo.confirmations > 0 {
+                println!("Confirmed deposit: {} BTC at {}", utxo.amount as f64 / 100_000_000.0, utxo.txid);
+            }
         }
-    }
-    
-    /// Start the monitoring service
-    pub async fn start(&self) {
-        // Just log for now
-        info!("Monitoring service started");
-    }
-    
-    /// Stop the monitoring service
-    pub fn stop(&self) {
-        *self.should_stop.write().unwrap() = true;
-        info!("Monitoring service stopping...");
+        wallet.persist()?;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }

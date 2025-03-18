@@ -12,7 +12,7 @@ trustee = []
 # BDK Wallet and dependencies
 bdk_wallet = "1.1.0"
 bdk_file_store = "0.18.1" 
-bdk_esplora = "0.20.1"
+bdk_esplora = { version = "0.20.1", features = ["async-https", "tokio"] }
 bdk_chain = "0.21.1"
 
 # Bitcoin dependencies

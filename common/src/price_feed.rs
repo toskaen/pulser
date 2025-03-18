@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 /// Fetch BTC price from multiple sources
-pub async fn fetch_btc_price(client: &Client) -> Result<PriceInfo, PulserError> {
+pub async fn fetch_btc_usd_price() -> Result<f64, PulserError> {
     let sources = vec![
         ("Coingecko", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", "bitcoin.usd"),
         ("Kraken", "https://api.kraken.com/0/public/Ticker?pair=XBTUSD", "result.XXBTZUSD.c.0"),
@@ -31,7 +31,7 @@ pub async fn fetch_btc_price(client: &Client) -> Result<PriceInfo, PulserError> 
         }
     }
     
-    if btc_prices.is_empty() {
+    if prices.is_empty() {
         return Err(PulserError::PriceFeedError("All price sources failed".to_string()));
     }
     
@@ -107,19 +107,17 @@ pub fn calculate_synthetic_price(prices: HashMap<String, f64>) -> Result<f64, Pu
 }
 
 /// Fetch network fee estimates
-pub async fn fetch_network_fee(client: &Client) -> Result<u64, PulserError> {
+pub async fn fetch_bitcoin_network_fee() -> Result<f64, PulserError> {
     let url = "https://mempool.space/api/v1/fees/recommended";
-    
-    let response = client.get(url)
-        .timeout(Duration::from_secs(5))
-        .send()
+        None => Err(PulserError::PriceFeedError("Missing BTC-USD price".to_string())),
+let response = reqwest::get("https://api.blockchain.info/mempool/fees")
         .await
         .map_err(|e| PulserError::NetworkError(format!("Fee request failed: {}", e)))?;
-    
-    let json: Value = response.json()
+    let json: serde_json::Value = response
+        .json()
         .await
-        .map_err(|e| PulserError::ApiError(format!("Fee JSON parsing failed: {}", e)))?;
-    
-    json["fastestFee"].as_u64()
+        .map_err(|e| PulserError::APIError(format!("Fee JSON parsing failed: {}", e)))?;
+    json["regular"]
+        .as_f64()
         .ok_or_else(|| PulserError::PriceFeedError("Missing fee data".to_string()))
 }

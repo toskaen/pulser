@@ -1,26 +1,22 @@
+# common/Cargo.toml
 [package]
 name = "common"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Core dependencies
+actix-web = "4.4.1"
 bitcoin = { version = "0.30.2", features = ["serde", "rand"] }
-
-# Error handling
-thiserror = "1.0.57"
-actix-web = { version = "4.4.1", features = ["macros"] }
-
-# Serialization
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4.3"
+log = "0.4.20"
+reqwest = { version = "0.11.24", features = ["json"] }
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.112"
-
-# Async/HTTP
-tokio = { version = "1.36.0", features = ["full"] }
-reqwest = { version = "0.11.24", features = ["json"] }
-
-# Utilities
-chrono = { version = "0.4.34", features = ["serde"] }
-log = "0.4.20"
 sha2 = "0.10.8"
-hex = "0.4.3"
+thiserror = "1.0.69"
+bdk_esplora = { version = "0.20.1", features = ["async-https", "tokio"] }
+bdk_file_store = "0.18.1"
+bdk_wallet = "1.1.0"
+miniscript = "12.0.0"
+bdk_chain = "0.21.1"
