@@ -27,7 +27,7 @@ rand = "0.8.5"
 base64 = "0.21.5"
 aes-gcm = "0.10"
 
-# Async and HTTP/API
+# Async and HTTP/APIf
 tokio = { version = "1.36.0", features = ["full"] }
 actix-web = "4.4.1"
 reqwest = { version = "0.11.24", features = ["json"] }
@@ -41,6 +41,7 @@ serde_json = "1.0.112"
 # Logging
 log = "0.4.20"
 env_logger = "0.10.1"
+thiserror = "1.0"
 
 # Common library
 common = { path = "../common" }
@@ -62,10 +63,18 @@ path = "src/bin/test_withdrawal.rs"
 
 # In deposit-service/Cargo.toml
 [[bin]]
-name = "check_utxos"
-path = "src/bin/check_utxos.rs"
+name = "test_user"
+path = "src/bin/test_user.rs"
 
 # In deposit-service/Cargo.toml
 [[bin]]
-name = "monitor_address"
-path = "src/bin/monitor_address.rs"
+name = "test_lsp"
+path = "src/bin/test_lsp.rs"
+
+[[bin]]
+name = "create_multisig"
+path = "src/bin/create_multisig.rs"
+
+[[bin]]
+name = "sweep_to_new"
+path = "src/bin/sweep_to_new.rs"

@@ -5,9 +5,6 @@ use std::str::FromStr;
 use bdk_esplora::{esplora_client, EsploraAsyncExt};
 use bdk_esplora::esplora_client::AsyncClient;
 use bdk_wallet::{KeychainKind, Update, Wallet};
-use bdk_wallet::keys::bip39::{Mnemonic, WordCount, Language};
-use bdk_wallet::keys::{DescriptorSecretKey, GeneratableKey, GeneratedKey};
-use bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
 use bdk_chain::spk_client::SyncRequest;
 use bdk_chain::{Anchor, BlockId, ChainPosition, local_chain::LocalChain};
 use bdk_chain::bitcoin::BlockHash;
@@ -18,6 +15,7 @@ use common::types::Event;
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use rand::Rng;
+use bitcoin::secp256k1::{Secp256k1, SecretKey, XOnlyPublicKey};
 
 pub struct DepositWallet {
     pub wallet: Wallet,
@@ -28,20 +26,25 @@ pub struct DepositWallet {
 }
 
 pub fn secure_init(user_id: &str, data_dir: &str) -> Result<String, PulserError> {
-    let wallet_dir = format!("{}/{}", data_dir, user_id);
-    fs::create_dir_all(&wallet_dir)?;
-
     let secp = Secp256k1::new();
-    let mnemonic: GeneratedKey<_, bdk_wallet::miniscript::Tap> = 
-        Mnemonic::generate((WordCount::Words12, Language::English))?;
-    let mnemonic = mnemonic.into_key(); // Convert to Mnemonic
-    let seed_path = format!("{}/seed", wallet_dir);
-    fs::write(&seed_path, mnemonic.to_string())?;
+    let priv_key = SecretKey::new(&mut rand::thread_rng());
+    let (xonly_pubkey, _) = XOnlyPublicKey::from_keypair(&priv_key.keypair(&secp));
+    let pubkey = xonly_pubkey.to_string();
+    println!("Generated pubkey: {} (len: {})", pubkey, pubkey.len());
 
-    println!("Generated Seed for {}: {}", user_id, mnemonic);
-    Ok(mnemonic.to_string())
+    let key = Aes256Gcm::generate_key(&mut rand::thread_rng());
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = rand::thread_rng().gen::<[u8; 12]>();
+    let encrypted_seed = cipher.encrypt(&Nonce::from_slice(&nonce), &priv_key[..])
+        .map_err(|e| PulserError::StorageError(format!("Encryption failed: {}", e)))?;
+
+    fs::create_dir_all(format!("{}/secrets", data_dir))?;
+    let seed_path = format!("{}/secrets/user_{}.enc", data_dir, user_id);
+    fs::write(&seed_path, [&nonce[..], &encrypted_seed[..]].concat())?;
+    fs::write(format!("{}/secrets/key_{}.bin", data_dir, user_id), key.as_slice())?;
+
+    Ok(pubkey)
 }
-
 
 fn get_seed(user_id: &str, data_dir: &str) -> Result<Vec<u8>, PulserError> {
     let seed_path = format!("{}/secrets/user_{}.enc", data_dir, user_id);
@@ -76,7 +79,7 @@ impl DepositWallet {
         let user_pubkey = if fs::metadata(format!("{}/secrets/user_{}.enc", data_dir, user_pubkey)).is_ok() {
             user_pubkey.to_string()
         } else {
-           secure_init(user_pubkey, &data_dir)?
+            secure_init(user_pubkey, &data_dir)?
         };
 
         Self::create_user_multisig(
