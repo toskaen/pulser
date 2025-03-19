@@ -1,6 +1,11 @@
 use thiserror::Error;
 use actix_web::ResponseError;
 use actix_web::http::StatusCode;
+use bdk_chain::local_chain::CannotConnectError;
+use bdk_esplora::esplora_client::Error as EsploraError;
+use bitcoin::hashes::Error as HashError;
+
+
 
 #[derive(Error, Debug)]
 pub enum PulserError {
@@ -55,6 +60,37 @@ pub enum PulserError {
     #[error("Taproot error: {0}")]
     TaprootError(String),
 }
+
+impl From<std::io::Error> for PulserError {
+    fn from(err: std::io::Error) -> Self {
+        PulserError::StorageError(err.to_string())
+    }
+}
+
+impl From<bdk_esplora::esplora_client::Error> for PulserError {
+    fn from(err: bdk_esplora::esplora_client::Error) -> Self {
+        PulserError::ApiError(err.to_string())
+    }
+}
+
+impl From<Box<bdk_esplora::esplora_client::Error>> for PulserError {
+    fn from(err: Box<bdk_esplora::esplora_client::Error>) -> Self {
+        PulserError::ApiError(err.to_string())
+    }
+}
+
+impl From<CannotConnectError> for PulserError {
+    fn from(err: CannotConnectError) -> Self {
+        PulserError::WalletError(err.to_string())
+    }
+}
+
+impl From<HashError> for PulserError {
+    fn from(err: HashError) -> Self {
+        PulserError::WalletError(err.to_string())
+    }
+}
+
 
 impl ResponseError for PulserError {
     fn status_code(&self) -> StatusCode {
