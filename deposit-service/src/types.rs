@@ -32,7 +32,7 @@ impl Amount for Bitcoin {
 }
 
 /// UTXO information
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Utxo {
     pub txid: String,
     pub vout: u32,
@@ -40,7 +40,6 @@ pub struct Utxo {
     pub confirmations: u32,
     pub script_pubkey: String,
     pub height: Option<u32>,
-    pub address: String,
 }
 
 /// Represents a multisig deposit pool for a USER.

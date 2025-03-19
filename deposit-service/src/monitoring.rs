@@ -1,4 +1,3 @@
-// deposit-service/src/monitoring.rs
 use crate::wallet::DepositWallet;
 use common::error::PulserError;
 
@@ -11,7 +10,6 @@ pub async fn monitor_deposits(mut wallet: DepositWallet) -> Result<(), PulserErr
                 println!("Confirmed deposit: {} BTC at {}", utxo.amount as f64 / 100_000_000.0, utxo.txid);
             }
         }
-        wallet.persist()?;
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }
