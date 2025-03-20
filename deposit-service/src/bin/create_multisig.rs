@@ -160,7 +160,7 @@ async fn main() -> Result<(), PulserError> {
         .map(|(_, spk)| spk)
         .collect();
     let request = bdk_chain::spk_client::SyncRequest::builder().spks(spks).build();
-    let response = blockchain.sync(request, 1).await?;
+    let response = blockchain.sync(request, 5).await?;
     wallet.apply_update(response)?;
 
     let balance = wallet.balance();

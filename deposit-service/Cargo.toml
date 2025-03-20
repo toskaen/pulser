@@ -32,7 +32,10 @@ tokio = { version = "1.36.0", features = ["full"] }
 actix-web = "4.4.1"
 reqwest = { version = "0.11.24", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
-toml = "0.7"
+toml = "0.8"
+getrandom = { version = "0.2", features = ["js"] }  # Add this or update existing
+
+
 
 # Serialization
 serde = { version = "1.0.196", features = ["derive"] }
@@ -48,33 +51,3 @@ common = { path = "../common" }
 
 [dev-dependencies]
 tempdir = "0.3.7"
-
-[[example]]
- name = "test_multisig_deposit"
- path = "examples/test_multisig_deposit.rs"
- 
- [[bin]]
-name = "test_taproot"
-path = "src/bin/test_taproot.rs"
-
-[[bin]]
-name = "test_withdrawal"
-path = "src/bin/test_withdrawal.rs"
-
-# In deposit-service/Cargo.toml
-[[bin]]
-name = "test_user"
-path = "src/bin/test_user.rs"
-
-# In deposit-service/Cargo.toml
-[[bin]]
-name = "test_lsp"
-path = "src/bin/test_lsp.rs"
-
-[[bin]]
-name = "create_multisig"
-path = "src/bin/create_multisig.rs"
-
-[[bin]]
-name = "sweep_to_new"
-path = "src/bin/sweep_to_new.rs"

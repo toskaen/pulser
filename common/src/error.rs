@@ -1,16 +1,15 @@
 use thiserror::Error;
-use actix_web::ResponseError;
-use actix_web::http::StatusCode;
+use actix_web::{ResponseError, http::StatusCode};
 use bdk_chain::local_chain::CannotConnectError;
-use bdk_esplora::esplora_client::Error as EsploraError; // Keep, used below
-use bitcoin::hashes::Error as HashError;
+use bdk_esplora::esplora_client::Error as EsploraError;
 use bdk_wallet::keys::KeyError as BdkKeyError;
 use bdk_wallet::bip39::Error as Bip39Error;
-use bdk_wallet::miniscript::descriptor::DescriptorKeyParseError; // Fixed: Correct path
-use bdk_wallet::descriptor::DescriptorError; // Added
+use bdk_wallet::miniscript::descriptor::DescriptorKeyParseError;
+use bdk_wallet::descriptor::DescriptorError;
 use bdk_file_store::FileError;
-use bdk_wallet::CreateWithPersistError;
 use bdk_wallet::ChangeSet;
+use bdk_wallet::CreateWithPersistError;
+use std::io;
 
 #[derive(Error, Debug)]
 pub enum PulserError {
@@ -50,20 +49,50 @@ pub enum PulserError {
     TaprootError(String),
 }
 
-impl From<std::io::Error> for PulserError {
-    fn from(err: std::io::Error) -> Self {
+impl ResponseError for PulserError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            PulserError::ConfigError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::NetworkError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            PulserError::ApiError(_) => StatusCode::BAD_GATEWAY,
+            PulserError::UserNotFound(_) => StatusCode::NOT_FOUND,
+            PulserError::TransactionError(_) => StatusCode::BAD_REQUEST,
+            PulserError::WalletError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::AuthError(_) => StatusCode::UNAUTHORIZED,
+            PulserError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            PulserError::InsufficientFunds(_) => StatusCode::PAYMENT_REQUIRED,
+            PulserError::PriceFeedError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            PulserError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PulserError::PsbtError(_) => StatusCode::BAD_REQUEST,
+            PulserError::SigningError(_) => StatusCode::BAD_REQUEST,
+            PulserError::BroadcastError(_) => StatusCode::BAD_GATEWAY,
+            PulserError::ChannelError(_) => StatusCode::BAD_REQUEST,
+            PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+impl From<io::Error> for PulserError {
+    fn from(err: io::Error) -> Self {
         PulserError::StorageError(err.to_string())
     }
 }
 
-impl From<bdk_esplora::esplora_client::Error> for PulserError {
-    fn from(err: bdk_esplora::esplora_client::Error) -> Self {
+impl From<toml::de::Error> for PulserError {
+    fn from(err: toml::de::Error) -> Self {
+        PulserError::ConfigError(err.to_string())
+    }
+}
+
+impl From<EsploraError> for PulserError {
+    fn from(err: EsploraError) -> Self {
         PulserError::ApiError(err.to_string())
     }
 }
 
-impl From<Box<bdk_esplora::esplora_client::Error>> for PulserError {
-    fn from(err: Box<bdk_esplora::esplora_client::Error>) -> Self {
+impl From<Box<EsploraError>> for PulserError {
+    fn from(err: Box<EsploraError>) -> Self {
         PulserError::ApiError(err.to_string())
     }
 }
@@ -74,8 +103,8 @@ impl From<CannotConnectError> for PulserError {
     }
 }
 
-impl From<HashError> for PulserError {
-    fn from(err: HashError) -> Self {
+impl From<bitcoin::consensus::encode::FromHexError> for PulserError {
+    fn from(err: bitcoin::consensus::encode::FromHexError) -> Self {
         PulserError::WalletError(err.to_string())
     }
 }
@@ -115,7 +144,6 @@ impl From<FileError> for PulserError {
 
 impl From<CreateWithPersistError<ChangeSet>> for PulserError {
     fn from(err: CreateWithPersistError<ChangeSet>) -> Self {
-        // Since ChangeSet doesn't implement Display, use Debug
         PulserError::WalletError(format!("CreateWithPersistError: {:?}", err))
     }
 }
@@ -126,26 +154,8 @@ impl From<DescriptorError> for PulserError {
     }
 }
 
-impl ResponseError for PulserError {
-    fn status_code(&self) -> StatusCode {
-        match self {
-            PulserError::ConfigError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PulserError::NetworkError(_) => StatusCode::SERVICE_UNAVAILABLE,
-            PulserError::ApiError(_) => StatusCode::BAD_GATEWAY,
-            PulserError::UserNotFound(_) => StatusCode::NOT_FOUND,
-            PulserError::TransactionError(_) => StatusCode::BAD_REQUEST,
-            PulserError::WalletError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PulserError::AuthError(_) => StatusCode::UNAUTHORIZED,
-            PulserError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PulserError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            PulserError::InsufficientFunds(_) => StatusCode::PAYMENT_REQUIRED,
-            PulserError::PriceFeedError(_) => StatusCode::SERVICE_UNAVAILABLE,
-            PulserError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PulserError::PsbtError(_) => StatusCode::BAD_REQUEST,
-            PulserError::SigningError(_) => StatusCode::BAD_REQUEST,
-            PulserError::BroadcastError(_) => StatusCode::BAD_GATEWAY,
-            PulserError::ChannelError(_) => StatusCode::BAD_REQUEST,
-            PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
-        }
+impl From<bitcoin::bip32::Error> for PulserError {
+    fn from(err: bitcoin::bip32::Error) -> Self {
+        PulserError::WalletError(err.to_string())
     }
 }

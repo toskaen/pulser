@@ -19,8 +19,8 @@ event_log_dir = "events"
 log_level = "debug"
 
 # Bitcoin settings - replace with your actual keys
-lsp_pubkey = "8f6a89e914323ee1d8b235e63dd68ac8d79c13bc7c7ff4aa042671f63e8d9bc2" # Replace with your actual key
-trustee_pubkey = "c64776af3b1164e3dade00d03196a1874a0474f7a9d5cb3599c80836bba8d358" # Replace with your actual key
+lsp_pubkey = "tpubDG38QmNE5cgz7TdsxHd2riidQs8oFb1BVNCQxjyXbTygaLds5ecQQfiJZVpWkQLonaKxhiGCV1GJrHwV944SNF89dNoZftwH882L1u6Axcy" 
+trustee_pubkey = "tpubDHMq987D4wpxPPDjNgzygAHENiTbQeFHgKeZ1Sy2SNCkTzMTRFMR71zNTCD38tuZpg1D8BHMHUYg8TF3C86K3CEpnmeYLA43S63oPn3swPa" 
 min_confirmations = 1 # Only 1 confirmation required for testing
 channel_threshold_usd = 10.0 # Lower threshold for easier testing
 fee_percentage = 0.21

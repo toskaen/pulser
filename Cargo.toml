@@ -2,6 +2,5 @@
 members = [
     "deposit-service",
     "common",
-    "tools/key-generator"
-]
+    "tools/key-generator"]
 resolver = "2"
