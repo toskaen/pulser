@@ -1,6 +1,5 @@
 [workspace]
 members = [
     "deposit-service",
-    "common",
-    "tools/key-generator"]
+    "common",]
 resolver = "2"

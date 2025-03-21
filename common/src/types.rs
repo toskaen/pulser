@@ -71,3 +71,27 @@ pub struct ChannelInfo {
     pub stable_provider_sats: u64,
     pub timestamp: i64,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaprootKeyMaterial {
+    pub role: String,
+    pub user_id: Option<u32>,
+    pub secret_key: Option<String>,
+    pub public_key: String,
+    pub network: String,
+    pub created_at: i64,
+    pub last_accessed: i64,
+    pub is_taproot_internal: bool,
+    pub wallet_descriptor: Option<String>,
+    pub lsp_pubkey: Option<String>,
+    pub trustee_pubkey: Option<String>,
+    pub cloud_backup_status: Option<CloudBackupStatus>,
+    pub internal_descriptor: Option<String>, // Add this
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CloudBackupStatus {
+    NotBackedUp,
+    BackedUp,
+    Failed,
+}

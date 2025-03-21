@@ -35,7 +35,6 @@ impl DepositWallet {
         let user_xpub = fs::read_to_string(&user_xpub_path)
             .map_err(|e| PulserError::StorageError(format!("User Xpub missing: {}", e)))?;
 
-        let secp = Secp256k1::new();
         let lsp_xpub = Xpub::from_str(&config.lsp_pubkey)?;
         let trustee_xpub = Xpub::from_str(&config.trustee_pubkey)?;
 
@@ -141,7 +140,7 @@ impl DepositWallet {
     }
 
     pub fn list_utxos(&self) -> Result<Vec<Utxo>, PulserError> {
-        let utxos = self.wallet.list_unspent().into_iter().map(|utxo| {
+let utxos: Vec<Utxo> = self.wallet.list_unspent().into_iter().map(|utxo| {
             info!("UTXO: {}:{} = {} sats", utxo.outpoint.txid, utxo.outpoint.vout, utxo.txout.value.to_sat());
             Utxo {
                 txid: utxo.outpoint.txid.to_string(),

@@ -10,10 +10,11 @@ trustee = []
 
 # BDK Wallet and dependencies
 [dependencies]
-bdk_wallet = { version = "1.1.0", features = ["keys-bip39"] } # For Mnemonic
+bdk_wallet = { version = "1.1.0", features = ["keys-bip39"] } # For Mnemonicbdk_wallet = { version = "1.0.0", features = ["rusqlite"] }
 bdk_file_store = "0.18.1" 
 bdk_esplora = { version = "0.20.1", features = ["async-https", "tokio"] }
 bdk_chain = "0.21.1"
+bdk_sqlite = "0.2.0"
 
 # Bitcoin dependencies
 bitcoin = { version = "0.32.5", features = ["serde", "rand"] }

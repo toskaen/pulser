@@ -1,0 +1,27 @@
+# PULSER WALLET RECOVERY DOCUMENT
+
+IMPORTANT: KEEP THIS DOCUMENT SECURE
+
+User ID: 1
+Network: testnet
+Created: 1742491583
+
+## Wallet Information
+Wallet Descriptor: tr(4d54bb9928a0683b7e383de72943b214b0716f58aa54c7ba6bcea2328bc9c768,multi_a(2,[00000000/84'/1'/0'/0/0]tpubDG38QmNE5cgz7TdsxHd2riidQs8oFb1BVNCQxjyXbTygaLds5ecQQfiJZVpWkQLonaKxhiGCV1GJrHwV944SNF89dNoZftwH882L1u6Axcy/*,[00000000/84'/1'/0'/0/0]tpubDHMq987D4wpxPPDjNgzygAHENiTbQeFHgKeZ1Sy2SNCkTzMTRFMR71zNTCD38tuZpg1D8BHMHUYg8TF3C86K3CEpnmeYLA43S63oPn3swPa/*,[00000000/84'/1'/0'/0/0]tpubDH8xWM24upE9qzES9h1rkVMuKw5M6UHARHxz9DU3481zRY5oaVv8FhgfxTYfNddhHJv9wKbudqXPKCLB53DMJBxPoAkAjC3eQgMnJDFtgop/*))
+
+## Participants
+User Public Key: tpubDH8xWM24upE9qzES9h1rkVMuKw5M6UHARHxz9DU3481zRY5oaVv8FhgfxTYfNddhHJv9wKbudqXPKCLB53DMJBxPoAkAjC3eQgMnJDFtgop
+LSP Public Key: tpubDG38QmNE5cgz7TdsxHd2riidQs8oFb1BVNCQxjyXbTygaLds5ecQQfiJZVpWkQLonaKxhiGCV1GJrHwV944SNF89dNoZftwH882L1u6Axcy
+Trustee Public Key: tpubDHMq987D4wpxPPDjNgzygAHENiTbQeFHgKeZ1Sy2SNCkTzMTRFMR71zNTCD38tuZpg1D8BHMHUYg8TF3C86K3CEpnmeYLA43S63oPn3swPa
+
+## Recovery Seed
+weather orchard mirror program erosion cream buzz unveil direct genuine assault prosper
+
+## Cloud Backup Status
+Not backed up to cloud
+
+## Recovery Instructions
+1. Use this descriptor with a compatible wallet (BlueWallet, Sparrow, Electrum)
+2. Import the descriptor and seed if available
+3. Requires 2-of-3 signatures to spend
+4. Contact support if needed

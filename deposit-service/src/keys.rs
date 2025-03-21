@@ -1,6 +1,7 @@
 use bitcoin::secp256k1::{Secp256k1, SecretKey, XOnlyPublicKey};
 use bitcoin::Network;
 use common::error::PulserError;
+use common::types::{TaprootKeyMaterial, CloudBackupStatus}; // Import both
 use serde::{Serialize, Deserialize};
 use rand::rngs::OsRng;
 use std::fs::{self, File, OpenOptions};
@@ -9,51 +10,7 @@ use std::path::Path;
 use std::str::FromStr;
 use log::info;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum CloudBackupStatus {
-    NotBackedUp,
-    BackedUpToApple,
-    BackedUpToGoogle,
-    BackedUpToCustom(String),
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TaprootKeyMaterial {
-    pub role: String,
-    pub user_id: Option<u32>,
-    pub secret_key: Option<String>,       // Hex string
-    pub public_key: String,               // Xpub or X-only pubkey as hex
-    pub network: String,
-    pub created_at: i64,
-    pub last_accessed: i64,
-    pub is_taproot_internal: bool,
-    pub wallet_descriptor: Option<String>,
-    pub lsp_pubkey: Option<String>,
-    pub trustee_pubkey: Option<String>,
-    pub cloud_backup_status: Option<CloudBackupStatus>,
-}
-
-impl TaprootKeyMaterial {
-    pub fn public_key_bytes(&self) -> Result<Vec<u8>, PulserError> {
-        hex::decode(&self.public_key)
-            .map_err(|e| PulserError::InvalidRequest(format!("Invalid public key hex: {}", e)))
-    }
-
-    pub fn to_xonly_pubkey(&self) -> Result<XOnlyPublicKey, PulserError> {
-        let bytes = self.public_key_bytes()?;
-        XOnlyPublicKey::from_slice(&bytes)
-            .map_err(|e| PulserError::InvalidRequest(format!("Invalid X-only public key: {}", e)))
-    }
-
-    pub fn secret_key(&self) -> Option<Result<SecretKey, PulserError>> {
-        self.secret_key.as_ref().map(|hex| {
-            let bytes = hex::decode(hex)
-                .map_err(|e| PulserError::InvalidRequest(format!("Invalid secret key hex: {}", e)))?;
-            SecretKey::from_slice(&bytes)
-                .map_err(|e| PulserError::InvalidRequest(format!("Invalid secret key: {}", e)))
-        })
-    }
-}
+// Remove local CloudBackupStatus and TaprootKeyMaterial definitions
 
 pub fn generate_taproot_keypair() -> Result<(SecretKey, XOnlyPublicKey, String), PulserError> {
     let secp = Secp256k1::new();
@@ -135,9 +92,8 @@ pub fn generate_recovery_document(key_material: &TaprootKeyMaterial) -> Result<S
 
     let backup_status_str = match &key_material.cloud_backup_status {
         Some(CloudBackupStatus::NotBackedUp) => "Not backed up to cloud",
-        Some(CloudBackupStatus::BackedUpToApple) => "Backed up to Apple iCloud",
-        Some(CloudBackupStatus::BackedUpToGoogle) => "Backed up to Google Drive",
-        Some(CloudBackupStatus::BackedUpToCustom(s)) => &format!("Backed up to custom provider: {}", s),
+        Some(CloudBackupStatus::BackedUp) => "Backed up to cloud",
+        Some(CloudBackupStatus::Failed) => "Backup failed",
         None => "Backup status unknown",
     };
 
@@ -164,7 +120,7 @@ pub fn generate_recovery_document(key_material: &TaprootKeyMaterial) -> Result<S
         4. Contact support if needed\n",
         key_material.user_id.unwrap_or(0),
         key_material.network,
-        chrono::Utc::now().timestamp(), // Simplified—use real created_at if needed
+        key_material.created_at,
         key_material.wallet_descriptor.as_ref().unwrap(),
         key_material.public_key,
         key_material.lsp_pubkey.as_ref().unwrap_or(&"Not Available".to_string()),

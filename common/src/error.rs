@@ -159,3 +159,9 @@ impl From<bitcoin::bip32::Error> for PulserError {
         PulserError::WalletError(err.to_string())
     }
 }
+
+impl From<serde_json::Error> for PulserError {
+    fn from(err: serde_json::Error) -> Self {
+        PulserError::StorageError(err.to_string())
+    }
+}
