@@ -1,16 +1,17 @@
-use bitcoin::secp256k1::{Secp256k1, SecretKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{Secp256k1, SecretKey, XOnlyPublicKey, All};
 use bitcoin::Network;
+use bitcoin::bip32::{Xpub, DerivationPath, Fingerprint};
+use bdk_wallet::keys::DescriptorPublicKey;
+use miniscript::descriptor::{DescriptorXKey, Wildcard};
 use common::error::PulserError;
-use common::types::{TaprootKeyMaterial, CloudBackupStatus}; // Import both
-use serde::{Serialize, Deserialize};
+use common::types::{TaprootKeyMaterial, CloudBackupStatus};
+use serde::Deserialize;
 use rand::rngs::OsRng;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::str::FromStr;
 use log::info;
-
-// Remove local CloudBackupStatus and TaprootKeyMaterial definitions
 
 pub fn generate_taproot_keypair() -> Result<(SecretKey, XOnlyPublicKey, String), PulserError> {
     let secp = Secp256k1::new();
@@ -129,4 +130,40 @@ pub fn generate_recovery_document(key_material: &TaprootKeyMaterial) -> Result<S
         backup_status_str,
     );
     Ok(doc)
+}
+
+pub fn create_multisig_descriptor(
+    secp: &Secp256k1<All>,
+    user_xpub: &Xpub,
+    lsp_xpub: &Xpub,
+    trustee_xpub: &Xpub,
+    path: &DerivationPath,
+    unspendable_key: &str,
+    internal: bool,
+) -> Result<String, PulserError> {
+    let user_desc_xkey = DescriptorXKey {
+        origin: Some((Fingerprint::default(), path.clone())),
+        xkey: *user_xpub,
+        derivation_path: DerivationPath::master(),
+        wildcard: Wildcard::Unhardened,
+    };
+    let lsp_desc_xkey = DescriptorXKey {
+        origin: Some((Fingerprint::default(), path.clone())),
+        xkey: *lsp_xpub,
+        derivation_path: DerivationPath::master(),
+        wildcard: Wildcard::Unhardened,
+    };
+    let trustee_desc_xkey = DescriptorXKey {
+        origin: Some((Fingerprint::default(), path.clone())),
+        xkey: *trustee_xpub,
+        derivation_path: DerivationPath::master(),
+        wildcard: Wildcard::Unhardened,
+    };
+    let user_pubkey = DescriptorPublicKey::XPub(user_desc_xkey);
+    let lsp_pubkey = DescriptorPublicKey::XPub(lsp_desc_xkey);
+    let trustee_pubkey = DescriptorPublicKey::XPub(trustee_desc_xkey);
+    Ok(format!(
+        "tr({},multi_a(2,{},{},{}))",
+        unspendable_key, lsp_pubkey, trustee_pubkey, user_pubkey
+    ))
 }
