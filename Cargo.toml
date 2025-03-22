@@ -1,5 +1,7 @@
 [workspace]
 members = [
     "deposit-service",
-    "common",]
+    "common",
+    "hedge-service",
+    "withdraw-service"]
 resolver = "2"
