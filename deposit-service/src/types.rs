@@ -2,6 +2,10 @@
 use common::types::{Amount, USD, Event};
 use std::collections::HashMap;
 use std::fmt;
+use std::fs; // Add this
+
+
+
 
 /// Represents a Bitcoin amount in satoshis.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -40,6 +44,8 @@ pub struct Utxo {
     pub confirmations: u32,
     pub script_pubkey: String,
     pub height: Option<u32>,
+    pub usd_value: Option<USD>, // Add this
+
 }
 
 /// Represents a multisig deposit pool for a USER.
@@ -54,7 +60,6 @@ pub struct StableChain {
     pub formatted_datetime: String,
     pub sc_dir: String,
     pub raw_btc_usd: f64,
-    pub synthetic_price: Option<f64>,
     pub prices: HashMap<String, f64>,
     pub multisig_addr: String, // Store as string to avoid version conflicts
     pub utxos: Vec<Utxo>,
@@ -64,27 +69,51 @@ pub struct StableChain {
     pub expected_usd: USD,
     pub hedge_position_id: Option<String>,
     pub pending_channel_id: Option<String>,
+     pub shorts: Vec<(f64, f64, String, String)>, // (entry_price, position_btc, order_id, user_id)
+    pub hedge_ready: bool,
+    pub last_hedge_time: u64, // New: Tracks last hedge time
+        pub short_reduction_amount: Option<f64>, // New: Signals hedge-service
+
 }
 
 impl StableChain {
-    // Helper to check if a chain is ready for channel opening
-    pub fn is_ready_for_channel(&self, min_confirmations: u32, channel_threshold_usd: f64) -> bool {
-        // Check if all UTXOs have enough confirmations
-        let all_confirmed = self.utxos.iter().all(|u| u.confirmations >= min_confirmations);
-        
-        // Check if we have enough confirmed funds
-        let total_confirmed_sats = self.utxos.iter()
-            .filter(|u| u.confirmations >= min_confirmations)
-            .map(|u| u.amount)
-            .sum::<u64>();
-            
-        // Convert to USD
-        let total_confirmed_usd = (total_confirmed_sats as f64 / 100_000_000.0) * self.raw_btc_usd;
-        
-        all_confirmed && total_confirmed_usd >= channel_threshold_usd && self.pending_sweep_txid.is_none()
+    pub fn load_or_create(user_id: &str, address: &str, sc_dir: &str) -> Result<Self, common::error::PulserError> {
+        let sc_path = format!("{}/stable_chain_{}.json", sc_dir, user_id);
+        if std::path::Path::new(&sc_path).exists() {
+            return Ok(serde_json::from_str(&fs::read_to_string(&sc_path)?)?);
+        }
+        let now = common::utils::now_timestamp();
+        Ok(StableChain {
+            user_id: user_id.parse()?,
+            is_stable_receiver: false,
+            counterparty: String::new(),
+            accumulated_btc: Bitcoin::from_sats(0),
+            stabilized_usd: USD(0.0),
+            timestamp: now,
+            formatted_datetime: chrono::Utc::now().to_string(),
+            sc_dir: sc_dir.to_string(),
+            raw_btc_usd: 0.0,
+            prices: HashMap::new(),
+            multisig_addr: address.to_string(),
+            utxos: Vec::new(),
+            pending_sweep_txid: None,
+            events: Vec::new(),
+            total_withdrawn_usd: 0.0,
+            expected_usd: USD(0.0),
+            hedge_position_id: None,
+            pending_channel_id: None,
+            shorts: Vec::new(),
+            hedge_ready: false,
+            last_hedge_time: 0,
+            short_reduction_amount: None,
+        })
     }
-    
-    // Helper to log events
+
+    pub fn is_ready_for_channel(&self, min_confirmations: u32, channel_threshold_usd: f64) -> bool {
+        self.utxos.iter().all(|utxo| utxo.confirmations >= min_confirmations) &&
+        self.stabilized_usd.0 >= channel_threshold_usd
+    }
+
     pub fn log_event(&mut self, source: &str, kind: &str, details: &str) {
         self.events.push(Event {
             timestamp: common::utils::now_timestamp(),
@@ -180,5 +209,4 @@ pub struct ChannelOpenRequest {
     pub amount_sats: u64,
     pub expected_usd: f64,
     pub current_price: f64,
-    pub synthetic_price: f64,
 }
