@@ -18,6 +18,10 @@ use deposit_service::types::{ServiceStatus, UserStatus, StableChain, WebhookRetr
 use deposit_service::storage::{StateManager, UtxoInfo};
 use deposit_service::webhook::{WebhookConfig, notify_new_utxos};
 use tokio::time::sleep;
+use crate::wallet_init::{self, WalletInitResult}; // Add to imports
+use crate::storage::StateManager; // Add this
+
+
 
 #[derive(Debug)]
 enum CustomError {
@@ -208,9 +212,74 @@ pub fn routes(
             }
         }
     });
+    
+    let init_wallet = warp::path("init_wallet")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_wallets(wallets.clone()))
+        .and(with_statuses(user_statuses.clone()))
+        .and(with_state_manager(state_manager.clone()))
+        .and(with_client(client.clone()))
+        .and(with_config_path("config/service_config.toml".to_string()))
+        .and_then({
+            move |req: serde_json::Value,
+                  wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
+                  user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
+                  state_manager: Arc<StateManager>,
+                  client: Client,
+                  config_path: String| {
+                async move {
+                    let user_id = req["user_id"].as_str().ok_or_else(|| warp::reject::custom(PulserError::InvalidInput("Missing user_id".into())))?.to_string();
+                    let config_str = fs::read_to_string(&config_path)?;
+                    let config: wallet_init::Config = toml::from_str(&config_str)?;
+                    let init_result = wallet_init::init_wallet(&config, &user_id)?;
 
-    health.or(status).or(user_status).or(activity).or(sync_route).or(force_sync).or(register).or(sync_utxos)
+                    let wallet = DepositWallet::from_descriptors(
+                        init_result.external_descriptor.clone(),
+                        init_result.internal_descriptor.clone(),
+                        Network::from_str(&config.network)?,
+                        &config.esplora_url,
+                        &format!("{}/user_{}/multisig", config.data_dir, user_id),
+                        &user_id,
+                        Address::from_str(&init_result.deposit_info.address)?,
+                        &state_manager,
+                    ).await?;
+
+                    client.post("http://localhost:8081/register")
+                        .json(&init_result.public_data)
+                        .send()
+                        .await?;
+
+                    let mut wallets_lock = wallets.lock().await.unwrap();
+                    wallets_lock.insert(user_id.clone(), (wallet.clone(), wallet.stable_chain.clone()));
+                    let mut statuses = user_statuses.lock().await.unwrap();
+                    let status = statuses.entry(user_id.clone()).or_insert_with(|| UserStatus::new(&user_id));
+                    status.current_deposit_address = init_result.deposit_info.address.clone();
+
+                    let response = json!({
+                        "user_id": user_id,
+                        "recovery_doc": init_result.recovery_doc,
+                        "address": init_result.deposit_info.address,
+                        "descriptor": init_result.deposit_info.descriptor
+                    });
+                    info!("Initialized wallet for user {}", user_id);
+                    Ok::<_, Rejection>(warp::reply::json(&response))
+                }
+            }
+        });
+        
+    health
+        .or(status)
+        .or(user_status)
+        .or(activity)
+        .or(sync_route)
+        .or(force_sync)
+        .or(register)
+        .or(sync_utxos)
+        .or(init_wallet)
 }
+
+
 
 async fn sync_user_handler(
     user_id: String,
@@ -431,6 +500,10 @@ fn with_state_manager(manager: Arc<StateManager>) -> impl Filter<Extract = (Arc<
 
 fn with_retry_queue(queue: Arc<Mutex<VecDeque<WebhookRetry>>>) -> impl Filter<Extract = (Arc<Mutex<VecDeque<WebhookRetry>>>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || queue.clone())
+}
+
+fn with_config_path(config_path: String) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || config_path.clone())
 }
 
 pub fn is_user_active(user_id: &str) -> bool {

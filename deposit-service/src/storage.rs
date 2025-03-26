@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
 use common::error::PulserError;
+use crate::types::{StableChain, UtxoInfo, Bitcoin, USD}; // Import from deposit-service types
 use log::debug;
+use chrono::Utc;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -83,10 +85,62 @@ impl StateManager {
         utxos.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         if utxos.len() > max_entries {
             utxos.truncate(max_entries);
-            self.save(&activity_path, &utxos).await?;
+            self.save(activity_path, &utxos).await?;
             debug!("Pruned activity log at {} to {} entries", full_path.display(), max_entries);
         }
         Ok(())
+    }
+
+    pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain) -> Result<(), PulserError> {
+        let sc_path = PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id));
+        self.save(&sc_path, stable_chain).await?;
+        debug!("Saved StableChain for user {} to {}", user_id, sc_path.display());
+        Ok(())
+    }
+
+    pub async fn load_stable_chain(&self, user_id: &str) -> Result<StableChain, PulserError> {
+        let sc_path = PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id));
+        self.load(&sc_path).await
+    }
+
+    pub async fn load_or_init_stable_chain(
+        &self,
+        user_id: &str,
+        wallet_path: &str,
+        initial_addr: String,
+    ) -> Result<StableChain, PulserError> {
+        let sc_path = PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id));
+        if sc_path.exists() {
+            self.load(&sc_path).await
+        } else {
+            let now = Utc::now();
+            let stable_chain = StableChain {
+                user_id: user_id.parse::<u32>().map_err(|e| PulserError::WalletError(format!("Invalid user_id: {}", e)))?,
+                is_stable_receiver: false,
+                counterparty: "unknown".to_string(),
+                accumulated_btc: Bitcoin::from_sats(0),
+                stabilized_usd: USD(0.0),
+                timestamp: now.timestamp(),
+                formatted_datetime: now.to_rfc3339(),
+                sc_dir: wallet_path.to_string(),
+                raw_btc_usd: 0.0,
+                prices: HashMap::new(),
+                multisig_addr: initial_addr,
+                utxos: Vec::new(),
+                pending_sweep_txid: None,
+                events: Vec::new(),
+                total_withdrawn_usd: 0.0,
+                expected_usd: USD(0.0),
+                hedge_position_id: None,
+                pending_channel_id: None,
+                shorts: Vec::new(),
+                hedge_ready: false,
+                last_hedge_time: 0,
+                short_reduction_amount: None,
+            };
+            self.save(&sc_path, &stable_chain).await?;
+            Ok(stable_chain)
+        }
     }
 }
 

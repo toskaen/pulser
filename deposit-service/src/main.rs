@@ -10,15 +10,14 @@ use reqwest::Client;
 use common::error::PulserError;
 use common::price_feed::{fetch_btc_usd_price, PriceInfo};
 use deposit_service::wallet::DepositWallet;
-use deposit_service::types::{StableChain, UserStatus, ServiceStatus, WebhookRetry, Bitcoin};
+use deposit_service::types::{StableChain, UserStatus, ServiceStatus, WebhookRetry};
 use deposit_service::storage::StateManager;
 use deposit_service::webhook::{WebhookConfig, start_retry_task};
 use deposit_service::monitor::{MonitorConfig, start_periodic_monitor};
 use deposit_service::api;
 
 lazy_static! {
-    static ref ACTIVE_TASKS: Arc<Mutex<HashMap<String, bool>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    static ref ACTIVE_TASKS: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub fn is_user_active(user_id: &str) -> bool {
@@ -52,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_port = config.get("listening_port").and_then(|v| v.as_integer()).unwrap_or(8081) as u16;
     let data_dir = config.get("data_dir").and_then(|v| v.as_str()).unwrap_or("data_lsp").to_string();
     let sync_interval_secs = config.get("sync_interval_secs").and_then(|v| v.as_integer()).unwrap_or(3600) as u64;
-    let user_scan_interval_secs = config.get("user_scan_interval_secs").and_then(|v| v.as_integer()).unwrap_or(300) as u64;
+    let max_concurrent_users = config.get("max_concurrent_users").and_then(|v| v.as_integer()).unwrap_or(10) as usize;
 
     let esplora_urls = Arc::new(Mutex::new(vec![
         (esplora_url.clone(), 0),
@@ -64,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let retry_queue = Arc::new(Mutex::new(VecDeque::<WebhookRetry>::new()));
     let price_info = Arc::new(Mutex::new(PriceInfo { raw_btc_usd: 0.0, timestamp: 0, price_feeds: HashMap::new() }));
     let last_activity_check = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
-    let (sync_tx, mut sync_rx) = mpsc::channel::<String>(100);
+    let (sync_tx, sync_rx) = mpsc::channel::<String>(100);
     let service_status = Arc::new(Mutex::new(ServiceStatus {
         up_since: start_time,
         last_update: 0,
@@ -85,8 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     info!("Starting deposit monitor service");
-    info!("Primary API: {}", esplora_url);
-    info!("Fallback API: {}", fallback_url);
     fs::create_dir_all(&data_dir)?;
 
     // Preload existing users
@@ -100,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let status_path = path.join(format!("status_{}.json", user_id));
                 if public_path.exists() {
                     info!("Preloading user: {}", user_id);
-                    match DepositWallet::from_config("config/service_config.toml", user_id).await {
+                    match DepositWallet::from_config("config/service_config.toml", user_id, &state_manager).await {
                         Ok((wallet, deposit_info, chain)) => {
                             let mut statuses = user_statuses.lock().await.unwrap();
                             let status = if status_path.exists() {
@@ -129,42 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("Preloaded {} users", wallets.lock().await.unwrap().len());
 
-    // Spawn tasks
-    let webhook_config = WebhookConfig::from_toml(&config);
-    tokio::spawn(start_retry_task(
-        client.clone(),
-        retry_queue.clone(),
-        webhook_url.clone(),
-        webhook_config.clone(),
-    ));
-
-    let monitor_config = MonitorConfig::from_toml(&config);
-    tokio::spawn(start_periodic_monitor(
-        wallets.clone(),
-        user_statuses.clone(),
-        last_activity_check.clone(),
-        sync_tx.clone(),
-        price_info.clone(),
-        monitor_config,
-    ));
-
-    let routes = api::routes(
-        service_status.clone(),
-        wallets.clone(),
-        user_statuses.clone(),
-        price_info.clone(),
-        esplora_urls.clone(),
-        state_manager.clone(),
-        sync_tx.clone(),
-        retry_queue.clone(),
-        webhook_url.clone(),
-        webhook_config.clone(),
-        client.clone(),
-    );
-    tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], http_port)));
-
     // Signal handler
-    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -186,138 +149,203 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = ctrl_break.recv() => info!("Received Ctrl+Break, shutting down gracefully"),
             }
         }
-        let _ = shutdown_tx.send(()); // Ignore send errors; just trigger shutdown
+        let _ = shutdown_tx.send(());
     });
 
-    // Main loop: price updates, user scanning, and syncs
-    let mut last_user_scan = start_time;
-    loop {
-        if let Ok(()) = shutdown_rx.try_recv() {
-            info!("Shutdown signal received, exiting");
-            break;
-        }
-
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let price_info_data = fetch_btc_usd_price(&client).await.unwrap_or_else(|e| {
-            error!("Failed to fetch price: {}, using last known", e);
-            let mut status = service_status.lock().await.unwrap();
-            status.api_status.insert("price_feed".to_string(), false);
-            status.last_update = now;
-            status.price_cache_staleness_secs = 120;
-            PriceInfo {
-                raw_btc_usd: status.last_price,
-                timestamp: now,
-                price_feeds: HashMap::new(),
-            }
-        });
-
-        {
-            let mut status = service_status.lock().await.unwrap();
-            status.last_price = price_info_data.raw_btc_usd;
-            status.api_status.insert("price_feed".to_string(), true);
-            status.last_update = now;
-            status.price_update_count += 1;
-            status.price_cache_staleness_secs = if price_info_data.timestamp < now - 120 { 120 } else { 0 };
-            *price_info.lock().await.unwrap() = price_info_data;
-        }
-
-        // Handle forced syncs
-        let mut forced_users = Vec::new();
-        while let Ok(user_id) = sync_rx.try_recv() {
-            info!("Forced sync requested for user {}", user_id);
-            forced_users.push(user_id);
-        }
-        for user_id in forced_users {
-            if is_user_active(&user_id) {
-                warn!("Skipping forced sync for user {} - already processing", user_id);
-                continue;
-            }
-            mark_user_active(&user_id);
-            let mut status = service_status.lock().await.unwrap();
-            status.active_syncs += 1;
-            let price_info_clone = price_info.lock().await.unwrap().clone();
-            let result = api::sync_user(
-                &user_id,
-                wallets.clone(),
-                user_statuses.clone(),
-                price_info_clone,
-                esplora_urls.clone(),
-                state_manager.clone(),
-                retry_queue.clone(),
-                &webhook_url,
-                &webhook_config,
-                client.clone(),
-            ).await;
-            match result {
-                Ok(_) => status.active_syncs = status.active_syncs.saturating_sub(1),
-                Err(e) => {
-                    status.active_syncs = status.active_syncs.saturating_sub(1);
-                    warn!("Forced sync failed for user {}: {}", user_id, e);
-                }
-            }
-            mark_user_inactive(&user_id);
-        }
-
-        // Periodic user scan
-        if now - last_user_scan >= user_scan_interval_secs {
-            info!("Scanning for new users...");
-            for entry in fs::read_dir(&data_dir)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    let dir_name = path.file_name().unwrap().to_str().unwrap();
-                    if let Some(user_id) = dir_name.strip_prefix("user_") {
-                        let public_path = path.join(format!("user_{}_public.json", user_id));
-                        if public_path.exists() && !wallets.lock().await.unwrap().contains_key(user_id) {
-                            info!("Found new user: {}", user_id);
-                            match DepositWallet::from_config("config/service_config.toml", user_id).await {
-                                Ok((wallet, deposit_info, chain)) => {
-                                    let mut statuses = user_statuses.lock().await.unwrap();
-                                    let status = if path.join(format!("status_{}.json", user_id)).exists() {
-                                        state_manager.load::<UserStatus>(&PathBuf::from(format!("user_{}/status_{}.json", user_id, user_id))).await?
-                                    } else {
-                                        let mut s = UserStatus::new(user_id);
-                                        s.current_deposit_address = deposit_info.address.clone();
-                                        s
-                                    };
-                                    statuses.insert(user_id.to_string(), status);
-                                    wallets.lock().await.unwrap().insert(user_id.to_string(), (wallet, chain));
-                                    sync_tx.send(user_id.to_string()).await?;
-                                }
-                                Err(e) => warn!("Failed to init wallet for user {}: {}", user_id, e),
+    // PriceUpdater task
+    let price_handle = tokio::spawn({
+        let price_info = price_info.clone();
+        let service_status = service_status.clone();
+        let client = client.clone();
+        let mut shutdown_rx = shutdown_rx.clone();
+        async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        info!("PriceUpdater shutting down");
+                        break;
+                    }
+                    _ = sleep(Duration::from_secs(60)) => {
+                        match fetch_btc_usd_price(&client).await {
+                            Ok(new_price) => {
+                                let mut price = price_info.lock().await.unwrap();
+                                *price = new_price;
+                                let mut status = service_status.lock().await.unwrap();
+                                status.last_price = price.raw_btc_usd;
+                                status.price_update_count += 1;
+                                status.price_cache_staleness_secs = 0;
+                                debug!("Price updated: ${}", price.raw_btc_usd);
+                            }
+                            Err(e) => {
+                                warn!("Price update failed: {}", e);
+                                let mut status = service_status.lock().await.unwrap();
+                                status.price_cache_staleness_secs += 60;
                             }
                         }
                     }
                 }
             }
-            let mut status = service_status.lock().await.unwrap();
-            status.users_monitored = wallets.lock().await.unwrap().len() as u32;
-            status.last_update = now;
-            last_user_scan = now;
-            info!("User scan complete. Monitoring {} users.", status.users_monitored);
+            Ok::<(), PulserError>(())
         }
+    });
 
-        // Update totals
-        {
-            let wallets_lock = wallets.lock().await.unwrap();
-            let mut total_utxos = 0;
-            let mut total_value_btc = 0.0;
-            let mut total_value_usd = 0.0;
-            for (_, (_, chain)) in wallets_lock.iter() {
-                total_utxos += chain.utxos.len() as u32;
-                total_value_btc += chain.accumulated_btc.to_btc();
-                total_value_usd += chain.utxos.iter().map(|u| u.usd_value.as_ref().unwrap_or(&USD(0.0)).0).sum::<f64>();
+    // Spawn other tasks
+    let webhook_config = WebhookConfig::from_toml(&config);
+    let retry_handle = tokio::spawn(start_retry_task(
+        client.clone(),
+        retry_queue.clone(),
+        webhook_url.clone(),
+        webhook_config.clone(),
+        shutdown_rx.clone(),
+    ));
+
+    let monitor_config = MonitorConfig::from_toml(&config);
+    let monitor_handle = tokio::spawn(start_periodic_monitor(
+        wallets.clone(),
+        user_statuses.clone(),
+        last_activity_check.clone(),
+        sync_tx.clone(),
+        price_info.clone(),
+        monitor_config,
+        shutdown_rx.clone(),
+    ));
+
+    let routes = api::routes(
+        service_status.clone(),
+        wallets.clone(),
+        user_statuses.clone(),
+        price_info.clone(),
+        esplora_urls.clone(),
+        state_manager.clone(),
+        sync_tx.clone(),
+        retry_queue.clone(),
+        webhook_url.clone(),
+        webhook_config.clone(),
+        client.clone(),
+    );
+    let server_handle = tokio::spawn(warp::serve(routes).run(([0, 0, 0, 0], http_port)));
+
+    // SyncProcessor task with batch syncs
+    let sync_handle = tokio::spawn({
+        let wallets = wallets.clone();
+        let user_statuses = user_statuses.clone();
+        let price_info = price_info.clone();
+        let esplora_urls = esplora_urls.clone();
+        let state_manager = state_manager.clone();
+        let retry_queue = retry_queue.clone();
+        let webhook_url = webhook_url.clone();
+        let webhook_config = webhook_config.clone();
+        let client = client.clone();
+        let mut sync_rx = sync_rx;
+        let mut shutdown_rx = shutdown_rx.clone();
+        let service_status = service_status.clone();
+
+        async move {
+            let mut pending_users = Vec::new();
+            loop {
+                tokio::select! {
+                    Some(user_id) = sync_rx.recv() => {
+                        pending_users.push(user_id);
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("SyncProcessor shutting down");
+                        break;
+                    }
+                    _ = sleep(Duration::from_secs(5)), if !pending_users.is_empty() => {
+                        info!("Processing batch sync for {} users", pending_users.len());
+                        for chunk in pending_users.chunks(max_concurrent_users) {
+                            let mut api_calls = 0;
+                            let mut errors = 0;
+                            for user_id in chunk {
+                                if is_user_active(user_id) {
+                                    warn!("Skipping sync for user {} - already processing", user_id);
+                                    continue;
+                                }
+                                mark_user_active(user_id);
+                                {
+                                    let mut status = service_status.lock().await.unwrap();
+                                    status.active_syncs += 1;
+                                    api_calls += 1;
+                                }
+                                let price_info_clone = price_info.lock().await.unwrap().clone();
+                                let result = api::sync_user(
+                                    user_id,
+                                    wallets.clone(),
+                                    user_statuses.clone(),
+                                    price_info_clone,
+                                    esplora_urls.clone(),
+                                    state_manager.clone(),
+                                    retry_queue.clone(),
+                                    &webhook_url,
+                                    &webhook_config,
+                                    client.clone(),
+                                ).await;
+                                {
+                                    let mut status = service_status.lock().await.unwrap();
+                                    status.active_syncs = status.active_syncs.saturating_sub(1);
+                                    if result.is_err() {
+                                        errors += 1;
+                                    }
+                                    status.api_calls += api_calls;
+                                    status.error_rate = if api_calls > 0 { errors as f64 / api_calls as f64 } else { 0.0 };
+                                }
+                                mark_user_inactive(user_id);
+                            }
+                            // Throttle to avoid Esplora rate limits (e.g., 10 req/s)
+                            sleep(Duration::from_millis(1000)).await;
+                        }
+                        pending_users.clear();
+                    }
+                }
             }
-            let mut status = service_status.lock().await.unwrap();
-            status.total_utxos = total_utxos;
-            status.total_value_btc = total_value_btc;
-            status.total_value_usd = total_value_usd;
-            status.health = "healthy".to_string();
+            Ok::<(), PulserError>(())
         }
+    });
 
-        debug!("Completed cycle, sleeping for {} seconds", sync_interval_secs);
-        tokio::time::sleep(Duration::from_secs(sync_interval_secs)).await;
+    // Main loop (totals update only)
+    let mut shutdown_rx = shutdown_rx.clone();
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("Main loop shutting down");
+                break;
+            }
+            _ = sleep(Duration::from_secs(sync_interval_secs)) => {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                let wallets_lock = wallets.lock().await.unwrap();
+                let mut total_utxos = 0;
+                let mut total_value_btc = 0.0;
+                let mut total_value_usd = 0.0;
+                for (_, (_, chain)) in wallets_lock.iter() {
+                    total_utxos += chain.utxos.len() as u32;
+                    total_value_btc += chain.accumulated_btc.to_btc();
+                    total_value_usd += chain.stabilized_usd.0;
+                }
+                let mut status = service_status.lock().await.unwrap();
+                status.total_utxos = total_utxos;
+                status.total_value_btc = total_value_btc;
+                status.total_value_usd = total_value_usd;
+                status.health = "healthy".to_string();
+                status.last_update = now;
+                debug!("Updated totals: {} utxos, {} BTC, ${}", total_utxos, total_value_btc, total_value_usd);
+            }
+        }
     }
 
-    info!("Service shutting down");
+    // Shutdown cleanup
+    info!("Initiating shutdown cleanup");
+    let wallets_lock = wallets.lock().await.unwrap();
+    for (user_id, (_, chain)) in wallets_lock.iter() {
+        if let Err(e) = state_manager.save_stable_chain(user_id, chain).await {
+            error!("Failed to save StableChain for user {}: {}", user_id, e);
+        }
+    }
+    if let Err(e) = state_manager.save(&PathBuf::from("service_status.json"), &*service_status.lock().await.unwrap()).await {
+        error!("Failed to save service status: {}", e);
+    }
+
+    // Await task completion
+    let _ = tokio::join!(price_handle, retry_handle, monitor_handle, server_handle, sync_handle);
+    info!("Service shutdown complete");
     Ok(())
 }

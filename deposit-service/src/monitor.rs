@@ -1,13 +1,15 @@
 // deposit-service/src/monitor.rs
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use log::{info, warn};
 use bdk_wallet::bitcoin::{Address, Network};
+use common::error::PulserError;
+use common::price_feed::PriceInfo;
 use deposit_service::wallet::DepositWallet;
 use deposit_service::types::{StableChain, UserStatus};
-use common::price_feed::PriceInfo;
 use tokio::time::sleep;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub struct MonitorConfig {
@@ -33,51 +35,61 @@ pub async fn start_periodic_monitor(
     sync_tx: mpsc::Sender<String>,
     price_info: Arc<Mutex<PriceInfo>>,
     config: MonitorConfig,
-) {
+    mut shutdown_rx: broadcast::Receiver<()>,
+) -> Result<(), PulserError> {
+    info!("Starting periodic monitor task");
     loop {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let price_info_data = price_info.lock().await.unwrap().clone();
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("Monitor task shutting down");
+                break;
+            }
+            _ = sleep(Duration::from_secs(config.check_interval_secs)) => {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let price_info_data = price_info.lock().await.unwrap().clone();
 
-        {
-            let wallets_lock = wallets.lock().await.unwrap();
-            let mut statuses_lock = user_statuses.lock().await.unwrap();
-            let mut last_check_lock = last_activity_check.lock().await.unwrap();
+                {
+                    let wallets_lock = wallets.lock().await.unwrap();
+                    let mut statuses_lock = user_statuses.lock().await.unwrap();
+                    let mut last_check_lock = last_activity_check.lock().await.unwrap();
 
-            for (user_id, (wallet, chain)) in wallets_lock.iter() {
-                let status = match statuses_lock.get_mut(user_id) {
-                    Some(status) => status,
-                    None => continue, // Skip if status missing (shouldn’t happen)
-                };
+                    for (user_id, (wallet, chain)) in wallets_lock.iter() {
+                        let status = match statuses_lock.get_mut(user_id) {
+                            Some(status) => status,
+                            None => continue, // Skip if status missing (shouldn’t happen)
+                        };
 
-                let last_deposit = status.last_deposit_time.unwrap_or(0);
-                let last_check = *last_check_lock.get(user_id).unwrap_or(&0);
+                        let last_deposit = status.last_deposit_time.unwrap_or(0);
+                        let last_check = *last_check_lock.get(user_id).unwrap_or(&0);
 
-                // Check if within deposit window and hasn’t been checked recently
-                if now - last_deposit < config.deposit_window_hours * 3600 && now - last_check >= config.min_check_interval_secs {
-                    match Address::from_str(&status.current_deposit_address) {
-                        Ok(addr) => match addr.require_network(Network::Testnet) {
-                            Ok(addr) => {
-                                match wallet.check_address(&addr, &price_info_data).await {
-                                    Ok(utxos) => {
-                                        if utxos.iter().any(|u| !chain.utxos.iter().any(|c| c.txid == u.txid && c.vout == u.vout)) {
-                                            info!("Pending deposit detected for user {}: {} new UTXOs", user_id, utxos.len());
-                                            if let Err(e) = sync_tx.send(user_id.clone()).await {
-                                                warn!("Failed to send sync trigger for user {}: {}", user_id, e);
+                        // Check if within deposit window and hasn’t been checked recently
+                        if now - last_deposit < config.deposit_window_hours * 3600 && now - last_check >= config.min_check_interval_secs {
+                            match Address::from_str(&status.current_deposit_address) {
+                                Ok(addr) => match addr.require_network(Network::Testnet) {
+                                    Ok(addr) => {
+                                        match wallet.check_address(&addr, &price_info_data).await {
+                                            Ok(utxos) => {
+                                                if utxos.iter().any(|u| !chain.utxos.iter().any(|c| c.txid == u.txid && c.vout == u.vout)) {
+                                                    info!("Pending deposit detected for user {}: {} new UTXOs", user_id, utxos.len());
+                                                    if let Err(e) = sync_tx.send(user_id.clone()).await {
+                                                        warn!("Failed to send sync trigger for user {}: {}", user_id, e);
+                                                    }
+                                                }
                                             }
+                                            Err(e) => warn!("Periodic check failed for user {}: {}", user_id, e),
                                         }
                                     }
-                                    Err(e) => warn!("Periodic check failed for user {}: {}", user_id, e),
-                                }
+                                    Err(e) => warn!("Invalid network for address {} of user {}: {}", status.current_deposit_address, user_id, e),
+                                },
+                                Err(e) => warn!("Invalid address {} for user {}: {}", status.current_deposit_address, user_id, e),
                             }
-                            Err(e) => warn!("Invalid network for address {} of user {}: {}", status.current_deposit_address, user_id, e),
-                        },
-                        Err(e) => warn!("Invalid address {} for user {}: {}", status.current_deposit_address, user_id, e),
+                            last_check_lock.insert(user_id.clone(), now);
+                        }
                     }
-                    last_check_lock.insert(user_id.clone(), now);
                 }
             }
         }
-
-        sleep(Duration::from_secs(config.check_interval_secs)).await;
     }
+    info!("Monitor task shutdown complete");
+    Ok(())
 }

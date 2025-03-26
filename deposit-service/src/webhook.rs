@@ -1,5 +1,5 @@
 // deposit-service/src/webhook.rs
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use reqwest::Client;
@@ -7,17 +7,18 @@ use log::{info, warn, error};
 use serde_json::json;
 use common::error::PulserError;
 use deposit_service::storage::UtxoInfo;
-use deposit_service::types::{HedgeNotification, StableChain};
+use deposit_service::types::{HedgeNotification, StableChain, WebhookRetry};
 use tokio::time::{sleep, timeout};
 use std::collections::VecDeque;
 
 #[derive(Clone)]
 pub struct WebhookConfig {
-    max_retries: u32,
-    timeout_secs: u64,
-    max_retry_time_secs: u64,
-    retry_max_attempts: u32,
-    base_backoff_ms: u64,
+    pub max_retries: u32,
+    pub timeout_secs: u64,
+    pub max_retry_time_secs: u64,
+    pub retry_max_attempts: u32,
+    pub base_backoff_ms: u64,
+    pub retry_interval_secs: u64,
 }
 
 impl WebhookConfig {
@@ -28,15 +29,16 @@ impl WebhookConfig {
             max_retry_time_secs: config.get("webhook_max_retry_time_secs").and_then(|v| v.as_integer()).unwrap_or(120) as u64,
             retry_max_attempts: config.get("webhook_retry_max_attempts").and_then(|v| v.as_integer()).unwrap_or(3) as u32,
             base_backoff_ms: config.get("webhook_base_backoff_ms").and_then(|v| v.as_integer()).unwrap_or(500) as u64,
+            retry_interval_secs: config.get("retry_interval_secs").and_then(|v| v.as_integer()).unwrap_or(60) as u64,
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WebhookRetry {
     pub user_id: String,
     pub utxos: Vec<UtxoInfo>,
-    pub stable_chain: StableChain, // Capture full context
+    pub stable_chain: StableChain, // Full context for retries
     pub attempts: u32,
     pub next_attempt: u64,
 }
@@ -50,13 +52,14 @@ pub async fn notify_new_utxos(
     retry_queue: Arc<Mutex<VecDeque<WebhookRetry>>>,
     config: &WebhookConfig,
 ) -> Result<(), PulserError> {
-    if new_utxos.is_empty() || webhook_url.is_empty() { return Ok(()); }
+    if new_utxos.is_empty() || webhook_url.is_empty() {
+        return Ok(());
+    }
 
     let total_stable_usd: f64 = new_utxos.iter().map(|u| u.stable_value_usd).sum();
     let total_btc: f64 = new_utxos.iter().map(|u| u.amount_sat as f64 / 100_000_000.0).sum();
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-    // Rich payload from deposit_monitor.rs, aligned with HedgeNotification
     let payload = json!({
         "event": "new_utxos",
         "user_id": user_id,
@@ -73,11 +76,15 @@ pub async fn notify_new_utxos(
     let max_duration = Duration::from_secs(config.max_retry_time_secs);
 
     for retry in 0..config.max_retries {
-        if start_time.elapsed() >= max_duration { break; }
+        if start_time.elapsed() >= max_duration {
+            break;
+        }
         if retry > 0 {
             let backoff = Duration::from_millis(config.base_backoff_ms * 2u64.pow(retry));
             sleep(backoff).await;
-            if start_time.elapsed() >= max_duration { break; }
+            if start_time.elapsed() >= max_duration {
+                break;
+            }
         }
         match timeout(Duration::from_secs(config.timeout_secs), client.post(webhook_url).json(&payload).send()).await {
             Ok(Ok(response)) if response.status().is_success() => {
@@ -96,7 +103,7 @@ pub async fn notify_new_utxos(
         utxos: new_utxos.to_vec(),
         stable_chain: stable_chain.clone(),
         attempts: 0,
-        next_attempt: timestamp + 60,
+        next_attempt: timestamp + config.retry_interval_secs,
     });
     warn!("Queued webhook retry for user {}: {} UTXOs", user_id, new_utxos.len());
     Err(PulserError::NetworkError(format!("Webhook attempts failed for user {}, queued for retry", user_id)))
@@ -137,46 +144,58 @@ pub async fn start_retry_task(
     retry_queue: Arc<Mutex<VecDeque<WebhookRetry>>>,
     webhook_url: String,
     config: WebhookConfig,
-) {
+    mut shutdown_rx: broadcast::Receiver<()>,
+) -> Result<(), PulserError> {
+    info!("Starting webhook retry task");
     loop {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let retry = {
-            let mut queue = retry_queue.lock().await.unwrap();
-            queue.pop_front()
-        };
-
-        if let Some(retry) = retry {
-            if retry.next_attempt > now {
-                let mut queue = retry_queue.lock().await.unwrap();
-                queue.push_front(retry);
-            } else if retry.attempts >= config.retry_max_attempts {
-                error!("Webhook for user {} failed after {} retries", retry.user_id, config.retry_max_attempts);
-            } else {
-                let next_retry = WebhookRetry {
-                    user_id: retry.user_id.clone(),
-                    utxos: retry.utxos.clone(),
-                    stable_chain: retry.stable_chain.clone(),
-                    attempts: retry.attempts + 1,
-                    next_attempt: now + (60 * 2u64.pow(retry.attempts)),
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!("Retry task shutting down");
+                break;
+            }
+            _ = sleep(Duration::from_secs(config.retry_interval_secs)) => {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let retry = {
+                    let mut queue = retry_queue.lock().await.unwrap();
+                    queue.pop_front()
                 };
-                match notify_new_utxos(
-                    &client,
-                    &retry.user_id,
-                    &retry.utxos,
-                    &retry.stable_chain,
-                    &webhook_url,
-                    retry_queue.clone(),
-                    &config,
-                ).await {
-                    Ok(_) => info!("Webhook retry succeeded for user {}", retry.user_id),
-                    Err(_) => {
+
+                if let Some(mut retry) = retry {
+                    if retry.next_attempt > now {
                         let mut queue = retry_queue.lock().await.unwrap();
-                        queue.push_back(next_retry);
-                        warn!("Webhook retry failed for user {}, queued again", retry.user_id);
+                        queue.push_front(retry);
+                    } else if retry.attempts >= config.retry_max_attempts {
+                        error!("Webhook for user {} failed after {} retries", retry.user_id, config.retry_max_attempts);
+                    } else {
+                        let next_retry = WebhookRetry {
+                            user_id: retry.user_id.clone(),
+                            utxos: retry.utxos.clone(),
+                            stable_chain: retry.stable_chain.clone(),
+                            attempts: retry.attempts + 1,
+                            next_attempt: now + (config.retry_interval_secs * 2u64.pow(retry.attempts)),
+                        };
+                        match notify_new_utxos(
+                            &client,
+                            &retry.user_id,
+                            &retry.utxos,
+                            &retry.stable_chain,
+                            &webhook_url,
+                            retry_queue.clone(),
+                            &config,
+                        ).await {
+                            Ok(_) => info!("Webhook retry succeeded for user {}", retry.user_id),
+                            Err(_) => {
+                                let mut queue = retry_queue.lock().await.unwrap();
+                                queue.push_back(next_retry);
+                                warn!("Webhook retry failed for user {}, queued again (attempt {}/{})",
+                                      retry.user_id, next_retry.attempts, config.retry_max_attempts);
+                            }
+                        }
                     }
                 }
             }
         }
-        sleep(Duration::from_secs(30)).await;
     }
+    info!("Retry task shutdown complete");
+    Ok(())
 }
