@@ -1,24 +1,17 @@
 // deposit-service/src/types.rs
-use common::types::{Amount, USD, Event};
+use common::types::{Amount, USD, Event, Utxo};
 use std::collections::HashMap;
 use std::fmt;
-use std::fs; // Add this
+use serde::{Serialize, Deserialize};
 
-
-
-
-/// Represents a Bitcoin amount in satoshis.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bitcoin {
     pub sats: u64,
 }
 
 impl Bitcoin {
     pub fn from_sats(sats: u64) -> Self { Self { sats } }
-    
-    pub fn to_btc(&self) -> f64 { 
-        self.sats as f64 / 100_000_000.0 
-    }
+    pub fn to_btc(&self) -> f64 { self.sats as f64 / 100_000_000.0 }
 }
 
 impl fmt::Display for Bitcoin {
@@ -27,7 +20,6 @@ impl fmt::Display for Bitcoin {
     }
 }
 
-// Implement common Amount trait for our Bitcoin type
 impl Amount for Bitcoin {
     fn to_sats(&self) -> u64 { self.sats }
     fn to_btc(&self) -> f64 { self.to_btc() }
@@ -35,25 +27,27 @@ impl Amount for Bitcoin {
     fn from_btc(btc: f64) -> Self { Self::from_sats((btc * 100_000_000.0) as u64) }
 }
 
-/// UTXO information
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Utxo {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct UtxoInfo {
     pub txid: String,
     pub vout: u32,
-    pub amount: u64,
+    pub amount_sat: u64,
+    pub address: String,
+    pub keychain: String,
+    pub timestamp: u64,
     pub confirmations: u32,
-    pub script_pubkey: String,
-    pub height: Option<u32>,
-    pub usd_value: Option<USD>, // Add this
-
+    pub participants: Vec<String>,
+    pub stable_value_usd: f64,
+    pub spendable: bool,
+    pub derivation_path: String,
+    pub spent: bool, // Added for sync_user compatibility
 }
 
-/// Represents a multisig deposit pool for a USER.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StableChain {
     pub user_id: u32,
     pub is_stable_receiver: bool,
-    pub counterparty: String, // Store as string to avoid version conflicts
+    pub counterparty: String,
     pub accumulated_btc: Bitcoin,
     pub stabilized_usd: USD,
     pub timestamp: i64,
@@ -61,7 +55,7 @@ pub struct StableChain {
     pub sc_dir: String,
     pub raw_btc_usd: f64,
     pub prices: HashMap<String, f64>,
-    pub multisig_addr: String, // Store as string to avoid version conflicts
+    pub multisig_addr: String,
     pub utxos: Vec<Utxo>,
     pub pending_sweep_txid: Option<String>,
     pub events: Vec<Event>,
@@ -69,18 +63,17 @@ pub struct StableChain {
     pub expected_usd: USD,
     pub hedge_position_id: Option<String>,
     pub pending_channel_id: Option<String>,
-     pub shorts: Vec<(f64, f64, String, String)>, // (entry_price, position_btc, order_id, user_id)
+    pub shorts: Vec<(f64, f64, String, String)>,
     pub hedge_ready: bool,
-    pub last_hedge_time: u64, // New: Tracks last hedge time
-        pub short_reduction_amount: Option<f64>, // New: Signals hedge-service
-
+    pub last_hedge_time: u64,
+    pub short_reduction_amount: Option<f64>,
 }
 
 impl StableChain {
     pub fn load_or_create(user_id: &str, address: &str, sc_dir: &str) -> Result<Self, common::error::PulserError> {
         let sc_path = format!("{}/stable_chain_{}.json", sc_dir, user_id);
         if std::path::Path::new(&sc_path).exists() {
-            return Ok(serde_json::from_str(&fs::read_to_string(&sc_path)?)?);
+            return Ok(serde_json::from_str(&std::fs::read_to_string(&sc_path)?)?);
         }
         let now = common::utils::now_timestamp();
         Ok(StableChain {
@@ -124,8 +117,7 @@ impl StableChain {
     }
 }
 
-/// Deposit address information
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DepositAddressInfo {
     pub address: String,
     pub descriptor: String,
@@ -135,8 +127,7 @@ pub struct DepositAddressInfo {
     pub trustee_pubkey: String,
 }
 
-/// Create deposit request
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateDepositRequest {
     pub user_id: u32,
     pub lsp_pubkey: Option<String>,
@@ -146,8 +137,7 @@ pub struct CreateDepositRequest {
     pub metadata: Option<HashMap<String, String>>,
 }
 
-/// Withdrawal request
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WithdrawalRequest {
     pub user_id: u32,
     pub amount_usd: f64,
@@ -157,8 +147,7 @@ pub struct WithdrawalRequest {
     pub max_fee_sats: Option<u64>,
 }
 
-/// Response for withdrawal
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WithdrawalResponse {
     pub request_id: String,
     pub txid: Option<String>,
@@ -171,8 +160,7 @@ pub struct WithdrawalResponse {
     pub confirmation_url: Option<String>,
 }
 
-/// Notification to hedge service
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HedgeNotification {
     pub user_id: u32,
     pub action: String,
@@ -183,8 +171,7 @@ pub struct HedgeNotification {
     pub transaction_id: Option<String>,
 }
 
-/// PSBT signing request
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PsbtSignRequest {
     pub user_id: u32,
     pub psbt: String,
@@ -192,8 +179,7 @@ pub struct PsbtSignRequest {
     pub manual_review: Option<bool>,
 }
 
-/// Request struct for PSBT status check
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PsbtStatusRequest {
     pub user_id: u32,
     pub txid: String,
@@ -201,12 +187,50 @@ pub struct PsbtStatusRequest {
     pub amount_usd: Option<f64>,
 }
 
-/// Channel opening request to channel service
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelOpenRequest {
     pub user_id: u32,
     pub lsp_pubkey: String,
     pub amount_sats: u64,
     pub expected_usd: f64,
     pub current_price: f64,
+}
+
+// For deposit_monitor.rs compatibility
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceStatus {
+    pub up_since: u64,
+    pub last_update: u64,
+    pub version: String,
+    pub users_monitored: u32,
+    pub total_utxos: u32,
+    pub total_value_btc: f64,
+    pub total_value_usd: f64,
+    pub health: String,
+    pub api_status: HashMap<String, bool>,
+    pub last_price: f64,
+    pub price_update_count: u32,
+    pub active_syncs: u32,
+    pub price_cache_staleness_secs: u64,
+    pub silent_failures: u32,
+    pub api_calls: u32,
+    pub error_rate: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserStatus {
+    pub user_id: String,
+    pub last_sync: u64,
+    pub sync_status: String,
+    pub utxo_count: u32,
+    pub total_value_btc: f64,
+    pub total_value_usd: f64,
+    pub confirmations_pending: bool,
+    pub last_update_message: String,
+    pub sync_duration_ms: u64,
+    pub last_error: Option<String>,
+    pub last_success: u64,
+    pub pruned_utxo_count: u32,
+    pub current_deposit_address: String,
+    pub last_deposit_time: Option<u64>,
 }
