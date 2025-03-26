@@ -1,0 +1,16 @@
+{
+  "user_id": "1",
+  "last_sync": 1742910933,
+  "sync_status": "completed",
+  "utxo_count": 0,
+  "total_value_btc": 0.0,
+  "total_value_usd": -0.0,
+  "confirmations_pending": false,
+  "last_update_message": "Sync completed",
+  "sync_duration_ms": 7399,
+  "last_error": null,
+  "last_success": 1742910933,
+  "pruned_utxo_count": 0,
+  "current_deposit_address": "tb1pfd0sk9d0vpaf9hvfv5flrqmmgjq4ddzyhws7l5j208lkvqyp5ppq2eaasu",
+  "last_deposit_time": null
+}

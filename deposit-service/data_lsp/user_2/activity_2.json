@@ -1,0 +1,36 @@
+[
+  {
+    "txid": "0f866e2349fdebadef3f6ed7824865fe6382f4977c0994380482933270355b88",
+    "amount_sat": 1120,
+    "address": "tb1pm98qgfdrzhjqdjsrhq3ndd2h2a2fvcp80tg4drkym6kr37w58p2stkl2pd",
+    "keychain": "External",
+    "timestamp": 1742910653,
+    "confirmations": 2,
+    "participants": [
+      "user",
+      "lsp",
+      "trustee"
+    ],
+    "stable_value_usd": 0.9762096399999999,
+    "spendable": true,
+    "derivation_path": "m/84'/1'/0'/0/0",
+    "vout": 1
+  },
+  {
+    "txid": "97eab1498a480bbd8499f705d0253340b9a4287e7c1d04de94612db8dfc08ff0",
+    "amount_sat": 23024,
+    "address": "tb1p9e4rk686kvmggnhrtr767nexp4gn8kh8f8qn4t45kdxlzgdmxgnspdugry",
+    "keychain": "External",
+    "timestamp": 1742870122,
+    "confirmations": 23373,
+    "participants": [
+      "user",
+      "lsp",
+      "trustee"
+    ],
+    "stable_value_usd": 20.0396532952,
+    "spendable": true,
+    "derivation_path": "m/84'/1'/0'/0/0",
+    "vout": 1
+  }
+]
