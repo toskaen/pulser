@@ -22,6 +22,12 @@ pub struct Config {
     pub lsp_pubkey: String,
     pub trustee_pubkey: String,
     pub esplora_url: String,
+    pub listening_address: String,
+    pub webhook_url: String,
+    pub fallback_esplora_url: String,
+    pub listening_port: u16,
+    pub sync_interval_secs: u64,
+    pub max_concurrent_users: usize,
 }
 
 pub struct WalletInitResult {
@@ -94,9 +100,9 @@ pub fn init_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, P
             wildcard: Wildcard::Unhardened,
         });
 
-        let unspendable_key = DescriptorPublicKey::from_str(
-            "4d54bb9928a0683b7e383de72943b214b0716f58aa54c7ba6bcea2328bc9c768",
-        )?;
+let unspendable_key = DescriptorPublicKey::from_str(
+    "0254bb9928a0683b7e383de72943b214b0716f58aa54c7ba6bcea2328bc9c768",
+)?;
 
         let external_descriptor = format!(
             "tr({},multi_a(2,{},{},{}))",

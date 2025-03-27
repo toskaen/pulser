@@ -31,7 +31,7 @@ aes-gcm = "0.10"
 # Async and HTTP/APIf
 tokio = { version = "1.36.0", features = ["full"] }
 actix-web = "4.4.1"
-reqwest = { version = "0.11.24", features = ["json"] }
+reqwest = { version = "0.11.24", features = ["json", "native-tls"] }
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 getrandom = { version = "0.2", features = ["js"] }  # Add this or update existing
@@ -40,6 +40,9 @@ js-sys = "0.3"
 structopt = "0.3"
 warp = "0.3" 
 lazy_static = "1.4"
+futures = "0.3"
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+futures-util = "0.3"  # Add this if missing
 
 
 

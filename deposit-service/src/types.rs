@@ -3,6 +3,7 @@ use common::types::{Amount, USD, Event, Utxo};
 use std::collections::HashMap;
 use std::fmt;
 use serde::{Serialize, Deserialize};
+use std::str::FromStr;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bitcoin {
@@ -20,12 +21,24 @@ impl fmt::Display for Bitcoin {
     }
 }
 
+
+
+
 impl Amount for Bitcoin {
     fn to_sats(&self) -> u64 { self.sats }
     fn to_btc(&self) -> f64 { self.to_btc() }
     fn from_sats(sats: u64) -> Self { Self::from_sats(sats) }
     fn from_btc(btc: f64) -> Self { Self::from_sats((btc * 100_000_000.0) as u64) }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WebhookRetry {
+    pub user_id: String,
+    pub utxos: Vec<UtxoInfo>,
+    pub attempts: u32,
+    pub next_attempt: u64,
+}
+
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct UtxoInfo {
@@ -67,6 +80,8 @@ pub struct StableChain {
     pub hedge_ready: bool,
     pub last_hedge_time: u64,
     pub short_reduction_amount: Option<f64>,
+    pub old_addresses: Vec<String>,
+    pub history: Vec<UtxoInfo>, // Add this
 }
 
 impl StableChain {
@@ -99,6 +114,9 @@ impl StableChain {
             hedge_ready: false,
             last_hedge_time: 0,
             short_reduction_amount: None,
+            old_addresses: Vec::new(),
+            history: Vec::new(), // Fix: Add this
+
         })
     }
 

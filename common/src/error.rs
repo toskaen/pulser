@@ -10,6 +10,15 @@ use bdk_file_store::FileError;
 use bdk_wallet::ChangeSet;
 use bdk_wallet::CreateWithPersistError;
 use std::io;
+use std::time::SystemTimeError;
+use bdk_wallet::error::CreateTxError;
+use bitcoin::network::ParseNetworkError;
+use bitcoin::address::ParseError; // Keep only if used
+use bitcoin::address::FromScriptError; // Keep only if used
+use bitcoin::hashes::hex::HexToBytesError; // Keep only if used
+use warp;
+
+impl warp::reject::Reject for PulserError {}
 
 #[derive(Error, Debug)]
 pub enum PulserError {
@@ -47,6 +56,10 @@ pub enum PulserError {
     ChannelError(String),
     #[error("Taproot error: {0}")]
     TaprootError(String),
+    #[error("Invalid input error: {0}")]
+    InvalidInput(String),
+    #[error("Bitcoin error: {0}")]
+    BitcoinError(String),
 }
 
 impl ResponseError for PulserError {
@@ -69,50 +82,39 @@ impl ResponseError for PulserError {
             PulserError::BroadcastError(_) => StatusCode::BAD_GATEWAY,
             PulserError::ChannelError(_) => StatusCode::BAD_REQUEST,
             PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
+            PulserError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            PulserError::BitcoinError(_) => StatusCode::BAD_REQUEST,
         }
     }
 }
 
+// Keep all From impls—remove unused ones only if confirmed
 impl From<io::Error> for PulserError {
-    fn from(err: io::Error) -> Self {
-        PulserError::StorageError(err.to_string())
-    }
+    fn from(err: io::Error) -> Self { PulserError::StorageError(err.to_string()) }
 }
 
 impl From<toml::de::Error> for PulserError {
-    fn from(err: toml::de::Error) -> Self {
-        PulserError::ConfigError(err.to_string())
-    }
+    fn from(err: toml::de::Error) -> Self { PulserError::ConfigError(err.to_string()) }
 }
 
 impl From<EsploraError> for PulserError {
-    fn from(err: EsploraError) -> Self {
-        PulserError::ApiError(err.to_string())
-    }
+    fn from(err: EsploraError) -> Self { PulserError::ApiError(err.to_string()) }
 }
 
 impl From<Box<EsploraError>> for PulserError {
-    fn from(err: Box<EsploraError>) -> Self {
-        PulserError::ApiError(err.to_string())
-    }
+    fn from(err: Box<EsploraError>) -> Self { PulserError::ApiError(err.to_string()) }
 }
 
 impl From<CannotConnectError> for PulserError {
-    fn from(err: CannotConnectError) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: CannotConnectError) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<bitcoin::consensus::encode::FromHexError> for PulserError {
-    fn from(err: bitcoin::consensus::encode::FromHexError) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: bitcoin::consensus::encode::FromHexError) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<BdkKeyError> for PulserError {
-    fn from(err: BdkKeyError) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: BdkKeyError) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<Option<Bip39Error>> for PulserError {
@@ -125,43 +127,77 @@ impl From<Option<Bip39Error>> for PulserError {
 }
 
 impl From<Bip39Error> for PulserError {
-    fn from(err: Bip39Error) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: Bip39Error) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<DescriptorKeyParseError> for PulserError {
-    fn from(err: DescriptorKeyParseError) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: DescriptorKeyParseError) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<FileError> for PulserError {
-    fn from(err: FileError) -> Self {
-        PulserError::StorageError(err.to_string())
-    }
+    fn from(err: FileError) -> Self { PulserError::StorageError(err.to_string()) }
 }
 
 impl From<CreateWithPersistError<ChangeSet>> for PulserError {
-    fn from(err: CreateWithPersistError<ChangeSet>) -> Self {
-        PulserError::WalletError(format!("CreateWithPersistError: {:?}", err))
-    }
+    fn from(err: CreateWithPersistError<ChangeSet>) -> Self { PulserError::WalletError(format!("CreateWithPersistError: {:?}", err)) }
 }
 
 impl From<DescriptorError> for PulserError {
-    fn from(err: DescriptorError) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: DescriptorError) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<bitcoin::bip32::Error> for PulserError {
-    fn from(err: bitcoin::bip32::Error) -> Self {
-        PulserError::WalletError(err.to_string())
-    }
+    fn from(err: bitcoin::bip32::Error) -> Self { PulserError::WalletError(err.to_string()) }
 }
 
 impl From<serde_json::Error> for PulserError {
-    fn from(err: serde_json::Error) -> Self {
-        PulserError::StorageError(err.to_string())
+    fn from(err: serde_json::Error) -> Self { PulserError::StorageError(err.to_string()) }
+}
+
+impl From<std::num::ParseIntError> for PulserError {
+    fn from(err: std::num::ParseIntError) -> Self { PulserError::InvalidRequest(err.to_string()) }
+}
+
+impl From<reqwest::Error> for PulserError {
+    fn from(err: reqwest::Error) -> Self { PulserError::ApiError(err.to_string()) }
+}
+
+impl From<SystemTimeError> for PulserError {
+    fn from(err: SystemTimeError) -> Self { PulserError::NetworkError(err.to_string()) }
+}
+
+impl From<CreateTxError> for PulserError {
+    fn from(err: CreateTxError) -> Self { PulserError::TransactionError(err.to_string()) }
+}
+
+impl From<ParseNetworkError> for PulserError {
+    fn from(err: ParseNetworkError) -> Self { PulserError::ConfigError(err.to_string()) }
+}
+
+impl From<bitcoin::address::FromScriptError> for PulserError {
+    fn from(err: bitcoin::address::FromScriptError) -> Self { PulserError::BitcoinError(err.to_string()) }
+}
+
+impl From<bitcoin::hashes::hex::HexToBytesError> for PulserError {
+    fn from(err: bitcoin::hashes::hex::HexToBytesError) -> Self { PulserError::BitcoinError(err.to_string()) }
+}
+
+impl From<bitcoin::address::ParseError> for PulserError {
+    fn from(err: bitcoin::address::ParseError) -> Self { PulserError::BitcoinError(err.to_string()) }
+}
+
+impl From<bitcoin::hashes::hex::HexToArrayError> for PulserError {
+    fn from(err: bitcoin::hashes::hex::HexToArrayError) -> Self { PulserError::WalletError(err.to_string()) }
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for PulserError {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        PulserError::NetworkError(err.to_string())
+    }
+}
+
+impl From<tokio::sync::mpsc::error::SendError<String>> for PulserError {
+    fn from(err: tokio::sync::mpsc::error::SendError<String>) -> Self {
+        PulserError::ChannelError(err.to_string())
     }
 }

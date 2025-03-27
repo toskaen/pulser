@@ -1,7 +1,9 @@
 // common/src/types.rs
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt;
+use std::collections::HashMap;
+
+
 
 /// Generic amount trait - implemented by each service for its own Bitcoin type
 pub trait Amount {
@@ -12,7 +14,7 @@ pub trait Amount {
 }
 
 /// Represents a USD amount.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct USD(pub f64);
 
 impl USD {
@@ -40,11 +42,10 @@ pub struct Event {
 }
 
 /// Price information - shared across all services
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceInfo {
     pub raw_btc_usd: f64,
-    pub synthetic_price: Option<f64>,
-    pub timestamp: i64, 
+    pub timestamp: i64,
     pub price_feeds: HashMap<String, f64>,
 }
 
@@ -56,6 +57,7 @@ pub struct DepositAddressInfo {
     pub multisig_type: String, // "2-of-3" etc.
     pub participants: Vec<String>, // pubkeys as hex strings
     pub descriptor: Option<String>, // Optional descriptor for wallet creation
+    pub path: String,
 }
 
 /// StableChannel information - serializable contract between services
@@ -94,4 +96,15 @@ pub enum CloudBackupStatus {
     NotBackedUp,
     BackedUp,
     Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Utxo {
+    pub txid: String,
+    pub vout: u32,
+    pub amount: u64,
+    pub confirmations: u32,
+    pub script_pubkey: String,
+    pub height: Option<u32>,
+    pub usd_value: Option<USD>, // Static USD at deposit
 }

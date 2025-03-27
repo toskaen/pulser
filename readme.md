@@ -1,4 +1,4 @@
-# Pulser: Bitcoin/Lightning Native USD Stabilization
+Pulser: Bitcoin/Lightning Native USD Stabilization
 
 Pulser is a financial infrastructure platform that provides Bitcoin-backed USD stabilization for underserved communities. The project consists of three main services:
 
@@ -8,32 +8,46 @@ Pulser is a financial infrastructure platform that provides Bitcoin-backed USD s
 
 ## Architecture
 
-The platform is split into three separate crates to manage dependency conflicts and modularize the codebase:
-
-```
+The platform is split into separate crates to manage dependency conflicts and modularize the codebase:
 pulser/
 ├── common/             # Shared types, utilities, error handling
 ├── deposit-service/    # Handles multisig wallets and onchain deposits
+│   ├── src/
+│   │   ├── api.rs      # HTTP API endpoints
+│   │   ├── config.rs   # Configuration handling
+│   │   ├── keys.rs     # Key management
+│   │   ├── main.rs     # User-facing API
+│   │   ├── monitor.rs  # Deposit monitoring
+│   │   ├── storage.rs  # File I/O operations
+│   │   ├── types.rs    # Data structures
+│   │   ├── wallet.rs   # Wallet functionality
+│   │   └── webhook.rs  # Notification system
+│   └── bin/
+│       └── deposit_monitor.rs  # Background monitoring service
 ├── channel-service/    # Manages Lightning Network channels
 └── hedging-service/    # Manages price stabilization via futures
-```
-
+Copy
 ## Deposit Service
 
-The deposit service is the first entry point for users. It:
+The deposit service handles user onboarding, wallet creation, and deposit monitoring:
 
-1. Creates secure multisig 2-of-3 taproot addresses (User, LSP, Trustee)
-2. Monitors deposits and tracks confirmations
-3. Manages UTXOs and prepares them for channel opening
-4. Securely stores wallet information
+### Key Components
 
-### Key Features
+- **wallet.rs**: Manages wallet creation, address generation, and UTXO tracking
+- **keys.rs**: Handles cryptographic key management for Taproot multisig
+- **api.rs**: Provides HTTP endpoints for deposit status, syncing, and registration
+- **monitor.rs**: Periodically checks for new UTXOs on deposit addresses
+- **storage.rs**: Handles persistent state management for activity and status
+- **webhook.rs**: Sends notifications when new deposits are detected
+- **main.rs**: User-facing API service
+- **deposit_monitor.rs**: Background monitoring service
 
-- **BDK Wallet Integration (v1.1.0)**: Uses the latest BDK Wallet API for wallet management
-- **Secure Key Storage**: Encrypts private keys and descriptors at rest
-- **Taproot Multisig**: Implements modern 2-of-3 multisig using taproot technology
-- **Price Tracking**: Monitors BTC/USD price feeds for stabilization
-- **API-First Design**: RESTful API for easy integration with frontends
+### Services
+
+The deposit service operates two separate but complementary services:
+
+1. **User API (main.rs)**: Provides user-facing endpoints for deposit creation and status checking
+2. **Deposit Monitor (deposit_monitor.rs)**: Background service that watches for deposits and sends notifications
 
 ## Getting Started
 
@@ -46,31 +60,27 @@ The deposit service is the first entry point for users. It:
 ### Installation
 
 1. Clone the repository:
-   ```
-   git clone https://github.com/toskaen/pulser.git
-   cd pulser
-   ```
-
+git clone https://github.com/username/pulser.git
+cd pulser
+Copy
 2. Build the deposit service (testnet only for now):
-   ```
-   cd deposit-service
-   cargo build --features="user"
-   ```
-
+cd deposit-service
+cargo build --features="user"
+Copy
 3. Generate keys for LSP and Trustee:
-   ```
-   cd ../tools/key-generator
-   cargo run
-   ```
-
+cd ../tools/key-generator
+cargo run
+Copy
 4. Update `deposit-service/service_config.toml` with your desired settings and the generated keys.
 
-5. Run the deposit service:
-   ```
-   cd ../deposit-service
-   cargo run --features="user" -- --testnet
-   ```
-
+5. Run the deposit service API:
+cd ../deposit-service
+cargo run --features="user" -- --testnet
+Copy
+6. Run the deposit monitor service:
+cd ../deposit-service
+cargo run --bin deposit_monitor
+Copy
 ## Workflow
 
 1. **Deposit**: User sends BTC to a 2-of-3 multisig address
@@ -99,6 +109,17 @@ All keys and descriptors are securely stored and encrypted at rest.
 - `POST /withdraw` - Request a withdrawal
 - `GET /status` - Check service status
 
+### Deposit Monitor Endpoints
+
+- `GET /health` - Service health check
+- `GET /status` - Detailed service status
+- `GET /user/{user_id}` - Get user-specific status
+- `GET /activity/{user_id}` - Get UTXO activity for a user
+- `POST /sync/{user_id}` - Trigger synchronization for a user
+- `POST /force_sync/{user_id}` - Force synchronization via message channel
+- `POST /register` - Register a new user
+- `GET /sync_utxos/{user_id}` - Quick UTXO check for a specific user
+
 ## Development
 
 ### Running in Different Modes
@@ -110,11 +131,5 @@ The deposit service can run in three different modes:
 3. **Trustee Mode**: `cargo run --features="trustee"`
 
 ### Testing
-
-```
 cargo test
-```
 
-## License
-
-MIT and Apache 2.0 dual license.

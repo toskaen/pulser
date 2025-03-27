@@ -1,0 +1,1777 @@
+[
+  {
+    "timestamp": 1743115730,
+    "btc_usd": 87324.52249999999,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743115730,
+    "btc_usd": 87335.69,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743115730,
+    "btc_usd": 87326.045,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743115730,
+    "btc_usd": 87323.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743115730,
+    "btc_usd": 87321.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743115426,
+    "btc_usd": 87357.355,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743115426,
+    "btc_usd": 87325.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743115426,
+    "btc_usd": 87364.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743115426,
+    "btc_usd": 87360.67749999999,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743115426,
+    "btc_usd": 87372.16,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743115298,
+    "btc_usd": 87319.6175,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743115298,
+    "btc_usd": 87309.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743115298,
+    "btc_usd": 87309.995,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743115298,
+    "btc_usd": 87329.24,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743115298,
+    "btc_usd": 87347.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743112812,
+    "btc_usd": 87562.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743112812,
+    "btc_usd": 87553.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743112812,
+    "btc_usd": 87555.8475,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743112812,
+    "btc_usd": 87492.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743112812,
+    "btc_usd": 87558.695,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743112684,
+    "btc_usd": 87511.845,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743112684,
+    "btc_usd": 87519.83,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743112684,
+    "btc_usd": 87508.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743112684,
+    "btc_usd": 87515.8375,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743112684,
+    "btc_usd": 87601.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743112554,
+    "btc_usd": 87598.575,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743112554,
+    "btc_usd": 87591.64,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743112554,
+    "btc_usd": 87590.32,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743112554,
+    "btc_usd": 87589.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743112554,
+    "btc_usd": 87589.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743111697,
+    "btc_usd": 87545.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743111697,
+    "btc_usd": 87628.66,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743111697,
+    "btc_usd": 87611.745,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743111697,
+    "btc_usd": 87609.8725,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743111697,
+    "btc_usd": 87608.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743111408,
+    "btc_usd": 87570.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743111408,
+    "btc_usd": 87752.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743111408,
+    "btc_usd": 87563.4875,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743111408,
+    "btc_usd": 87556.975,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743111408,
+    "btc_usd": 87551.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743107620,
+    "btc_usd": 87250.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743107620,
+    "btc_usd": 87266.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743107620,
+    "btc_usd": 87265.685,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743107620,
+    "btc_usd": 87271.24,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743107620,
+    "btc_usd": 87265.8425,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743107491,
+    "btc_usd": 87248.295,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743107491,
+    "btc_usd": 87210.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743107491,
+    "btc_usd": 87251.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743107491,
+    "btc_usd": 87263.53,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743107491,
+    "btc_usd": 87249.64749999999,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743104564,
+    "btc_usd": 87321.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743104564,
+    "btc_usd": 87316.665,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743104564,
+    "btc_usd": 87292.46,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743104564,
+    "btc_usd": 87304.5625,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743104564,
+    "btc_usd": 87283.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743104436,
+    "btc_usd": 87294.925,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743104436,
+    "btc_usd": 87330.79,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743104436,
+    "btc_usd": 87332.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743104436,
+    "btc_usd": 87319.39499999999,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743104436,
+    "btc_usd": 87308.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743103025,
+    "btc_usd": 87297.78,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743103025,
+    "btc_usd": 87283.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743103025,
+    "btc_usd": 87383.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743103025,
+    "btc_usd": 87290.39,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743103025,
+    "btc_usd": 87275.255,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743102896,
+    "btc_usd": 87350.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743102896,
+    "btc_usd": 87341.435,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743102896,
+    "btc_usd": 87340.2175,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743102896,
+    "btc_usd": 87294.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743102896,
+    "btc_usd": 87339.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743102767,
+    "btc_usd": 87224.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743102767,
+    "btc_usd": 87237.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743102767,
+    "btc_usd": 87251.76,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743102767,
+    "btc_usd": 87252.295,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743102767,
+    "btc_usd": 87244.38,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743102639,
+    "btc_usd": 87200.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743102639,
+    "btc_usd": 87202.60250000001,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743102639,
+    "btc_usd": 87203.205,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743102639,
+    "btc_usd": 87210.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743102639,
+    "btc_usd": 87202.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743101948,
+    "btc_usd": 87210.06,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743101948,
+    "btc_usd": 87213.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743101948,
+    "btc_usd": 87233.965,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743101948,
+    "btc_usd": 87223.4825,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743101948,
+    "btc_usd": 87289.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743079694,
+    "btc_usd": 86896.5,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743079694,
+    "btc_usd": 86911.365,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743079694,
+    "btc_usd": 86891.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743079694,
+    "btc_usd": 86889.94,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743079694,
+    "btc_usd": 86902.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743079571,
+    "btc_usd": 86932.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743079571,
+    "btc_usd": 86908.35,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743079571,
+    "btc_usd": 86988.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743079571,
+    "btc_usd": 86934.58,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743079571,
+    "btc_usd": 86933.29000000001,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743079449,
+    "btc_usd": 86904.35,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743079449,
+    "btc_usd": 86928.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743079449,
+    "btc_usd": 87047.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743079449,
+    "btc_usd": 86935.785,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743079449,
+    "btc_usd": 86931.8925,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743079326,
+    "btc_usd": 86959.45,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743079326,
+    "btc_usd": 86961.685,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743079326,
+    "btc_usd": 87056.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743079326,
+    "btc_usd": 86969.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743079326,
+    "btc_usd": 86965.3425,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743078472,
+    "btc_usd": 86969.8625,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743078472,
+    "btc_usd": 86963.49,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743078472,
+    "btc_usd": 86996.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743078472,
+    "btc_usd": 86968.725,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743078472,
+    "btc_usd": 86971.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743078350,
+    "btc_usd": 87032.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743078350,
+    "btc_usd": 87019.4275,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743078350,
+    "btc_usd": 87015.6,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743078350,
+    "btc_usd": 86960.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743078350,
+    "btc_usd": 87023.255,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743078227,
+    "btc_usd": 86967.8075,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743078227,
+    "btc_usd": 86967.615,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743078227,
+    "btc_usd": 86956.04,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743078227,
+    "btc_usd": 86980.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743078227,
+    "btc_usd": 86968.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743078105,
+    "btc_usd": 86958.05,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743078105,
+    "btc_usd": 86995.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743078105,
+    "btc_usd": 86949.04,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743078105,
+    "btc_usd": 86960.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743078105,
+    "btc_usd": 86959.025,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743077982,
+    "btc_usd": 87002.995,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743077982,
+    "btc_usd": 86960.82,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743077982,
+    "btc_usd": 87012.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743077982,
+    "btc_usd": 87058.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743077982,
+    "btc_usd": 87007.4975,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743077860,
+    "btc_usd": 87036.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743077860,
+    "btc_usd": 87043.3,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743077860,
+    "btc_usd": 87052.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743077860,
+    "btc_usd": 87056.935,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743077860,
+    "btc_usd": 87047.65,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743077737,
+    "btc_usd": 87009.42,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743077737,
+    "btc_usd": 87015.0925,
+    "source": "Median"
+  },
+  {
+    "timestamp": 1743077737,
+    "btc_usd": 87016.185,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743077737,
+    "btc_usd": 87014.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743077737,
+    "btc_usd": 87019.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030733,
+    "btc_usd": 86766.235,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030733,
+    "btc_usd": 86780.75,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030733,
+    "btc_usd": 86760.47,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030733,
+    "btc_usd": 86772.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030733,
+    "btc_usd": 86679.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030610,
+    "btc_usd": 86704.995,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030610,
+    "btc_usd": 86707.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030610,
+    "btc_usd": 86672.94,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030610,
+    "btc_usd": 86701.9975,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030610,
+    "btc_usd": 86699.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030487,
+    "btc_usd": 86698.7375,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030487,
+    "btc_usd": 86697.46,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030487,
+    "btc_usd": 86690.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030487,
+    "btc_usd": 86700.015,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030487,
+    "btc_usd": 86835.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030364,
+    "btc_usd": 86807.48999999999,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030364,
+    "btc_usd": 86807.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030364,
+    "btc_usd": 86807.98,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030364,
+    "btc_usd": 86802.015,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030364,
+    "btc_usd": 86835.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030242,
+    "btc_usd": 86895.2475,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030242,
+    "btc_usd": 86892.495,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030242,
+    "btc_usd": 86898.6,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030242,
+    "btc_usd": 86898.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743030242,
+    "btc_usd": 86823.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030119,
+    "btc_usd": 86839.0,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743030119,
+    "btc_usd": 86839.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743030119,
+    "btc_usd": 86815.21,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743030119,
+    "btc_usd": 86846.53,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743030119,
+    "btc_usd": 86839.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029996,
+    "btc_usd": 86823.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029996,
+    "btc_usd": 86850.035,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029996,
+    "btc_usd": 86829.47,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029996,
+    "btc_usd": 86839.735,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029996,
+    "btc_usd": 86850.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029873,
+    "btc_usd": 86858.07,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029873,
+    "btc_usd": 86888.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029873,
+    "btc_usd": 86865.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029873,
+    "btc_usd": 86875.6925,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029873,
+    "btc_usd": 86886.385,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029750,
+    "btc_usd": 86863.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029750,
+    "btc_usd": 86871.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029750,
+    "btc_usd": 86901.865,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029750,
+    "btc_usd": 86983.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029750,
+    "btc_usd": 86886.4325,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029627,
+    "btc_usd": 86970.5,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029627,
+    "btc_usd": 86958.01,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029627,
+    "btc_usd": 86981.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029627,
+    "btc_usd": 86960.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029627,
+    "btc_usd": 86990.445,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029505,
+    "btc_usd": 87003.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029505,
+    "btc_usd": 86987.98,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029505,
+    "btc_usd": 86997.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029505,
+    "btc_usd": 86999.0575,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029505,
+    "btc_usd": 87001.115,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029382,
+    "btc_usd": 86982.845,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029382,
+    "btc_usd": 87000.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029382,
+    "btc_usd": 86976.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029382,
+    "btc_usd": 86989.69,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029382,
+    "btc_usd": 86970.745,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029259,
+    "btc_usd": 86939.0875,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029259,
+    "btc_usd": 86931.99,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029259,
+    "btc_usd": 86908.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029259,
+    "btc_usd": 86946.185,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029259,
+    "btc_usd": 86947.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029137,
+    "btc_usd": 86893.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029137,
+    "btc_usd": 86892.495,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029137,
+    "btc_usd": 86891.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029137,
+    "btc_usd": 86891.99,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029137,
+    "btc_usd": 86896.345,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743029014,
+    "btc_usd": 86868.6725,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743029014,
+    "btc_usd": 86913.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743029014,
+    "btc_usd": 86864.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743029014,
+    "btc_usd": 86857.33,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743029014,
+    "btc_usd": 86873.345,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028891,
+    "btc_usd": 86926.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028891,
+    "btc_usd": 86907.35,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028891,
+    "btc_usd": 86924.5,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028891,
+    "btc_usd": 86923.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028891,
+    "btc_usd": 86939.18,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028768,
+    "btc_usd": 86960.625,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028768,
+    "btc_usd": 86954.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028768,
+    "btc_usd": 86954.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028768,
+    "btc_usd": 86954.0,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028768,
+    "btc_usd": 86936.07,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028646,
+    "btc_usd": 86911.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028646,
+    "btc_usd": 86952.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028646,
+    "btc_usd": 86948.83,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028646,
+    "btc_usd": 86945.66,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028646,
+    "btc_usd": 86957.625,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028523,
+    "btc_usd": 86974.805,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028523,
+    "btc_usd": 86837.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028523,
+    "btc_usd": 86971.69,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028523,
+    "btc_usd": 86975.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028523,
+    "btc_usd": 86973.2475,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028401,
+    "btc_usd": 86868.56,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028401,
+    "btc_usd": 86811.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028401,
+    "btc_usd": 86842.545,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028401,
+    "btc_usd": 86876.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028401,
+    "btc_usd": 86855.55249999999,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028278,
+    "btc_usd": 86803.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028278,
+    "btc_usd": 86851.135,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028278,
+    "btc_usd": 86829.5675,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028278,
+    "btc_usd": 86808.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028278,
+    "btc_usd": 86855.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028155,
+    "btc_usd": 86777.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028155,
+    "btc_usd": 86782.605,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028155,
+    "btc_usd": 86850.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028155,
+    "btc_usd": 86765.25,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028155,
+    "btc_usd": 86779.80249999999,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743028033,
+    "btc_usd": 86819.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743028033,
+    "btc_usd": 86817.695,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743028033,
+    "btc_usd": 86806.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743028033,
+    "btc_usd": 86802.2,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743028033,
+    "btc_usd": 86811.8475,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027909,
+    "btc_usd": 86864.185,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027909,
+    "btc_usd": 86792.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027909,
+    "btc_usd": 86853.36,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027909,
+    "btc_usd": 86856.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027909,
+    "btc_usd": 86854.68,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027787,
+    "btc_usd": 86834.995,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027787,
+    "btc_usd": 86837.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027787,
+    "btc_usd": 86835.9975,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027787,
+    "btc_usd": 86839.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027787,
+    "btc_usd": 86824.29,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027664,
+    "btc_usd": 86876.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027664,
+    "btc_usd": 86881.8075,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027664,
+    "btc_usd": 86847.82,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027664,
+    "btc_usd": 86887.615,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027664,
+    "btc_usd": 86919.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027542,
+    "btc_usd": 86933.65,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027542,
+    "btc_usd": 86958.045,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027542,
+    "btc_usd": 86954.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027542,
+    "btc_usd": 86943.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027542,
+    "btc_usd": 86948.5,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027418,
+    "btc_usd": 86959.0875,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027418,
+    "btc_usd": 86956.185,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027418,
+    "btc_usd": 86971.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027418,
+    "btc_usd": 86936.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027418,
+    "btc_usd": 86961.99,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027295,
+    "btc_usd": 86890.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027295,
+    "btc_usd": 86938.38,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027295,
+    "btc_usd": 86954.495,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027295,
+    "btc_usd": 86939.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027295,
+    "btc_usd": 86938.69,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027172,
+    "btc_usd": 86933.285,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027172,
+    "btc_usd": 86931.1425,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027172,
+    "btc_usd": 86958.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027172,
+    "btc_usd": 86910.66,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743027172,
+    "btc_usd": 86929.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027050,
+    "btc_usd": 86988.705,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743027050,
+    "btc_usd": 86983.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743027050,
+    "btc_usd": 87127.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743027050,
+    "btc_usd": 86985.85250000001,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743027050,
+    "btc_usd": 86975.7,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026927,
+    "btc_usd": 87074.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743026927,
+    "btc_usd": 87037.38,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026927,
+    "btc_usd": 87056.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743026927,
+    "btc_usd": 87065.0,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743026927,
+    "btc_usd": 87130.055,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743026636,
+    "btc_usd": 87148.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743026636,
+    "btc_usd": 87029.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743026636,
+    "btc_usd": 87137.745,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743026636,
+    "btc_usd": 87124.8775,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743026636,
+    "btc_usd": 87112.01,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026538,
+    "btc_usd": 87074.545,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743026538,
+    "btc_usd": 87049.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743026538,
+    "btc_usd": 87148.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743026538,
+    "btc_usd": 87061.77249999999,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743026538,
+    "btc_usd": 87046.41,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026194,
+    "btc_usd": 87183.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743026194,
+    "btc_usd": 87193.065,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743026194,
+    "btc_usd": 87188.0325,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743026194,
+    "btc_usd": 87215.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743026194,
+    "btc_usd": 87174.44,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026071,
+    "btc_usd": 87175.02,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743026071,
+    "btc_usd": 87191.1375,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743026071,
+    "btc_usd": 87202.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743026071,
+    "btc_usd": 87191.275,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743026071,
+    "btc_usd": 87191.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743025948,
+    "btc_usd": 87178.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743025948,
+    "btc_usd": 87158.17,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743025948,
+    "btc_usd": 87182.5675,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743025948,
+    "btc_usd": 87187.135,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743025948,
+    "btc_usd": 87191.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743025825,
+    "btc_usd": 87160.49,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743025825,
+    "btc_usd": 87178.095,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743025825,
+    "btc_usd": 87126.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743025825,
+    "btc_usd": 87169.29250000001,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743025825,
+    "btc_usd": 87180.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743024878,
+    "btc_usd": 87011.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743024878,
+    "btc_usd": 86989.99,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743024878,
+    "btc_usd": 87002.225,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743024878,
+    "btc_usd": 87006.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743024878,
+    "btc_usd": 87004.1125,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743024755,
+    "btc_usd": 87001.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743024755,
+    "btc_usd": 86998.0,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743024755,
+    "btc_usd": 87042.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743024755,
+    "btc_usd": 87015.5175,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743024755,
+    "btc_usd": 87030.035,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743023469,
+    "btc_usd": 87108.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743023469,
+    "btc_usd": 87163.66,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743023469,
+    "btc_usd": 87165.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743023469,
+    "btc_usd": 87164.33,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743023469,
+    "btc_usd": 87173.535,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743023346,
+    "btc_usd": 87168.0,
+    "source": "Coingecko"
+  },
+  {
+    "timestamp": 1743023346,
+    "btc_usd": 87102.01,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743023346,
+    "btc_usd": 87120.95749999999,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743023346,
+    "btc_usd": 87124.915,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743023346,
+    "btc_usd": 87117.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743022909,
+    "btc_usd": 87271.73,
+    "source": "Binance"
+  },
+  {
+    "timestamp": 1743022909,
+    "btc_usd": 87273.0625,
+    "source": "BTC-USD"
+  },
+  {
+    "timestamp": 1743022909,
+    "btc_usd": 87274.395,
+    "source": "Coinbase"
+  },
+  {
+    "timestamp": 1743022909,
+    "btc_usd": 87286.0,
+    "source": "Bitstamp"
+  },
+  {
+    "timestamp": 1743022909,
+    "btc_usd": 87210.0,
+    "source": "Coingecko"
+  }
+]

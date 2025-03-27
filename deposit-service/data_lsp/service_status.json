@@ -1,0 +1,18 @@
+{
+  "up_since": 1743104411,
+  "last_update": 0,
+  "version": "0.1.0",
+  "users_monitored": 3,
+  "total_utxos": 0,
+  "total_value_btc": 0.0,
+  "total_value_usd": 0.0,
+  "health": "starting",
+  "api_status": {},
+  "last_price": 87304.5625,
+  "price_update_count": 7,
+  "active_syncs": 0,
+  "price_cache_staleness_secs": 0,
+  "silent_failures": 0,
+  "api_calls": 0,
+  "error_rate": 0.0
+}

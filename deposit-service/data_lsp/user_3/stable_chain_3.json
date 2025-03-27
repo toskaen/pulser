@@ -1,0 +1,31 @@
+{
+  "user_id": 3,
+  "is_stable_receiver": false,
+  "counterparty": "unknown",
+  "accumulated_btc": {
+    "sats": 0
+  },
+  "stabilized_usd": 0.0,
+  "timestamp": 1743115706,
+  "formatted_datetime": "2025-03-27T22:48:26.624365433+00:00",
+  "sc_dir": "data_lsp/user_3/multisig",
+  "raw_btc_usd": 0.0,
+  "prices": {},
+  "multisig_addr": "tb1p5c2s95j4ktcdkcznh3xvg5p99wxwrr6ndn55x5697d608vdc25lsvkclkh",
+  "utxos": [],
+  "pending_sweep_txid": null,
+  "events": [],
+  "total_withdrawn_usd": 0.0,
+  "expected_usd": 0.0,
+  "hedge_position_id": null,
+  "pending_channel_id": null,
+  "shorts": [],
+  "hedge_ready": false,
+  "last_hedge_time": 0,
+  "short_reduction_amount": null,
+  "old_addresses": [
+    "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+    "tb1p6yghr83c29gg9swykn494gdecjntjakjnqanezmvrj02lacescys0enw80"
+  ],
+  "history": []
+}

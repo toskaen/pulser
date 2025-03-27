@@ -6,14 +6,20 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
 use common::error::PulserError;
-use crate::types::{StableChain, UtxoInfo, Bitcoin, USD}; // Import from deposit-service types
+use crate::types::{StableChain, UtxoInfo as TypesUtxoInfo, Bitcoin};
 use log::debug;
 use chrono::Utc;
+use std::str::FromStr;
+use common::types::USD;
+
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[derive(Debug, Clone)]
 pub struct StateManager {
+    // fields...
+
     pub data_dir: PathBuf,
     file_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
@@ -55,21 +61,28 @@ impl StateManager {
 
         Ok(())
     }
+    
 
-    pub async fn load<T: for<'de> Deserialize<'de>>(&self, file_path: &Path) -> Result<T, PulserError> {
-        let full_path = self.data_dir.join(file_path);
-        if !full_path.exists() {
-            return Err(PulserError::StorageError(format!("File not found: {}", full_path.display())));
-        }
-
-        let lock = self.get_file_lock(full_path.to_str().unwrap_or("unknown")).await;
-        let _guard = lock.lock().await;
-
-        let content = fs::read_to_string(&full_path)?;
-        let data = serde_json::from_str(&content)?;
-
-        Ok(data)
+pub async fn load<T: for<'de> Deserialize<'de>>(&self, file_path: &Path) -> Result<T, PulserError> {
+    // Check if file_path is already an absolute path or starts with the data directory
+    let full_path = if file_path.is_absolute() || file_path.starts_with(&self.data_dir) {
+        file_path.to_path_buf()
+    } else {
+        self.data_dir.join(file_path)
+    };
+    
+    if !full_path.exists() {
+        return Err(PulserError::StorageError(format!("File not found: {}", full_path.display())));
     }
+    
+    let lock = self.get_file_lock(full_path.to_str().unwrap_or("unknown")).await;
+    let _guard = lock.lock().await;
+    
+    let content = fs::read_to_string(&full_path)?;
+    let data = serde_json::from_str(&content)?;
+    
+    Ok(data)
+}
 
     pub async fn prune_activity_log(&self, activity_path: &Path, max_entries: usize) -> Result<(), PulserError> {
         let full_path = self.data_dir.join(activity_path);
@@ -103,12 +116,8 @@ impl StateManager {
         self.load(&sc_path).await
     }
 
-    pub async fn load_or_init_stable_chain(
-        &self,
-        user_id: &str,
-        wallet_path: &str,
-        initial_addr: String,
-    ) -> Result<StableChain, PulserError> {
+    pub async fn load_or_init_stable_chain(&self, user_id: &str, sc_dir: &str, multisig_addr: String) -> Result<StableChain, PulserError> {
+
         let sc_path = PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id));
         if sc_path.exists() {
             self.load(&sc_path).await
@@ -122,10 +131,10 @@ impl StateManager {
                 stabilized_usd: USD(0.0),
                 timestamp: now.timestamp(),
                 formatted_datetime: now.to_rfc3339(),
-                sc_dir: wallet_path.to_string(),
+                sc_dir: sc_dir.to_string(),
                 raw_btc_usd: 0.0,
                 prices: HashMap::new(),
-                multisig_addr: initial_addr,
+                multisig_addr: multisig_addr,
                 utxos: Vec::new(),
                 pending_sweep_txid: None,
                 events: Vec::new(),
@@ -137,6 +146,9 @@ impl StateManager {
                 hedge_ready: false,
                 last_hedge_time: 0,
                 short_reduction_amount: None,
+                old_addresses: Vec::new(),
+                history: Vec::new(), 
+
             };
             self.save(&sc_path, &stable_chain).await?;
             Ok(stable_chain)
@@ -144,7 +156,7 @@ impl StateManager {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UtxoInfo {
     pub txid: String,
     pub amount_sat: u64,
