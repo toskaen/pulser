@@ -19,7 +19,7 @@ event_log_dir = "events"
 
 # Logging
 
-log_level = "info"
+log_level = "debug"
 
 # Bitcoin settings
 lsp_pubkey = "tpubDG38QmNE5cgz7TdsxHd2riidQs8oFb1BVNCQxjyXbTygaLds5ecQQfiJZVpWkQLonaKxhiGCV1GJrHwV944SNF89dNoZftwH882L1u6Axcy" 

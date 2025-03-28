@@ -3,16 +3,26 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 0
+    "sats": 1300
   },
-  "stabilized_usd": 0.0,
-  "timestamp": 1743115706,
-  "formatted_datetime": "2025-03-27T22:48:26.438918520+00:00",
+  "stabilized_usd": -0.0,
+  "timestamp": 1743170439,
+  "formatted_datetime": "2025-03-28T14:00:39.404206106+00:00",
   "sc_dir": "data_lsp/user_1/multisig",
-  "raw_btc_usd": 0.0,
+  "raw_btc_usd": 85033.0,
   "prices": {},
   "multisig_addr": "tb1pcnwad4g90h4fanxwtnwncnhle0sxdmrl42v5adlrgagnp3qgzr7sp9ufkf",
-  "utxos": [],
+  "utxos": [
+    {
+      "txid": "e97c6df24e78a392ba49b9f75ed120fcc4c04212e83e55410ebafe3fd9053ed5",
+      "vout": 1,
+      "amount": 1300,
+      "confirmations": 1246,
+      "script_pubkey": "5120c1b969b2508a724f19987c61b4a929b1542f41cec43249e83e4c9900a527beec",
+      "height": null,
+      "usd_value": 1.105429
+    }
+  ],
   "pending_sweep_txid": null,
   "events": [],
   "total_withdrawn_usd": 0.0,

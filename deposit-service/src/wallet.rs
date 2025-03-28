@@ -10,15 +10,16 @@ use bdk_wallet::bitcoin::{Network, Address, Txid};
 use bdk_chain::ChainPosition;
 use common::error::PulserError;
 use common::types::{USD, Event, PriceInfo, Utxo};
-use crate::types::{StableChain, Bitcoin, DepositAddressInfo};
-use crate::storage::StateManager;
 use crate::wallet_init::{Config, init_wallet};
 use log::{info, warn, debug};
 use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use common::price_feed::PriceFeed;
-use crate::types::UtxoInfo;
+use common::UtxoInfo;
+use common::StateManager; // Updated import
+use common::{StableChain, Bitcoin};
+use common::types::DepositAddressInfo;
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -61,14 +62,22 @@ impl DepositWallet {
             price_feed,
         ).await?;
 
-        let deposit_info = DepositAddressInfo {
-            address: initial_addr.to_string(),
-            descriptor: init_result.deposit_info.descriptor,
-            path: init_result.deposit_info.path,
-            user_pubkey: init_result.public_data["user_pubkey"].as_str().unwrap_or("").to_string(),
-            lsp_pubkey: init_result.public_data["lsp_pubkey"].as_str().unwrap_or("").to_string(),
-            trustee_pubkey: init_result.public_data["trustee_pubkey"].as_str().unwrap_or("").to_string(),
-        };
+let deposit_info = DepositAddressInfo {
+    address: initial_addr.to_string(),
+    user_id: user_id.parse().unwrap_or(0),
+    multisig_type: "2-of-3".to_string(),
+    participants: vec![
+        // Include appropriate pubkeys here
+        "user_pubkey".to_string(),
+        "lsp_pubkey".to_string(),
+        "trustee_pubkey".to_string()
+    ],
+descriptor: init_result.deposit_info.descriptor.clone(),
+    path: init_result.deposit_info.path.clone(),
+    user_pubkey: init_result.deposit_info.user_pubkey.clone(),
+    lsp_pubkey: init_result.deposit_info.lsp_pubkey.clone(),
+    trustee_pubkey: init_result.deposit_info.trustee_pubkey.clone(),
+};
 
         let stable_chain = state_manager.load_or_init_stable_chain(user_id, &wallet_path, initial_addr.to_string()).await?;
         Ok((wallet, deposit_info, stable_chain))
@@ -105,45 +114,55 @@ impl DepositWallet {
         })
     }
 
-    pub async fn update_stable_chain(&mut self, price_info: &PriceInfo, price_feed: &PriceFeed) -> Result<Vec<Utxo>, PulserError> {
-        let logged = LOGGED_ADDRESSES.lock().await;
-        let current_addr = logged.get(&self.stable_chain.user_id.to_string())
-            .ok_or(PulserError::WalletError("No logged address".into()))?;
-        let utxos = self.check_address(current_addr, price_info, price_feed).await?;
-        
-        for utxo in &utxos {
-            let is_external = utxo.script_pubkey == current_addr.script_pubkey().to_hex_string();
-            self.stable_chain.history.push(UtxoInfo {
-                txid: utxo.txid.clone(),
-                vout: utxo.vout,
-                amount_sat: utxo.amount,
-                address: current_addr.to_string(),
-                keychain: if is_external { "External".to_string() } else { "Internal".to_string() },
-                timestamp: Utc::now().timestamp() as u64,
-                confirmations: utxo.confirmations,
-                participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
-                stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
-                spendable: utxo.confirmations >= 1,
-                derivation_path: if is_external { "m/86'/1'/0'/0/0".to_string() } else { "m/86'/1'/0'/1/0".to_string() },
-                spent: false,
-            });
+pub async fn update_stable_chain(&mut self, price_info: &PriceInfo, price_feed: &PriceFeed) -> Result<Vec<Utxo>, PulserError> {
+    let logged = LOGGED_ADDRESSES.lock().await;
+    let current_addr = logged.get(&self.stable_chain.user_id.to_string())
+        .ok_or_else(|| {
+            warn!("No logged address for user {}", self.stable_chain.user_id);
+            PulserError::WalletError("No logged address".into())
+        })?;
+    
+    debug!("Updating StableChain for user {} at address {}", self.stable_chain.user_id, current_addr);
+    
+    let mut all_utxos = self.check_address(current_addr, price_info, price_feed).await?;
+let old_addresses = self.stable_chain.old_addresses.clone(); // Clone to break borrow
+for old_addr in &old_addresses {
+    let old_utxos = self.check_address(&Address::from_str(old_addr)?.require_network(Network::Testnet)?, price_info, price_feed).await?;
+    all_utxos.extend(old_utxos);
+}
+    debug!("Found {} UTXOs across {} addresses", all_utxos.len(), self.stable_chain.old_addresses.len() + 1);
+    
+    self.stable_chain.utxos = all_utxos.clone();
+    let total_sats: u64 = self.stable_chain.utxos.iter().map(|u| u.amount).sum();
+    self.stable_chain.accumulated_btc = common::Bitcoin::from_sats(total_sats);
+    self.stable_chain.stabilized_usd = common::USD(
+        self.stable_chain.history.iter().filter(|h| !h.spent).map(|h| h.stable_value_usd).sum()
+    );
+    
+    let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_info.raw_btc_usd);
+    self.stable_chain.raw_btc_usd = deribit_price;
+    self.stable_chain.timestamp = Utc::now().timestamp();
+    self.stable_chain.formatted_datetime = Utc::now().to_rfc3339();
+    self.stable_chain.prices = price_info.price_feeds.clone();
+    self.stable_chain.multisig_addr = current_addr.to_string();
+    
+    info!("Saving StableChain for user {}: {} BTC (${:.2}), {} UTXOs, {} history entries", 
+        self.stable_chain.user_id, 
+        self.stable_chain.accumulated_btc.to_btc(), 
+        self.stable_chain.stabilized_usd.0,
+        self.stable_chain.utxos.len(),
+        self.stable_chain.history.len());
+    
+    match self.state_manager.save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain).await {
+        Ok(_) => debug!("Successfully saved StableChain for user {}", self.stable_chain.user_id),
+        Err(e) => {
+            warn!("Failed to save StableChain for user {}: {}", self.stable_chain.user_id, e);
+            return Err(e);
         }
-
-        self.stable_chain.utxos = utxos.clone();
-        self.stable_chain.accumulated_btc = Bitcoin { sats: self.stable_chain.utxos.iter().map(|u| u.amount).sum() };
-        let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_info.raw_btc_usd);
-        self.stable_chain.stabilized_usd = USD((self.stable_chain.accumulated_btc.to_btc()) * deribit_price);
-        self.stable_chain.raw_btc_usd = price_info.raw_btc_usd;
-        self.stable_chain.timestamp = Utc::now().timestamp();
-        self.stable_chain.formatted_datetime = Utc::now().to_rfc3339();
-        self.stable_chain.prices = price_info.price_feeds.clone();
-        self.stable_chain.multisig_addr = current_addr.to_string();
-        self.state_manager.save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain)
-            .await
-            .map_err(|e| { warn!("Save stable chain failed: {}", e); e })?;
-        info!("Updated stable chain for user {}: {} BTC", self.stable_chain.user_id, self.stable_chain.accumulated_btc.to_btc());
-        Ok(utxos)
     }
+    
+    Ok(all_utxos)
+}
 
 pub async fn check_address(
     &mut self,
@@ -156,7 +175,7 @@ pub async fn check_address(
 
     let mut attempts = 0;
     const MAX_ATTEMPTS: u32 = 3;
-    let script = address.script_pubkey();
+    let _script = address.script_pubkey();
 
     let mut utxos = self.list_unspent_for_address(address)?;
 if utxos.is_empty() {

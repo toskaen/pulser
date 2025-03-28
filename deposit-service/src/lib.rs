@@ -1,8 +1,6 @@
-pub mod types;
 pub mod config;
 pub mod wallet;
 pub mod keys;
-pub mod storage;
 pub mod monitor;
 pub mod webhook;
 pub mod api;
@@ -11,5 +9,6 @@ pub mod task_manager;
 
 pub use config::Config;
 pub use wallet::DepositWallet;
-pub use types::{StableChain, DepositAddressInfo};
+pub use common::{StableChain};
+pub use common::types::DepositAddressInfo;
 

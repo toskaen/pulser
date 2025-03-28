@@ -12,3 +12,4 @@ log = "0.4"
 chrono = "0.4"
 common = { path = "../common" }
 deposit-service = { path = "../deposit-service" } # Keep this
+toml = "0.8"

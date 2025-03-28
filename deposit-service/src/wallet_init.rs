@@ -8,7 +8,7 @@ use bdk_wallet::keys::{DerivableKey, GeneratableKey, ExtendedKey, GeneratedKey};
 use bdk_wallet::miniscript::descriptor::{DescriptorXKey, Wildcard};
 use bdk_wallet::keys::DescriptorPublicKey;
 use common::error::PulserError;
-use crate::types::DepositAddressInfo;
+use common::types::DepositAddressInfo;
 use log::info;
 use serde_json;
 use chrono::Utc;
@@ -151,14 +151,21 @@ let unspendable_key = DescriptorPublicKey::from_str(
         .create_wallet_no_persist()?;
     let initial_addr = wallet.reveal_next_address(KeychainKind::External).address;
 
-    let deposit_info = DepositAddressInfo {
-        address: initial_addr.to_string(),
-        descriptor: external_descriptor.clone(),
-        path: "m/86'/1'/0'/0/0".to_string(),
-        user_pubkey: user_xpub_str.clone(),
-        lsp_pubkey: config.lsp_pubkey.clone(),
-        trustee_pubkey: config.trustee_pubkey.clone(),
-    };
+let deposit_info = DepositAddressInfo {
+    address: initial_addr.to_string(),
+    user_id: user_id.parse().unwrap_or(0),
+    multisig_type: "2-of-3".to_string(),
+    participants: vec![
+        user_xpub_str.clone(),
+        config.lsp_pubkey.clone(),
+        config.trustee_pubkey.clone()
+    ],
+    descriptor: Some(external_descriptor.clone()),
+    path: "m/86'/1'/0'/0/0".to_string(),
+    user_pubkey: user_xpub_str.clone(),
+    lsp_pubkey: config.lsp_pubkey.clone(),
+    trustee_pubkey: config.trustee_pubkey.clone(),
+};
 
     let public_data = if !is_preloaded {
         let public_data = serde_json::json!({

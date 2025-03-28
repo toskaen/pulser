@@ -15,8 +15,8 @@ use common::error::PulserError;
 use common::types::PriceInfo;
 use common::types::USD;
 use crate::wallet::DepositWallet;
-use crate::types::{ServiceStatus, UserStatus, StableChain, WebhookRetry, Bitcoin};
-use crate::storage::{StateManager, UtxoInfo};
+use common::{ServiceStatus, UserStatus, StableChain, WebhookRetry, Bitcoin};
+use common::storage::{StateManager, UtxoInfo};
 use crate::webhook::{WebhookConfig, notify_new_utxos};
 use tokio::time::sleep;
 use crate::wallet_init::{self}; // Add to imports
@@ -427,12 +427,12 @@ pub async fn sync_user(
     webhook_url: &str,
     webhook_config: &WebhookConfig,
     client: Client,
-) -> Result<bool, PulserError> {
+    ) -> Result<bool, PulserError> {
     let start_time = Instant::now();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let user_dir = PathBuf::from(format!("user_{}", user_id));
     let status_path = user_dir.join(format!("status_{}.json", user_id));
-    let activity_path = user_dir.join(format!("activity_{}.json", user_id));
+    let activity_path = user_dir.join(format!("activity_{}.json", user_id)); // Define activity_path here
 
     let mut statuses = user_statuses.lock().await;
     let status = statuses.entry(user_id.to_string()).or_insert_with(|| UserStatus::new(user_id));
@@ -488,10 +488,10 @@ pub async fn sync_user(
         let price_info_data = price_info.lock().await.clone();
 
         // Check deposit address without cloning the wallet
-        let deposit_utxos = {
+   let deposit_utxos = {
             let mut wallets_lock = wallets.lock().await;
             if let Some((wallet, _)) = wallets_lock.get_mut(user_id) {
-                wallet.check_address(&deposit_addr, &price_info_data, &price_feed).await
+                wallet.update_stable_chain(&price_info_data, &price_feed).await
             } else {
                 Err(PulserError::UserNotFound(user_id.to_string()))
             }
@@ -706,8 +706,25 @@ pub async fn sync_user(
     } else if should_full_sync {
         info!("No deposits yet for user {} (balance: 0 BTC)", user_id);
     }
+    
+    // Ensure StableChain is explicitly saved again here
+    let chain_to_save = {
+        let wallets_lock = wallets.lock().await;
+        if let Some((_, chain)) = wallets_lock.get(user_id) {
+            chain.clone()
+        } else {
+            return Err(PulserError::UserNotFound(user_id.to_string()));
+        }
+    };
 
-    Ok(new_funds_detected)
+    if let Err(e) = state_manager.save_stable_chain(user_id, &chain_to_save).await {
+        warn!("Failed to save StableChain in sync_user for user {}: {}", user_id, e);
+    } else {
+        info!("Successfully saved StableChain in sync_user for user {}: {} BTC (${:.2})", 
+            user_id, chain_to_save.accumulated_btc.to_btc(), chain_to_save.stabilized_usd.0);
+    }
+    
+    return Ok(new_funds_detected);
 }
 
 fn with_wallets(wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>) -> impl Filter<Extract = (Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,), Error = std::convert::Infallible> + Clone {
@@ -745,25 +762,3 @@ fn with_config_path(config_path: String) -> impl Filter<Extract = (String,), Err
 fn with_active_tasks_manager(manager: Arc<ActiveTasksManager>) -> impl Filter<Extract = (Arc<ActiveTasksManager>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || manager.clone())
 }
-
-impl UserStatus {
-    pub fn new(user_id: &str) -> Self {
-        Self {
-            user_id: user_id.to_string(),
-            last_sync: 0,
-            sync_status: "initialized".to_string(),
-            utxo_count: 0,
-            total_value_btc: 0.0,
-            total_value_usd: 0.0,
-            confirmations_pending: false,
-            last_update_message: "User initialized".to_string(),
-            sync_duration_ms: 0,
-            last_error: None,
-            last_success: 0,
-            pruned_utxo_count: 0,
-            current_deposit_address: "Not yet determined".to_string(),
-            last_deposit_time: None,
-        }
-    }
-}
-

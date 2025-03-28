@@ -9,8 +9,7 @@ use common::error::PulserError;
 use common::price_feed::{fetch_btc_usd_price, PriceFeed};
 use common::types::PriceInfo;
 use deposit_service::wallet::DepositWallet;
-use deposit_service::types::{StableChain, UserStatus, ServiceStatus, WebhookRetry};
-use deposit_service::storage::StateManager;
+use common::{StableChain, UserStatus, ServiceStatus, WebhookRetry};
 use deposit_service::webhook::{WebhookConfig, start_retry_task};
 use deposit_service::monitor::{MonitorConfig, monitor_deposits};
 use deposit_service::api;
@@ -21,6 +20,9 @@ use std::path::PathBuf;
 use futures::future::join_all;
 use log::LevelFilter;
 use bdk_esplora::esplora_client; // Add to imports if not present
+use common::StateManager; // Updated import
+use futures::FutureExt; // Add this
+
 
 
 #[tokio::main]
@@ -135,6 +137,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         silent_failures: 0,
         api_calls: 0,
         error_rate: 0.0,
+        users: HashMap::new(), // Add this
+
     }));
 
     info!("Starting deposit monitor service");
@@ -191,7 +195,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     info!("Preloaded {} users", wallets.lock().await.len());
 
-    // Signal handler setup
+let shutdown_tx_clone = shutdown_tx.clone(); // Clone before move
+
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -213,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = ctrl_break.recv() => info!("Received Ctrl+Break, shutting down gracefully"),
             }
         }
-        let _ = shutdown_tx.send(());
+    let _ = shutdown_tx_clone.send(()); // Use the clone here
     });
 
     // PriceUpdater task
@@ -255,13 +260,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn other tasks
     let webhook_config = WebhookConfig::from_toml(&config_value);
-    let retry_handle = tokio::spawn(start_retry_task(
-        client.clone(),
-        retry_queue.clone(),
-        webhook_url.clone(),
-        webhook_config.clone(),
-        shutdown_rx.resubscribe(),
-    ));
+let retry_handle = tokio::spawn(start_retry_task(
+    client.clone(),
+    retry_queue.clone(),
+    webhook_url.clone(),
+    webhook_config.clone(),
+    shutdown_rx.resubscribe(),
+    state_manager.clone(), // 6th and final argument
+));
 
     let monitor_config = MonitorConfig::from_toml(&config_value);
     let monitor_handle = tokio::spawn(monitor_deposits(
@@ -275,6 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         price_feed.clone(),
         client.clone(),
         blockchain,
+        state_manager.clone(),
     ));
 
     let listening_address = config_value.get("listening_address")
@@ -310,173 +317,233 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // SyncProcessor task
-    let sync_handle = tokio::spawn({
-        let wallets = wallets.clone();
-        let user_statuses = user_statuses.clone();
-        let price_info = price_info.clone();
-        let esplora_urls = esplora_urls.clone();
-        let state_manager = state_manager.clone();
-        let retry_queue = retry_queue.clone();
-        let webhook_url = webhook_url.clone();
-        let webhook_config = webhook_config.clone();
-        let client = client.clone();
-        let mut sync_rx = sync_rx;
-        let mut shutdown_rx = shutdown_rx.resubscribe();
-        let service_status = service_status.clone();
-        let active_tasks_manager = active_tasks_manager.clone();
-        let price_feed = price_feed.clone();
-
-        async move {
-            let mut pending_users = Vec::new();
-            loop {
-                tokio::select! {
-                    user_id_option = sync_rx.recv() => {
-                        match user_id_option {
-                            Some(user_id) => {
-                                debug!("Received sync request for user {}", user_id);
-                                pending_users.push(user_id);
-                            }
-                            None => {
-                                warn!("Sync channel closed unexpectedly");
-                                break;
-                            }
-                        }
-                    }
-                    _ = shutdown_rx.recv() => {
-                        info!("SyncProcessor shutting down");
-                        break;
-                    }
-                    _ = sleep(Duration::from_secs(2)), if !pending_users.is_empty() => {
-                        info!("Processing batch sync for {} users: {:?}", pending_users.len(), pending_users);
-                        if pending_users.len() > 100 {
-                            warn!("Truncating pending users from {} to 100", pending_users.len());
-                            pending_users.truncate(100);
-                        }
-                        for chunk in pending_users.chunks(max_concurrent_users) {
-                            debug!("Processing chunk of {} users: {:?}", chunk.len(), chunk);
-                            let mut api_calls = 0;
-                            let mut errors = 0;
-                            for user_id in chunk {
-                                if active_tasks_manager.is_user_active(user_id).await {
-                                    warn!("Skipping sync for user {} - already active", user_id);
-                                    continue;
-                                }
-                                debug!("Marking user {} as active for sync", user_id);
-                                active_tasks_manager.mark_user_active(user_id).await;
-                                {
-                                    let mut status = service_status.lock().await;
-                                    status.active_syncs += 1;
-                                    api_calls += 1;
-                                }
-                                let price_info_clone = price_info.lock().await.clone();
-                                debug!("Starting sync for user {}", user_id);
-                                let result = api::sync_user(
-                                    user_id,
-                                    wallets.clone(),
-                                    user_statuses.clone(),
-                                    Arc::new(Mutex::new(price_info_clone)),
-                                    price_feed.clone(),
-                                    esplora_urls.clone(),
-                                    state_manager.clone(),
-                                    retry_queue.clone(),
-                                    &webhook_url,
-                                    &webhook_config,
-                                    client.clone(),
-                                ).await;
-                                {
-                                    let mut status = service_status.lock().await;
-                                    status.active_syncs = status.active_syncs.saturating_sub(1);
-                                    if let Err(e) = &result {
-                                        errors += 1;
-                                        warn!("Sync failed for user {}: {}", user_id, e);
-                                    } else {
-                                        info!("Sync completed successfully for user {}", user_id);
-                                    }
-                                    status.api_calls += api_calls;
-                                    status.error_rate = if api_calls > 0 { errors as f64 / api_calls as f64 } else { 0.0 };
-                                }
-                                debug!("Marking user {} as inactive after sync", user_id);
-                                active_tasks_manager.mark_user_inactive(user_id).await;
-                            }
-                            debug!("Chunk processing completed, sleeping for throttle");
-                            sleep(Duration::from_millis(1000)).await;
-                        }
-                        debug!("Clearing pending users after processing");
-                        pending_users.clear();
-                    }
-                }
-            }
-            info!("SyncProcessor shutdown complete");
-            Ok::<(), PulserError>(())
-        }
-    });
-
-    // Main loop (totals update only)
-    let mut shutdown_rx = shutdown_rx.resubscribe();
-    loop {
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("Main loop shutting down");
-                break;
-            }
-            _ = sleep(Duration::from_secs(sync_interval_secs)) => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                let wallets_lock = wallets.lock().await;
-                let mut total_utxos = 0;
-                let mut total_value_btc = 0.0;
-                let mut total_value_usd = 0.0;
-                for (_, (_, chain)) in wallets_lock.iter() {
-                    total_utxos += chain.utxos.len() as u32;
-                    total_value_btc += chain.accumulated_btc.to_btc();
-                    total_value_usd += chain.stabilized_usd.0;
-                }
-                let mut status = service_status.lock().await;
-                status.total_utxos = total_utxos;
-                status.total_value_btc = total_value_btc;
-                status.total_value_usd = total_value_usd;
-                status.health = "healthy".to_string();
-                status.last_update = now;
-                debug!("Updated totals: {} utxos, {} BTC, ${}", total_utxos, total_value_btc, total_value_usd);
-            }
-        }
-    }
-
-    // Shutdown cleanup
-    info!("Initiating shutdown cleanup");
-    let wallets_lock = wallets.lock().await;
-    let mut save_tasks = Vec::with_capacity(wallets_lock.len() + 1);
-    for (user_id, (_, chain)) in wallets_lock.iter() {
-        let state_manager = state_manager.clone();
-        let user_id = user_id.to_string();
-        let chain = chain.clone();
-        save_tasks.push(tokio::spawn(async move {
-            match state_manager.save_stable_chain(&user_id, &chain).await {
-                Ok(()) => debug!("Saved stable chain for user {}", user_id),
-                Err(e) => warn!("Failed to save stable chain for user {}: {}", user_id, e),
-            }
-        }));
-    }
+let sync_handle = tokio::spawn({
+    let wallets = wallets.clone();
+    let user_statuses = user_statuses.clone();
+    let price_info = price_info.clone();
+    let esplora_urls = esplora_urls.clone();
     let state_manager = state_manager.clone();
+    let retry_queue = retry_queue.clone();
+    let webhook_url = webhook_url.clone();
+    let webhook_config = webhook_config.clone();
+    let client = client.clone();
+    let mut sync_rx = sync_rx;
+    let mut shutdown_rx = shutdown_rx.resubscribe();
     let service_status = service_status.clone();
+    let active_tasks_manager = active_tasks_manager.clone();
+    let price_feed = price_feed.clone();
+
+    async move {
+        let mut pending_users = Vec::new();
+        loop {
+            tokio::select! {
+                user_id_option = sync_rx.recv() => {
+                    match user_id_option {
+                        Some(user_id) => {
+                            debug!("Received sync request for user {}", user_id);
+                            pending_users.push(user_id);
+                        }
+                        None => {
+                            warn!("Sync channel closed unexpectedly");
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("SyncProcessor shutting down");
+                    break;
+                }
+                _ = sleep(Duration::from_secs(2)), if !pending_users.is_empty() => {
+                    info!("Processing batch sync for {} users: {:?}", pending_users.len(), pending_users);
+                    if pending_users.len() > 100 {
+                        warn!("Truncating pending users from {} to 100", pending_users.len());
+                        pending_users.truncate(100);
+                    }
+                    for chunk in pending_users.chunks(max_concurrent_users) {
+                        debug!("Processing chunk of {} users: {:?}", chunk.len(), chunk);
+                        let mut api_calls = 0;
+                        let mut errors = 0;
+                        for user_id in chunk {
+                            if active_tasks_manager.is_user_active(user_id).await {
+                                warn!("Skipping sync for user {} - already active", user_id);
+                                continue;
+                            }
+                            debug!("Marking user {} as active for sync", user_id);
+                            active_tasks_manager.mark_user_active(user_id).await;
+                            {
+                                let mut status = service_status.lock().await;
+                                status.active_syncs += 1;
+                                api_calls += 1;
+                            }
+                            let price_info_clone = price_info.lock().await.clone();
+                            debug!("Starting sync for user {}", user_id);
+                            let result = api::sync_user(
+                                user_id,
+                                wallets.clone(),
+                                user_statuses.clone(),
+                                Arc::new(Mutex::new(price_info_clone)),
+                                price_feed.clone(),
+                                esplora_urls.clone(),
+                                state_manager.clone(),
+                                retry_queue.clone(),
+                                &webhook_url,
+                                &webhook_config,
+                                client.clone(),
+                            ).await;
+
+                            // Minimal verification of StableChain file existence
+                            let sc_path = PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id));
+                            let sc_full_path = state_manager.data_dir.join(&sc_path);
+                            if sc_full_path.exists() {
+                                info!("StableChain file exists for user {} after sync", user_id);
+                            } else {
+                                warn!("StableChain file not found for user {} after sync at {}", user_id, sc_full_path.display());
+                            }
+
+                            {
+                                let mut status = service_status.lock().await;
+                                status.active_syncs = status.active_syncs.saturating_sub(1);
+                                if let Err(e) = &result {
+                                    errors += 1;
+                                    warn!("Sync failed for user {}: {}", user_id, e);
+                                } else {
+                                    info!("Sync completed successfully for user {}", user_id);
+                                }
+                                status.api_calls += api_calls;
+                                status.error_rate = if api_calls > 0 { errors as f64 / api_calls as f64 } else { 0.0 };
+                            }
+                            debug!("Marking user {} as inactive after sync", user_id);
+                            active_tasks_manager.mark_user_inactive(user_id).await;
+                        }
+                        debug!("Chunk processing completed, sleeping for throttle");
+                        sleep(Duration::from_millis(1000)).await;
+                    }
+                    debug!("Clearing pending users after processing");
+                    pending_users.clear();
+                }
+            }
+        }
+        info!("SyncProcessor shutdown complete");
+        Ok::<(), PulserError>(())
+    }
+});
+
+// Main loop
+let mut shutdown_rx = shutdown_rx.resubscribe();
+loop {
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("Main loop shutting down");
+            break;
+        }
+        _ = sleep(Duration::from_secs(sync_interval_secs)) => {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let wallets_lock = wallets.lock().await;
+            let mut total_utxos = 0;
+            let mut total_value_btc = 0.0;
+            let mut total_value_usd = 0.0;
+            for (_, (_, chain)) in wallets_lock.iter() {
+                total_utxos += chain.utxos.len() as u32;
+                total_value_btc += chain.accumulated_btc.to_btc();
+                total_value_usd += chain.stabilized_usd.0;
+            }
+            let mut status = service_status.lock().await;
+            status.total_utxos = total_utxos;
+            status.total_value_btc = total_value_btc;
+            status.total_value_usd = total_value_usd;
+            status.health = "healthy".to_string();
+            status.last_update = now;
+            // Add per-user data
+            let users_lock = user_statuses.lock().await;
+            status.users = users_lock.clone();
+            debug!("Updated totals: {} utxos, {} BTC, ${}, {} users", total_utxos, total_value_btc, total_value_usd, status.users.len());
+        }
+    }
+}
+
+// Shutdown cleanup
+// Shutdown cleanup
+info!("Initiating shutdown cleanup");
+
+// Save wallet states
+let wallets_lock = wallets.lock().await;
+let mut save_tasks = Vec::with_capacity(wallets_lock.len() + 1);
+for (user_id, (_, chain)) in wallets_lock.iter() {
+    let state_manager = state_manager.clone();
+    let user_id = user_id.to_string();
+    let chain = chain.clone();
     save_tasks.push(tokio::spawn(async move {
-        match state_manager.save(&PathBuf::from("service_status.json"), &*service_status.lock().await).await {
-            Ok(()) => debug!("Saved service status"),
-            Err(e) => warn!("Failed to save service status: {}", e),
+        match state_manager.save_stable_chain(&user_id, &chain).await {
+            Ok(()) => debug!("Saved stable chain for user {}", user_id),
+            Err(e) => warn!("Failed to save stable chain for user {}: {}", user_id, e),
         }
     }));
-    join_all(save_tasks).await;
-    drop(sync_tx);
-
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = tokio::join!(
-            price_handle,
-            retry_handle,
-            monitor_handle,
-            server_handle,
-            sync_handle
-        );
-    }).await;
-
-    info!("Service shutdown complete");
-    Ok(())
 }
+let state_manager = state_manager.clone();
+let service_status = service_status.clone();
+save_tasks.push(tokio::spawn(async move {
+    let status = service_status.lock().await;
+    match state_manager.save(&PathBuf::from("service_status.json"), &*status).await {
+        Ok(()) => debug!("Saved service status with {} users", status.users.len()),
+        Err(e) => warn!("Failed to save service status: {}", e),
+    }
+}));
+info!("Awaiting {} save tasks", save_tasks.len());
+join_all(save_tasks).await;
+info!("All save tasks completed");
+
+// Signal shutdown
+info!("Signaling shutdown to tasks");
+drop(sync_tx); // Close SyncProcessor channel
+let shutdown_tx_clone = shutdown_tx.clone();
+if let Err(e) = shutdown_tx_clone.send(()) {
+    warn!("Failed to broadcast shutdown signal: {}", e);
+}
+
+// Wait for tasks with timeout and detailed logging
+info!("Awaiting task shutdown with 10-second timeout");
+match tokio::time::timeout(Duration::from_secs(10), async {
+    let (price_res, retry_res, monitor_res, server_res, sync_res) = tokio::join!(
+        price_handle.map(|res| res.map(|r| r).map_err(|e| PulserError::NetworkError(e.to_string()))),
+        retry_handle.map(|res| res.map(|r| r).map_err(|e| PulserError::NetworkError(e.to_string()))),
+        monitor_handle.map(|res| res.map(|r| r).map_err(|e| PulserError::NetworkError(e.to_string()))),
+        server_handle.map(|res| res.map(|_| Ok(())).map_err(|e| PulserError::NetworkError(e.to_string()))),
+        sync_handle.map(|res| res.map(|r| r).map_err(|e| PulserError::NetworkError(e.to_string())))
+    );
+
+    let results = [
+        ("PriceUpdater", price_res),
+        ("RetryTask", retry_res),
+        ("Monitor", monitor_res),
+        ("Server", server_res),
+        ("SyncProcessor", sync_res),
+    ];
+
+    for (name, res) in results.iter() {
+        match res {
+            Ok(Ok(())) => info!("{} task shut down successfully", name),
+            Ok(Err(e)) => warn!("{} task failed during execution: {}", name, e),
+            Err(e) => warn!("{} task failed to join: {}", name, e),
+        }
+    }
+
+    if results.iter().all(|(_, res)| matches!(res, Ok(Ok(())))) {
+        Ok(())
+    } else {
+        Err(PulserError::NetworkError("Some tasks failed to shut down".to_string()))
+    }
+}).await {
+    Ok(Ok(())) => info!("All tasks shut down successfully within 10 seconds"),
+    Ok(Err(e)) => warn!("Shutdown completed with errors: {}", e),
+    Err(_) => {
+        warn!("Shutdown timed out after 10 seconds, forcing exit");
+        // Forcefully abort hung tasks (optional, aggressive)
+        price_handle.abort();
+        retry_handle.abort();
+        monitor_handle.abort();
+        server_handle.abort();
+        sync_handle.abort();
+    }
+};
+
+info!("Shutdown process completed");

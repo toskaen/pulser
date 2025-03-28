@@ -1,5 +1,4 @@
 // In deposit-service/src/config.rs
-// Add the missing dependencies
 use common::error::PulserError;
 use serde::{Deserialize, Serialize};
 use std::fs;

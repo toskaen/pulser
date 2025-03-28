@@ -2,23 +2,25 @@
 use crate::state::HedgeState;
 use crate::exchange::ExchangeClient;
 use common::price_feed::PriceFeed;
-use common::storage::StateManager;
-use common::types::{StableChain, Bitcoin};
+use common::StateManager;
+use common::{StableChain, Bitcoin};
 use common::error::PulserError;
 use log::{info, warn};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use common::{StableChain, HedgePosition};
+use std::path::Path;
 
 pub struct HedgeManager {
-    price_feed: PriceFeed,
-    state_manager: StateManager,
-    exchange_client: ExchangeClient,
-    state: HedgeState,
-    base_short_percent: f64,
-    trigger_step: f64,
-    max_hedge_cap: f64,
-    harvest_pnl_threshold: f64,
-    maintenance_margin_requirement: f64,
+    pub price_feed: PriceFeed,
+    pub state_manager: StateManager,
+    pub exchange_client: ExchangeClient,
+    pub state: HedgeState,
+    pub base_short_percent: f64,
+    pub trigger_step: f64,
+    pub max_hedge_cap: f64,
+    pub harvest_pnl_threshold: f64,
+    pub maintenance_margin_requirement: f64,
 }
 
 impl HedgeManager {
@@ -26,7 +28,7 @@ impl HedgeManager {
         let config_str = std::fs::read_to_string("config/service_config.toml")?;
         let config: toml::Value = toml::from_str(&config_str)?;
         let state_manager = StateManager::new(data_dir);
-        let state = state_manager.load("hedge_state.json").unwrap_or(HedgeState {
+        let state = state_manager.load("hedge_state.json").await.unwrap_or(HedgeState {
             shorts: Vec::new(),
             rainy_fund: 0.0,
             last_hedge_time: Default::default(),
@@ -147,7 +149,7 @@ let vol = self.exchange_client.get_historical_volatility().await?;
 
         self.state.user_pnl.insert(user_id.to_string(), pnl);
         self.state.last_hedge_time.insert(user_id.to_string(), now);
-        self.state_manager.save("hedge_state.json", &self.state).await?;
+self.state_manager.save(Path::new("hedge_state.json"), &self.state).await?;
         Ok(())
     }
 
@@ -161,7 +163,7 @@ let vol = self.exchange_client.get_historical_volatility().await?;
         (ratio >= self.maintenance_margin_requirement, ratio)
     }
 
-    fn calc_pnl(&self, user_id: &str, price: f64) -> f64 {
+    pub fn calc_pnl(&self, user_id: &str, price: f64) -> f64 {
         self.state.shorts.iter()
             .filter(|p| p.user_id == user_id)
             .map(|p| (p.entry_price - price) * p.amount_btc - p.amount_btc * p.entry_price * 0.0005) // 0.05% fee

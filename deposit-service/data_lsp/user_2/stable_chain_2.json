@@ -3,16 +3,35 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 0
+    "sats": 2300
   },
-  "stabilized_usd": 0.0,
-  "timestamp": 1743115706,
-  "formatted_datetime": "2025-03-27T22:48:26.251987235+00:00",
+  "stabilized_usd": 0.8499350000000001,
+  "timestamp": 1743170392,
+  "formatted_datetime": "2025-03-28T13:59:54.143784760+00:00",
   "sc_dir": "data_lsp/user_2/multisig",
-  "raw_btc_usd": 0.0,
+  "raw_btc_usd": 84993.5,
   "prices": {},
-  "multisig_addr": "tb1plucn04ufws6jzlw2ejsdrp85qwu7dtgrv2acrchlcfza6j7n78dstlflvw",
-  "utxos": [],
+  "multisig_addr": "tb1pxpgqf5zqnv7e42zz8jw08xmjytu3nh4t8xdsahm24qzluuc2k6tqkcg6ag",
+  "utxos": [
+    {
+      "txid": "337f5a86dae04cef0f50702c80870e6dac32874bbbe0818fe291f47b6e35e708",
+      "vout": 1,
+      "amount": 1000,
+      "confirmations": 12503,
+      "script_pubkey": "51208b6b561f7d0fd466f2317145cecd408102fa128a83af748a0d952d098e773d8f",
+      "height": null,
+      "usd_value": 0.8495950000000001
+    },
+    {
+      "txid": "054e68cd9748ee68e81e89fda205b455825b776b90d4124e4f5e19a744f485ad",
+      "vout": 0,
+      "amount": 1300,
+      "confirmations": 76,
+      "script_pubkey": "51208b6b561f7d0fd466f2317145cecd408102fa128a83af748a0d952d098e773d8f",
+      "height": null,
+      "usd_value": 1.1044734999999999
+    }
+  ],
   "pending_sweep_txid": null,
   "events": [],
   "total_withdrawn_usd": 0.0,
@@ -23,8 +42,25 @@
   "hedge_ready": false,
   "last_hedge_time": 0,
   "short_reduction_amount": null,
-  "old_addresses": [
-    "tb1p3d44v8mapl2xdu33w9zuan2qsyp05y52swhhfzsdj5ksnrnh8k8sp5klme"
-  ],
-  "history": []
+  "old_addresses": [],
+  "history": [
+    {
+      "txid": "337f5a86dae04cef0f50702c80870e6dac32874bbbe0818fe291f47b6e35e708",
+      "vout": 1,
+      "amount_sat": 1000,
+      "address": "tb1p3d44v8mapl2xdu33w9zuan2qsyp05y52swhhfzsdj5ksnrnh8k8sp5klme",
+      "keychain": "External",
+      "timestamp": 1743034495,
+      "confirmations": 12503,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.8499350000000001,
+      "spendable": true,
+      "derivation_path": "m/86'/1'/0'/0/0",
+      "spent": false
+    }
+  ]
 }
