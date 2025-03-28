@@ -5,11 +5,11 @@
   "accumulated_btc": {
     "sats": 2300
   },
-  "stabilized_usd": 0.8499350000000001,
-  "timestamp": 1743170392,
-  "formatted_datetime": "2025-03-28T13:59:54.143784760+00:00",
+  "stabilized_usd": 1.92855,
+  "timestamp": 1743195182,
+  "formatted_datetime": "2025-03-28T20:52:48.451778603+00:00",
   "sc_dir": "data_lsp/user_2/multisig",
-  "raw_btc_usd": 84993.5,
+  "raw_btc_usd": 83850.0,
   "prices": {},
   "multisig_addr": "tb1pxpgqf5zqnv7e42zz8jw08xmjytu3nh4t8xdsahm24qzluuc2k6tqkcg6ag",
   "utxos": [
@@ -17,19 +17,19 @@
       "txid": "337f5a86dae04cef0f50702c80870e6dac32874bbbe0818fe291f47b6e35e708",
       "vout": 1,
       "amount": 1000,
-      "confirmations": 12503,
+      "confirmations": 12854,
       "script_pubkey": "51208b6b561f7d0fd466f2317145cecd408102fa128a83af748a0d952d098e773d8f",
       "height": null,
-      "usd_value": 0.8495950000000001
+      "usd_value": 0.8385
     },
     {
       "txid": "054e68cd9748ee68e81e89fda205b455825b776b90d4124e4f5e19a744f485ad",
       "vout": 0,
       "amount": 1300,
-      "confirmations": 76,
+      "confirmations": 427,
       "script_pubkey": "51208b6b561f7d0fd466f2317145cecd408102fa128a83af748a0d952d098e773d8f",
       "height": null,
-      "usd_value": 1.1044734999999999
+      "usd_value": 1.09005
     }
   ],
   "pending_sweep_txid": null,
@@ -51,15 +51,33 @@
       "address": "tb1p3d44v8mapl2xdu33w9zuan2qsyp05y52swhhfzsdj5ksnrnh8k8sp5klme",
       "keychain": "External",
       "timestamp": 1743034495,
-      "confirmations": 12503,
+      "confirmations": 12854,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 0.8499350000000001,
+      "stable_value_usd": 0.8385,
       "spendable": true,
       "derivation_path": "m/86'/1'/0'/0/0",
+      "spent": false
+    },
+    {
+      "txid": "054e68cd9748ee68e81e89fda205b455825b776b90d4124e4f5e19a744f485ad",
+      "vout": 0,
+      "amount_sat": 1300,
+      "address": "tb1p3d44v8mapl2xdu33w9zuan2qsyp05y52swhhfzsdj5ksnrnh8k8sp5klme",
+      "keychain": "Internal",
+      "timestamp": 1743195182,
+      "confirmations": 427,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 1.09005,
+      "spendable": true,
+      "derivation_path": "m/84'/1'/0'/1/0",
       "spent": false
     }
   ]

@@ -1,135 +1,123 @@
-Pulser: Bitcoin/Lightning Native USD Stabilization
+Pulser: Bitcoin-Backed USD Stabilization System
+Pulser is a financial infrastructure platform that enables Bitcoin holders to achieve USD value stability without surrendering custody of their coins. It uses a combination of multisig wallets, futures hedging, and Lightning Network channels to provide Bitcoin-backed USD stabilization.
+Architecture Overview
+The platform consists of three main services with a shared common library:
+Copypulser/
+├── common/                # Shared types, utilities, error handling, price feeds
+├── deposit-service/       # Multisig wallets and onchain deposit management
+├── hedge-service/         # Price stabilization through futures contracts
+└── withdraw-service/      # Withdrawal functionality
+Key Components
+Common Library
 
-Pulser is a financial infrastructure platform that provides Bitcoin-backed USD stabilization for underserved communities. The project consists of three main services:
+Error handling and types used across services
+Price feed integration with multiple providers
+State management for persistent storage
+Utilities and helper functions
 
-1. **Deposit Service (StableChain)** - Handles multisig wallets and onchain deposits
-2. **Channel Service (StableChannels)** - Manages Lightning Network channels
-3. **Hedging Service** - Provides price stabilization using futures
+Deposit Service
 
-## Architecture
+User onboarding and wallet creation using BDK (Bitcoin Dev Kit)
+2-of-3 Taproot multisig wallet management
+Deposit address generation and monitoring
+StableChain tracking for deposits and their USD value
+RESTful API for wallet operations
+Webhook notification system
 
-The platform is split into separate crates to manage dependency conflicts and modularize the codebase:
-pulser/
-├── common/             # Shared types, utilities, error handling
-├── deposit-service/    # Handles multisig wallets and onchain deposits
-│   ├── src/
-│   │   ├── api.rs      # HTTP API endpoints
-│   │   ├── config.rs   # Configuration handling
-│   │   ├── keys.rs     # Key management
-│   │   ├── main.rs     # User-facing API
-│   │   ├── monitor.rs  # Deposit monitoring
-│   │   ├── storage.rs  # File I/O operations
-│   │   ├── types.rs    # Data structures
-│   │   ├── wallet.rs   # Wallet functionality
-│   │   └── webhook.rs  # Notification system
-│   └── bin/
-│       └── deposit_monitor.rs  # Background monitoring service
-├── channel-service/    # Manages Lightning Network channels
-└── hedging-service/    # Manages price stabilization via futures
-Copy
-## Deposit Service
+Hedge Service
 
-The deposit service handles user onboarding, wallet creation, and deposit monitoring:
+Futures position management on Deribit
+Dynamic hedging based on market conditions
+PnL monitoring and optimization
+Risk management with collateralization checks
 
-### Key Components
+Withdraw Service
 
-- **wallet.rs**: Manages wallet creation, address generation, and UTXO tracking
-- **keys.rs**: Handles cryptographic key management for Taproot multisig
-- **api.rs**: Provides HTTP endpoints for deposit status, syncing, and registration
-- **monitor.rs**: Periodically checks for new UTXOs on deposit addresses
-- **storage.rs**: Handles persistent state management for activity and status
-- **webhook.rs**: Sends notifications when new deposits are detected
-- **main.rs**: User-facing API service
-- **deposit_monitor.rs**: Background monitoring service
+Withdrawal to Bitcoin addresses
+Stable value withdrawal management
+Integration with hedge positions to maintain stability
 
-### Services
+Security Model
+Pulser employs a 2-of-3 multisig architecture to ensure funds security:
 
-The deposit service operates two separate but complementary services:
+User Key: Controlled solely by the end user
+LSP Key: Managed by the Lightning Service Provider
+Trustee Key: Controlled by an independent third party
 
-1. **User API (main.rs)**: Provides user-facing endpoints for deposit creation and status checking
-2. **Deposit Monitor (deposit_monitor.rs)**: Background service that watches for deposits and sends notifications
+This design ensures that no single party can unilaterally spend the funds, while enabling efficient operations when two parties cooperate.
+Technical Features
 
-## Getting Started
+Taproot Multisig: Uses Bitcoin's latest Taproot technology for enhanced privacy and efficiency
+Real-time Price Monitoring: Aggregates price data from multiple sources for accurate valuation
+Automatic Deposit Detection: Monitors the blockchain for new deposits
+Dynamic Hedge Adjustments: Adapts hedge positions based on market volatility, funding rates, and depth
+Stable Value Preservation: Maintains USD-equivalent value through market fluctuations
 
-### Prerequisites
+Prerequisites
 
-- Rust 1.70 or higher
-- Bitcoin Core (optional, for regtest mode)
-- Access to Esplora API (for testnet/mainnet)
+Rust 1.70 or higher
+Access to Esplora API endpoints
+Deribit API access (for hedging service)
+Bitcoin testnet or mainnet node (optional)
 
-### Installation
+Setup and Installation
 
-1. Clone the repository:
-git clone https://github.com/username/pulser.git
+Clone the repository:
+bashCopygit clone https://github.com/username/pulser.git
 cd pulser
-Copy
-2. Build the deposit service (testnet only for now):
-cd deposit-service
-cargo build --features="user"
-Copy
-3. Generate keys for LSP and Trustee:
-cd ../tools/key-generator
+
+Configure services:
+Edit the configuration files in each service's config directory to set network, API keys, and other parameters.
+Build the components:
+bashCopycargo build --release
+
+Generate keys (for LSP and Trustee roles):
+bashCopycd tools/key-generator # If available
 cargo run
-Copy
-4. Update `deposit-service/service_config.toml` with your desired settings and the generated keys.
 
-5. Run the deposit service API:
-cd ../deposit-service
-cargo run --features="user" -- --testnet
-Copy
-6. Run the deposit monitor service:
-cd ../deposit-service
-cargo run --bin deposit_monitor
-Copy
-## Workflow
+Run services:
+bashCopy# Start deposit service
+cd deposit-service
+cargo run --release
 
-1. **Deposit**: User sends BTC to a 2-of-3 multisig address
-2. **Stabilization**: The deposit is hedged with futures to maintain USD value
-3. **Channel Opening**: When threshold is reached, funds move to Lightning channel
-4. **Lightning Payments**: User can make/receive Lightning payments with stabilized value
-5. **Withdrawal**: User can withdraw to USDT or BTC at any time
+# Start hedging service
+cd hedge-service
+cargo run --release
 
-## Security
 
-The system uses a 2-of-3 multisig architecture to ensure funds are always safe:
+API Endpoints
+Deposit Service
 
-- **User Key**: Owned solely by the user
-- **LSP Key**: Owned by the Lightning Service Provider
-- **Trustee Key**: Owned by an independent third party
+GET /health - Service health check
+GET /status - Service status details
+GET /user/:id - Get user status
+GET /activity/:id - Get user activity log
+POST /sync/:id - Trigger user account sync
+POST /force_sync/:id - Force immediate sync
+POST /register - Register a new user
+POST /init_wallet - Initialize a new wallet
+GET /sync_utxos/:id - Check for new UTXOs
 
-All keys and descriptors are securely stored and encrypted at rest.
+Hedge Service
+Provides internal endpoints for managing hedge positions.
+Workflow
 
-## API Documentation
+User Registration: A new user is registered with the service
+Wallet Creation: A 2-of-3 multisig wallet is created for the user
+Deposit: User sends BTC to their multisig address
+Stabilization: The deposited amount is hedged to maintain USD value
+Withdrawal: User can withdraw stable value at any time
 
-### Deposit Service Endpoints
+Development
+The codebase is modular and well-structured to allow for independent development of components. Key development features:
 
-- `POST /deposit` - Create new deposit address
-- `GET /deposit/{user_id}` - Get deposit status
-- `GET /deposit/{user_id}/utxos` - Get UTXOs for a user
-- `POST /withdraw` - Request a withdrawal
-- `GET /status` - Check service status
+Feature Flags: Service roles can be selected at build time
+Error Handling: Comprehensive error types and propagation
+Persistent Storage: Atomic file operations for data integrity
+Concurrency: Uses Tokio for async operations and thread management
+Monitoring: Built-in health checks and status reporting
 
-### Deposit Monitor Endpoints
-
-- `GET /health` - Service health check
-- `GET /status` - Detailed service status
-- `GET /user/{user_id}` - Get user-specific status
-- `GET /activity/{user_id}` - Get UTXO activity for a user
-- `POST /sync/{user_id}` - Trigger synchronization for a user
-- `POST /force_sync/{user_id}` - Force synchronization via message channel
-- `POST /register` - Register a new user
-- `GET /sync_utxos/{user_id}` - Quick UTXO check for a specific user
-
-## Development
-
-### Running in Different Modes
-
-The deposit service can run in three different modes:
-
-1. **User Mode**: `cargo run --features="user"`
-2. **LSP Mode**: `cargo run --features="lsp"`
-3. **Trustee Mode**: `cargo run --features="trustee"`
-
-### Testing
-cargo test
-
+License
+[Insert appropriate license information here]
+Contributing
+[Insert contribution guidelines here]

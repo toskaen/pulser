@@ -86,27 +86,6 @@ impl StateManager {
         serde_json::from_str(&content).map_err(|e| PulserError::StorageError(e.to_string()))
     }
 
-    /// Prunes an activity log file to maintain only the most recent entries
-    pub async fn prune_activity_log(&self, activity_path: &Path, max_entries: usize) -> Result<(), PulserError> {
-        let full_path = self.data_dir.join(activity_path);
-        if !full_path.exists() {
-            return Ok(());
-        }
-
-        let lock = self.get_file_lock(full_path.to_str().unwrap_or("unknown")).await;
-        let _guard = lock.lock().await;
-
-        let content = fs::read_to_string(&full_path)?;
-        let mut utxos: Vec<UtxoInfo> = serde_json::from_str(&content)?;
-        utxos.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        if utxos.len() > max_entries {
-            utxos.truncate(max_entries);
-            self.save(activity_path, &utxos).await?;
-            debug!("Pruned activity log at {} to {} entries", full_path.display(), max_entries);
-        }
-        Ok(())
-    }
-
     /// Saves StableChain data for a specific user with additional debug logging
 // In common/src/storage.rs:
 

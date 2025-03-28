@@ -1,16 +1,16 @@
 {
   "user_id": "2",
-  "last_sync": 1743170397,
+  "last_sync": 1743195182,
   "sync_status": "completed",
   "utxo_count": 2,
   "total_value_btc": 0.000023,
-  "total_value_usd": 1.9540685,
+  "total_value_usd": 1.92855,
   "confirmations_pending": false,
   "last_update_message": "Sync completed",
-  "sync_duration_ms": 26327,
+  "sync_duration_ms": 5835,
   "last_error": null,
-  "last_success": 1743170397,
+  "last_success": 1743195182,
   "pruned_utxo_count": 0,
   "current_deposit_address": "tb1pxpgqf5zqnv7e42zz8jw08xmjytu3nh4t8xdsahm24qzluuc2k6tqkcg6ag",
-  "last_deposit_time": 1743170392
+  "last_deposit_time": 1743195165
 }

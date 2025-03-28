@@ -359,32 +359,51 @@ let block_time = if let Ok(txid) = Txid::from_str(&utxo.txid) {
                                             {
                                                 let mut wallets_lock = wallets.lock().await;
                                                 if let Some((wallet, chain)) = wallets_lock.get_mut(&user_id) {
-                                                    chain.history.push(common::UtxoInfo { // Fix #7
-                                                        txid: utxo.txid.clone(),
-                                                        vout: utxo.vout,
-                                                        amount_sat: utxo.amount,
-                                                        address: deposit_address.clone(),
-                                                        keychain: "External".to_string(),
-                                                        timestamp: block_time,
-                                                        confirmations: utxo.confirmations,
-                                                        participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
-                                                        stable_value_usd: utxo_value_usd,
-                                                        spendable: utxo.confirmations >= 1,
-                                                        derivation_path: "m/86'/1'/0'/0/0".to_string(),
-                                                        spent: false,
-                                                    });
+let history_entry = common::UtxoInfo {
+    txid: utxo.txid.clone(),
+    vout: utxo.vout,
+    amount_sat: utxo.amount,
+    address: deposit_address.clone(),
+    keychain: "External".to_string(),
+    timestamp: block_time,
+    confirmations: utxo.confirmations,
+    participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+    stable_value_usd: utxo_value_usd,
+    spendable: utxo.confirmations >= 1,
+    derivation_path: "m/86'/1'/0'/0/0".to_string(),
+    spent: false,
+};
 
-                                                    chain.utxos = wallet.check_address(&Address::from_str(&deposit_address)?.require_network(Network::Testnet)?, &price_data, &price_feed_clone).await?; // Fix #8
-                                                    let total_sats: u64 = chain.utxos.iter().map(|u| u.amount).sum();
-                                                    chain.accumulated_btc = common::Bitcoin::from_sats(total_sats);
-                                                    chain.stabilized_usd = common::USD(
-                                                        chain.history.iter().filter(|h| !h.spent).map(|h| h.stable_value_usd).sum()
-                                                    );
+// Save current stabilized_usd
+let previous_stabilized_usd = chain.stabilized_usd.clone();
+
+// Update UTXOs
+chain.utxos = wallet.check_address(&Address::from_str(&deposit_address)?.require_network(Network::Testnet)?, &price_data, &price_feed_clone).await?;
+let total_sats: u64 = chain.utxos.iter().map(|u| u.amount).sum();
+chain.accumulated_btc = common::Bitcoin::from_sats(total_sats);
+
+// Restore stabilized_usd if history already includes this UTXO
+if !chain.history.iter().any(|h| h.txid == utxo.txid && h.vout == utxo.vout) {
+    chain.history.push(history_entry);
+    // Add new value to stabilized_usd
+    chain.stabilized_usd = common::USD(previous_stabilized_usd.0 + utxo_value_usd);
+} else {
+    // Restore previous value
+    chain.stabilized_usd = previous_stabilized_usd;
+}
+
+        // Update UTXOs but maintain stabilized_usd
+        let previous_stabilized_usd = chain.stabilized_usd.clone();
+        chain.utxos = wallet.check_address(&Address::from_str(&deposit_address)?.require_network(Network::Testnet)?, &price_data, &price_feed_clone).await?;
+        let total_sats: u64 = chain.utxos.iter().map(|u| u.amount).sum();
+        chain.accumulated_btc = common::Bitcoin::from_sats(total_sats);
                                                     chain.raw_btc_usd = deribit_price;
                                                     chain.timestamp = now as i64; // Fix #9
                                                     chain.formatted_datetime = Utc::now().to_rfc3339();
                                                     chain.prices = price_data.price_feeds.clone();
                                                     chain.multisig_addr = deposit_address.clone();
+                                                            chain.stabilized_usd = previous_stabilized_usd;
+
 
                                                     match wallet.state_manager.save_stable_chain(&user_id, chain).await {
                                                         Ok(_) => info!("Saved StableChain with locked USD and block time for user {}", user_id),

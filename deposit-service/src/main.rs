@@ -439,18 +439,25 @@ loop {
         _ = sleep(Duration::from_secs(sync_interval_secs)) => {
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             let wallets_lock = wallets.lock().await;
+            let mut status = service_status.lock().await;
             let mut total_utxos = 0;
             let mut total_value_btc = 0.0;
             let mut total_value_usd = 0.0;
-            for (_, (_, chain)) in wallets_lock.iter() {
-                total_utxos += chain.utxos.len() as u32;
-                total_value_btc += chain.accumulated_btc.to_btc();
-                total_value_usd += chain.stabilized_usd.0;
-            }
+   for (user_id, (_, chain)) in wallets_lock.iter() {
+    total_utxos += chain.utxos.len() as u32;
+    total_value_btc += chain.accumulated_btc.to_btc();
+    total_value_usd += chain.stabilized_usd.0;
+                if let Some(user_status) = user_statuses.lock().await.get_mut(user_id) {
+        user_status.utxo_count = chain.utxos.len() as u32;
+        user_status.total_value_btc = chain.accumulated_btc.to_btc();
+        user_status.total_value_usd = chain.stabilized_usd.0;
+        }
+        }
             let mut status = service_status.lock().await;
             status.total_utxos = total_utxos;
-            status.total_value_btc = total_value_btc;
-            status.total_value_usd = total_value_usd;
+status.total_value_btc = total_value_btc;
+status.total_value_usd = total_value_usd;
+status.users = user_statuses.lock().await.clone();
             status.health = "healthy".to_string();
             status.last_update = now;
             // Add per-user data
@@ -461,7 +468,6 @@ loop {
     }
 }
 
-// Shutdown cleanup
 // Shutdown cleanup
 info!("Initiating shutdown cleanup");
 
@@ -536,14 +542,12 @@ match tokio::time::timeout(Duration::from_secs(10), async {
     Ok(Ok(())) => info!("All tasks shut down successfully within 10 seconds"),
     Ok(Err(e)) => warn!("Shutdown completed with errors: {}", e),
     Err(_) => {
-        warn!("Shutdown timed out after 10 seconds, forcing exit");
-        // Forcefully abort hung tasks (optional, aggressive)
-        price_handle.abort();
-        retry_handle.abort();
-        monitor_handle.abort();
-        server_handle.abort();
-        sync_handle.abort();
+        warn!("Shutdown timed out after 10 seconds - tasks may still be running");
+        // No abort calls
     }
 };
 
 info!("Shutdown process completed");
+
+ Ok(()) // Return Result at the end of the function
+}

@@ -16,7 +16,7 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use common::price_feed::PriceFeed;
-use common::UtxoInfo;
+use common::types::UtxoInfo;  // Not storage::UtxoInfo
 use common::StateManager; // Updated import
 use common::{StableChain, Bitcoin};
 use common::types::DepositAddressInfo;
@@ -113,6 +113,23 @@ descriptor: init_result.deposit_info.descriptor.clone(),
             price_feed,
         })
     }
+    
+    fn create_history_entry(&self, utxo: &Utxo, address: String) -> UtxoInfo {
+    UtxoInfo {
+        txid: utxo.txid.clone(),
+        vout: utxo.vout,
+        amount_sat: utxo.amount,
+        address: address,
+        keychain: "External".to_string(), // Or determine from address
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        confirmations: utxo.confirmations,
+        participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+        stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
+        spendable: utxo.confirmations >= 1,
+        derivation_path: "m/86'/1'/0'/0/0".to_string(), // Default path
+        spent: false,
+    }
+}
 
 pub async fn update_stable_chain(&mut self, price_info: &PriceInfo, price_feed: &PriceFeed) -> Result<Vec<Utxo>, PulserError> {
     let logged = LOGGED_ADDRESSES.lock().await;
@@ -135,9 +152,31 @@ for old_addr in &old_addresses {
     self.stable_chain.utxos = all_utxos.clone();
     let total_sats: u64 = self.stable_chain.utxos.iter().map(|u| u.amount).sum();
     self.stable_chain.accumulated_btc = common::Bitcoin::from_sats(total_sats);
-    self.stable_chain.stabilized_usd = common::USD(
-        self.stable_chain.history.iter().filter(|h| !h.spent).map(|h| h.stable_value_usd).sum()
-    );
+
+// In update_stable_chain method
+for utxo in &all_utxos {
+    if !self.stable_chain.history.iter().any(|h| h.txid == utxo.txid && h.vout == utxo.vout) {
+        // Create typed_utxo_info directly from utxo
+        let typed_utxo_info = common::types::UtxoInfo {
+            txid: utxo.txid.clone(),
+            vout: utxo.vout,
+            amount_sat: utxo.amount,
+            address: current_addr.to_string(),
+            keychain: "External".to_string(),
+            timestamp: chrono::Utc::now().timestamp() as u64,
+            confirmations: utxo.confirmations,
+            participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+            stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
+            spendable: utxo.confirmations >= 1,
+            derivation_path: "m/86'/1'/0'/0/0".to_string(),
+            spent: false,
+        };
+        
+        self.stable_chain.history.push(typed_utxo_info);
+        debug!("Added UTXO to history: {}:{} (${:.2})", utxo.txid, utxo.vout, 
+            utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0);
+    }
+}
     
     let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_info.raw_btc_usd);
     self.stable_chain.raw_btc_usd = deribit_price;

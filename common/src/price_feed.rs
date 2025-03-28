@@ -2,7 +2,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use log::{info, warn, debug};
 use serde::{Serialize, Deserialize};
@@ -14,6 +14,9 @@ use crate::error::PulserError;
 use crate::types::PriceInfo;
 use crate::utils::now_timestamp;
 use tokio::sync::broadcast;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio::sync::Mutex as TokioMutex;
+
 
 
 // Constants
@@ -24,7 +27,7 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
 lazy_static::lazy_static! {
     static ref PRICE_CACHE: Arc<RwLock<(f64, i64)>> = Arc::new(RwLock::new((0.0, now_timestamp())));
-    static ref HISTORY_LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+    static ref HISTORY_LOCK: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -39,6 +42,7 @@ pub struct PriceFeed {
     latest_deribit_price: Arc<RwLock<f64>>,
     last_deribit_update: Arc<RwLock<i64>>,
     client: reqwest::Client,
+active_ws: Arc<TokioMutex<Option<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>>>
 }
 
 impl PriceFeed {
@@ -47,58 +51,120 @@ impl PriceFeed {
             latest_deribit_price: Arc::new(RwLock::new(0.0)),
             last_deribit_update: Arc::new(RwLock::new(0)),
             client: reqwest::Client::new(),
+active_ws: Arc::new(TokioMutex::new(None)),
+
         }
     }
+    
+    pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
+        let config: toml::Value = toml::from_str(&fs::read_to_string("config/service_config.toml").unwrap_or_default())?;
+        let api_key = config.get("deribit_id").and_then(|v| v.as_str()).unwrap_or("your_deribit_id").to_string();
+        let secret = config.get("deribit_secret").and_then(|v| v.as_str()).unwrap_or("your_deribit_secret").to_string();
 
-pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
-    let config: toml::Value = toml::from_str(&fs::read_to_string("config/service_config.toml").unwrap_or_default())?;
-    let api_key = config.get("deribit_id").and_then(|v| v.as_str()).unwrap_or("your_deribit_id").to_string();
-    let secret = config.get("deribit_secret").and_then(|v| v.as_str()).unwrap_or("your_deribit_secret").to_string();
-
-    let mut attempts = 0u32;
-    loop {
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("Deribit feed shutting down");
-                break;
-            }
-            _ = async {
-                if let Err(e) = self.connect_deribit(&api_key, &secret).await {
-                    warn!("Deribit WebSocket failed: {}. Retrying in {}s...", e, 5 * 2u64.pow(attempts));
-                    sleep(Duration::from_secs(5 * 2u64.pow(attempts))).await;
-                    attempts = attempts.saturating_add(1); // Prevent overflow
-                } else {
-                    attempts = 0; // Reset on success
+        let mut attempts = 0u32;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Deribit feed shutting down");
+                    // Properly close any active WebSocket connection
+                    let mut ws_guard = self.active_ws.lock().await;
+                    if let Some(mut ws) = ws_guard.take() {
+                        info!("Closing Deribit WebSocket connection");
+                        if let Err(e) = ws.close(None).await {
+                            warn!("Error closing Deribit WebSocket: {}", e);
+                        }
+                    }
+                    break;
                 }
-            } => {}
+                _ = async {
+                    if let Err(e) = self.connect_deribit(&api_key, &secret).await {
+                        warn!("Deribit WebSocket failed: {}. Retrying in {}s...", e, 5 * 2u64.pow(attempts));
+                        sleep(Duration::from_secs(5 * 2u64.pow(attempts))).await;
+                        attempts = attempts.saturating_add(1); // Prevent overflow
+                    } else {
+                        attempts = 0; // Reset on success
+                    }
+                } => {}
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
 
     async fn connect_deribit(&self, api_key: &str, secret: &str) -> Result<(), PulserError> {
-        let (mut ws, _) = connect_async("wss://test.deribit.com/ws/api/v2").await?;
+        let (mut ws_conn, _) = connect_async("wss://test.deribit.com/ws/api/v2").await?;
+        
+        // Auth message
         let auth_msg = json!({"jsonrpc": "2.0", "id": 1, "method": "public/auth", "params": {"grant_type": "client_credentials", "client_id": api_key, "client_secret": secret}});
-        ws.send(Message::Text(auth_msg.to_string())).await?;
-        let token_msg = ws.next().await.ok_or(PulserError::ApiError("No auth response".to_string()))??;
+        ws_conn.send(Message::Text(auth_msg.to_string())).await?;
+        
+        let token_msg = ws_conn.next().await.ok_or(PulserError::ApiError("No auth response".to_string()))??;
         let token_json: Value = serde_json::from_str(&token_msg.into_text()?)?;
         debug!("Deribit auth response: {:?}", token_json);
+        
         let access_token = token_json["result"]["access_token"]
             .as_str()
             .ok_or(PulserError::ApiError("Auth failed: no access token".to_string()))?
             .to_string();
 
-        ws.send(Message::Text(json!({"jsonrpc": "2.0", "id": 2, "method": "public/subscribe", "params": {"channels": ["ticker.BTC-PERPETUAL.raw"]}}).to_string())).await?;
+        ws_conn.send(Message::Text(json!({"jsonrpc": "2.0", "id": 2, "method": "public/subscribe", "params": {"channels": ["ticker.BTC-PERPETUAL.raw"]}}).to_string())).await?;
         info!("Subscribed to Deribit ticker.BTC-PERPETUAL.raw");
-        while let Some(msg) = ws.next().await {
-            let data: Value = serde_json::from_str(&msg?.into_text()?)?;
-            if let Some(price) = data.get("params").and_then(|p| p.get("data")).and_then(|d| d.get("last_price")).and_then(|p| p.as_f64()) {
-                let now = now_timestamp();
-                *self.latest_deribit_price.write().unwrap() = price;
-                *self.last_deribit_update.write().unwrap() = now as i64;
-                debug!("Deribit BTC/USD: ${:.2}", price);
-            }
+        
+        // Store the connection
+        {
+            let mut ws_guard = self.active_ws.lock().await;
+            *ws_guard = Some(ws_conn);
         }
+        
+        // Start a separate task to process messages
+        let active_ws_clone = self.active_ws.clone();
+        let latest_price_clone = self.latest_deribit_price.clone();
+        let last_update_clone = self.last_deribit_update.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                let mut ws_lock = active_ws_clone.lock().await;
+                let ws_opt = &mut *ws_lock;
+                
+                if let Some(ws) = ws_opt {
+                    match ws.next().await {
+                        Some(Ok(msg)) => {
+                            // Process the message
+                            if let Ok(text) = msg.into_text() {
+                                if let Ok(data) = serde_json::from_str::<Value>(&text) {
+                                    if let Some(price) = data.get("params")
+                                        .and_then(|p| p.get("data"))
+                                        .and_then(|d| d.get("last_price"))
+                                        .and_then(|p| p.as_f64()) 
+                                    {
+                                        let now = now_timestamp();
+                                        *latest_price_clone.write().unwrap() = price;
+                                        *last_update_clone.write().unwrap() = now as i64;
+                                        debug!("Deribit BTC/USD: ${:.2}", price);
+                                    }
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!("WebSocket error: {}", e);
+                            break;
+                        }
+                        None => {
+                            debug!("WebSocket connection closed");
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+                
+                // Release the lock to allow other operations
+                drop(ws_lock);
+                
+                // Small sleep to prevent CPU spinning
+                sleep(Duration::from_millis(10)).await;
+            }
+        });
+        
         Ok(())
     }
 
@@ -289,7 +355,7 @@ pub fn get_cached_price() -> Option<f64> {
 async fn save_price_history(entries: Vec<PriceHistory>) -> Result<(), PulserError> {
     if entries.is_empty() { return Ok(()); }
     let mut history = load_price_history().await?;
-    let _lock = HISTORY_LOCK.lock().unwrap();
+let _lock = HISTORY_LOCK.lock().await;
     history.extend(entries);
     history.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     if history.len() > 1440 { history.truncate(1440); }

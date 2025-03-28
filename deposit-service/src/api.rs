@@ -16,7 +16,8 @@ use common::types::PriceInfo;
 use common::types::USD;
 use crate::wallet::DepositWallet;
 use common::{ServiceStatus, UserStatus, StableChain, WebhookRetry, Bitcoin};
-use common::storage::{StateManager, UtxoInfo};
+use common::types::{UtxoInfo as TypesUtxoInfo};
+use common::storage::{StateManager, UtxoInfo as StorageUtxoInfo};
 use crate::webhook::{WebhookConfig, notify_new_utxos};
 use tokio::time::sleep;
 use crate::wallet_init::{self}; // Add to imports
@@ -141,20 +142,6 @@ let health = warp::path("health")
                 match statuses.get(&user_id) {
                     Some(status) => Ok::<_, Rejection>(warp::reply::json(status)),
                     None => Ok::<_, Rejection>(warp::reply::json(&json!({"error": "User not found"}))),
-                }
-            }
-        }
-    });
-
-    let activity = warp::path!("activity" / String).and(warp::get()).and_then({
-        let state_manager = state_manager.clone();
-        move |user_id: String| {
-            let state_manager = state_manager.clone();
-            async move {
-                let activity_path = PathBuf::from(format!("user_{}/activity_{}.json", user_id, user_id));
-                match state_manager.load::<Vec<UtxoInfo>>(&activity_path).await {
-                    Ok(utxos) => Ok::<_, Rejection>(warp::reply::json(&json!({"utxos": utxos}))),
-                    Err(_) => Ok::<_, Rejection>(warp::reply::json(&json!({"utxos": []}))),
                 }
             }
         }
@@ -366,7 +353,6 @@ wallets_lock.insert(user_id.clone(), (wallet, stable_chain));
     health
         .or(status)
         .or(user_status)
-        .or(activity)
         .or(sync_route)
         .or(force_sync)
         .or(register)
@@ -432,12 +418,10 @@ pub async fn sync_user(
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let user_dir = PathBuf::from(format!("user_{}", user_id));
     let status_path = user_dir.join(format!("status_{}.json", user_id));
-    let activity_path = user_dir.join(format!("activity_{}.json", user_id)); // Define activity_path here
 
     let mut statuses = user_statuses.lock().await;
     let status = statuses.entry(user_id.to_string()).or_insert_with(|| UserStatus::new(user_id));
 
-    let mut activity = state_manager.load::<Vec<UtxoInfo>>(&activity_path).await.unwrap_or_else(|_| Vec::new());
     let last_sync = status.last_sync;
     let sync_interval = 24 * 3600;
     let should_full_sync = last_sync == 0 || now - last_sync > sync_interval;
@@ -559,32 +543,56 @@ pub async fn sync_user(
         sleep(Duration::from_secs(2)).await;
     }
 
-    // Update the chain with the new UTXOs
-    {
-        let mut wallets_lock = wallets.lock().await;
-        if let Some((_, chain)) = wallets_lock.get_mut(user_id) {
-            chain.utxos = utxos.clone();
-            chain.accumulated_btc = Bitcoin::from_sats(chain.utxos.iter().map(|u| u.amount).sum());
-        }
+// Update the chain with the new UTXOs
+{
+    let mut wallets_lock = wallets.lock().await;
+    if let Some((_, chain)) = wallets_lock.get_mut(user_id) {
+        debug!("Updated chain for user {}: {} UTXOs, {} BTC (${:.2}), {} history entries", 
+            user_id, chain.utxos.len(), chain.accumulated_btc.to_btc(), chain.stabilized_usd.0, chain.history.len());
     }
+}
 
-    // Process spent UTXOs
-    for utxo in &previous_utxos {
-        if !utxos.iter().any(|u| u.txid == utxo.txid && u.vout == utxo.vout) {
-            if let Some(activity_utxo) = activity.iter_mut().find(|a| a.txid == utxo.txid && a.vout == utxo.vout) {
-                activity_utxo.spent = true;
+// Ensure historical data is preserved for existing UTXOs
+{
+    let mut wallets_lock = wallets.lock().await;
+    if let Some((_, chain)) = wallets_lock.get_mut(user_id) {
+        // For each UTXO, make sure it's in the history if not already present
+        for utxo in &utxos {
+            if !chain.history.iter().any(|h| h.txid == utxo.txid && h.vout == utxo.vout) {
+                let utxo_addr = Address::from_script(&ScriptBuf::from_hex(&utxo.script_pubkey)?, Network::Testnet)?;
+                let is_external = utxo_addr.to_string() == deposit_addr.to_string();
+                
+                let utxo_info = TypesUtxoInfo {
+                    txid: utxo.txid.clone(),
+                    amount_sat: utxo.amount,
+                    address: utxo_addr.to_string(),
+                    keychain: if is_external { "External".to_string() } else { "Internal".to_string() },
+                    timestamp: now,
+                    confirmations: utxo.confirmations,
+                    participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+                    stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
+                    spendable: utxo.confirmations >= 1,
+                    derivation_path: if is_external { "m/84'/1'/0'/0/0".to_string() } else { "m/84'/1'/0'/1/0".to_string() },
+                    vout: utxo.vout,
+                    spent: false,
+                };
+                
+                chain.history.push(utxo_info);
+                debug!("Added UTXO to history: {}:{} (${:.2})", utxo.txid, utxo.vout, 
+                    utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0);
             }
         }
     }
+}
 
-    // Find new UTXOs
-    let mut new_utxos = Vec::new();
-    for utxo in &utxos {
+// Find new UTXOs (compared to previous state)
+let mut new_utxos = Vec::new();
+for utxo in &utxos {
         if !previous_utxos.iter().any(|u| u.txid == utxo.txid && u.vout == utxo.vout) {
             let utxo_addr = Address::from_script(&ScriptBuf::from_hex(&utxo.script_pubkey)?, Network::Testnet)?;
             let is_external = utxo_addr.to_string() == deposit_addr.to_string();
 
-            let utxo_info = UtxoInfo {
+            let utxo_info = StorageUtxoInfo {
                 txid: utxo.txid.clone(),
                 amount_sat: utxo.amount,
                 address: utxo_addr.to_string(),
@@ -603,55 +611,48 @@ pub async fn sync_user(
         }
     }
 
-    // If new funds were detected, generate a new address
-    if new_funds_detected {
-        debug!("New funds detected for user {}", user_id);
-        let total_btc = new_utxos.iter().map(|u| u.amount_sat as f64 / 100_000_000.0).sum::<f64>();
-        let total_usd = new_utxos.iter().map(|u| u.stable_value_usd).sum::<f64>();
-        info!("Detected {} new UTXOs for user {}: {} BTC (${:.2})", new_utxos.len(), user_id, total_btc, total_usd);
-        
-        let new_addr = {
-            let mut wallets_lock = wallets.lock().await;
-            if let Some((wallet, _)) = wallets_lock.get_mut(user_id) {
-                wallet.reveal_new_address().await?
-            } else {
-                return Err(PulserError::UserNotFound(user_id.to_string()));
-            }
-        };
-        
-        status.current_deposit_address = new_addr.to_string();
-        status.last_deposit_time = Some(now);
-    }
+if new_funds_detected {
+    debug!("New funds detected for user {}", user_id);
+    let total_btc = new_utxos.iter().map(|u| u.amount_sat as f64 / 100_000_000.0).sum::<f64>();
+    let total_usd = new_utxos.iter().map(|u| u.stable_value_usd).sum::<f64>();
+    info!("Detected {} new UTXOs for user {}: {} BTC (${:.2})", new_utxos.len(), user_id, total_btc, total_usd);
     
-    // Append new UTXOs to activity
-    activity.extend(new_utxos.clone());
+    let new_addr = {
+        let mut wallets_lock = wallets.lock().await;
+        if let Some((wallet, _)) = wallets_lock.get_mut(user_id) {
+            wallet.reveal_new_address().await?
+        } else {
+            return Err(PulserError::UserNotFound(user_id.to_string()));
+        }
+    };
+    
+    status.current_deposit_address = new_addr.to_string();
+    status.last_deposit_time = Some(now);
+}
 
     // Add stabilization and hedging here
-    if new_funds_detected {
-        let _btc_amount = {
-            let wallets_lock = wallets.lock().await;
-            if let Some((_, chain)) = wallets_lock.get(user_id) {
-                chain.accumulated_btc.to_btc()
-            } else {
-                0.0
-            }
-        };
-        
-        let median_price = price_info.lock().await.raw_btc_usd;
-        let deribit_price = price_feed.get_deribit_price().await.unwrap_or(median_price);
-        let diff_percent = if median_price > 0.0 && deribit_price > 0.0 {
-            ((deribit_price - median_price) / median_price * 100.0).abs()
-        } else { 0.0 };
-        
-        if diff_percent > 5.0 {
-            warn!("Price divergence for user {}: Median ${:.2} vs Deribit ${:.2} ({}%)", user_id, median_price, deribit_price, diff_percent);
+// Add stabilization and hedging here
+if new_funds_detected {
+    let btc_amount = {  // Corrected syntax
+        let wallets_lock = wallets.lock().await;
+        if let Some((_, chain)) = wallets_lock.get(user_id) {
+            chain.accumulated_btc.to_btc()
+        } else {
+            0.0
         }
+    };
+    
+    let median_price = price_info.lock().await.raw_btc_usd;
+    let deribit_price = price_feed.get_deribit_price().await.unwrap_or(median_price);
+    let diff_percent = if median_price > 0.0 && deribit_price > 0.0 {
+        ((deribit_price - median_price) / median_price * 100.0).abs()
+    } else { 0.0 };
+    
+    if diff_percent > 5.0 {
+        warn!("Price divergence for user {}: Median ${:.2} vs Deribit ${:.2} ({}%)", user_id, median_price, deribit_price, diff_percent);
     }
+}
 
-    // Sort activity by timestamp (newest first)
-    activity.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    state_manager.prune_activity_log(&activity_path, 100).await?;
-    state_manager.save(&activity_path, &activity).await?;
 
     // Get the chain for webhook notification
     let chain_for_webhook = {
@@ -708,23 +709,48 @@ pub async fn sync_user(
     }
     
     // Ensure StableChain is explicitly saved again here
-    let chain_to_save = {
-        let wallets_lock = wallets.lock().await;
-        if let Some((_, chain)) = wallets_lock.get(user_id) {
-            chain.clone()
-        } else {
-            return Err(PulserError::UserNotFound(user_id.to_string()));
-        }
-    };
-
-    if let Err(e) = state_manager.save_stable_chain(user_id, &chain_to_save).await {
-        warn!("Failed to save StableChain in sync_user for user {}: {}", user_id, e);
+let chain_to_save = {
+    let mut wallets_lock = wallets.lock().await;
+    if let Some((_, chain)) = wallets_lock.get_mut(user_id) {
+        // Ensure accumulated_btc matches utxos
+        let total_sats: u64 = chain.utxos.iter().map(|u| u.amount).sum();
+        chain.accumulated_btc = Bitcoin::from_sats(total_sats);
+        
+        // Ensure stabilized_usd reflects history
+        chain.stabilized_usd = USD(
+            chain.history.iter()
+                .filter(|h| !h.spent)
+                .map(|h| h.stable_value_usd)
+                .sum()
+        );
+        
+        // Update timestamp
+        chain.timestamp = now as i64;
+        
+        chain.clone()
     } else {
-        info!("Successfully saved StableChain in sync_user for user {}: {} BTC (${:.2})", 
-            user_id, chain_to_save.accumulated_btc.to_btc(), chain_to_save.stabilized_usd.0);
+        return Err(PulserError::UserNotFound(user_id.to_string()));
     }
+  
+};
+
+
+// Log detailed information for debugging
+info!("Saving StableChain for user {}: {} UTXOs, {} BTC (${:.2}), {} history entries", 
+    user_id, 
+    chain_to_save.utxos.len(),
+    chain_to_save.accumulated_btc.to_btc(), 
+    chain_to_save.stabilized_usd.0,
+    chain_to_save.history.len());
+
+if let Err(e) = state_manager.save_stable_chain(user_id, &chain_to_save).await {
+    warn!("Failed to save StableChain: {}", e);
+} else {
+    debug!("Successfully saved StableChain to {}/user_{}/stable_chain_{}.json", 
+        state_manager.data_dir.display(), user_id, user_id);
+}
     
-    return Ok(new_funds_detected);
+return Ok(new_funds_detected);
 }
 
 fn with_wallets(wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>) -> impl Filter<Extract = (Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,), Error = std::convert::Infallible> + Clone {
