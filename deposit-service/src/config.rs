@@ -2,11 +2,7 @@
 use common::error::PulserError;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
-use log::{info, LevelFilter};
-use bitcoin::Network;
 
-/// Main configuration struct for deposit service
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     // Service identification
@@ -23,9 +19,7 @@ pub struct Config {
     pub listening_port: u16,
     
     // File storage
-    pub data_dir: String,
-    pub wallet_dir: String,
-
+    pub data_dir: String,          // Covers stablechain.json, service_status.json
     
     // Logging
     pub log_level: String,
@@ -33,7 +27,7 @@ pub struct Config {
     // Bitcoin settings
     pub lsp_pubkey: String,
     pub trustee_pubkey: String,
-    pub min_confirmations: u32,
+    pub min_confirmations: u32,    // For 1-conf stabilization
     pub channel_threshold_usd: f64,
     pub fee_percentage: f64,
     
@@ -44,11 +38,11 @@ pub struct Config {
     pub request_timeout_secs: u64,
     
     pub role: String,           // Service role (user, lsp, trustee)
-    pub lsp_endpoint: String,    // LSP service endpoint
-    pub trustee_endpoint: String, // Trustee service endpoint
-    pub kraken_btc_address: Option<String>, // Kraken BTC address for USDT withdrawals
-    pub ldk_address: String,     // LDK node address for channel opening
-    pub max_fee_percent: f64,    // Maximum fee percentage allowed for transactions
+    pub lsp_endpoint: String,
+    pub trustee_endpoint: String,
+    pub kraken_btc_address: Option<String>,
+    pub ldk_address: String,
+    pub max_fee_percent: f64,
     
     // Webhook settings
     pub webhook_url: String,
@@ -56,13 +50,15 @@ pub struct Config {
     pub webhook_timeout_secs: u64,
     
     // Monitoring settings
-    pub sync_interval_secs: u64,
-    pub user_scan_interval_secs: u64,
+    pub sync_interval_secs: u64,       // System-wide sync
+    pub user_scan_interval_secs: u64,  // User monitoring interval
     pub max_concurrent_users: usize,
     
     // Price settings
+    pub price_feed_url: String,        // NEW: For Deribit WebSocket
     pub price_cache_duration_secs: u64,
-  }
+}
+
 impl Config {
     pub fn from_file(path: &str) -> Result<Self, PulserError> {
         let config_str = fs::read_to_string(path)?;
@@ -70,4 +66,3 @@ impl Config {
         Ok(config)
     }
 }
-

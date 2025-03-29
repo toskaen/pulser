@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use log::{info, warn, debug};
+use log::{info, trace, warn, debug};
 use serde::{Serialize, Deserialize};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -99,7 +99,7 @@ active_ws: Arc::new(TokioMutex::new(None)),
         
         let token_msg = ws_conn.next().await.ok_or(PulserError::ApiError("No auth response".to_string()))??;
         let token_json: Value = serde_json::from_str(&token_msg.into_text()?)?;
-        debug!("Deribit auth response: {:?}", token_json);
+        trace!("Deribit auth response: {:?}", token_json);
         
         let access_token = token_json["result"]["access_token"]
             .as_str()
@@ -139,7 +139,7 @@ active_ws: Arc::new(TokioMutex::new(None)),
                                         let now = now_timestamp();
                                         *latest_price_clone.write().unwrap() = price;
                                         *last_update_clone.write().unwrap() = now as i64;
-                                        debug!("Deribit BTC/USD: ${:.2}", price);
+                                        trace!("Deribit BTC/USD: ${:.2}", price);
                                     }
                                 }
                             }
@@ -168,24 +168,45 @@ active_ws: Arc::new(TokioMutex::new(None)),
         Ok(())
     }
 
-    pub async fn get_deribit_price(&self) -> Result<f64, PulserError> {
-        let price = *self.latest_deribit_price.read().unwrap();
-        let last = *self.last_deribit_update.read().unwrap();
-        let now = now_timestamp();
-        if price > 0.0 && (now - last) < 60 {
-            debug!("Using cached Deribit price: ${:.2}", price);
-            Ok(price)
-        } else {
-            warn!("Stale Deribit price (last update: {}s ago), fetching fresh", now - last);
-            let fresh_price = self.fetch_deribit_price().await?;
+pub async fn get_deribit_price(&self) -> Result<f64, PulserError> {
+    let price = *self.latest_deribit_price.read().unwrap();
+    let last = *self.last_deribit_update.read().unwrap();
+    let now = now_timestamp(); // i64
+    
+    if price > 0.0 && (now - last) < 60_i64 {
+        trace!("Using cached Deribit price: ${:.2}", price);
+        return Ok(price);
+    }
+
+    let (cached_median, cached_time) = {
+        let cache = PRICE_CACHE.read().unwrap();
+        (cache.0, cache.1)
+    };
+    if cached_median > 0.0 && (now - cached_time) < DEFAULT_CACHE_DURATION_SECS as i64 { // No redundant cast
+        warn!("Deribit price stale ({}s), using median cache: ${:.2}", now - last, cached_median);
+        return Ok(cached_median);
+    }
+
+    warn!("Deribit price stale ({}s) and no fresh median, fetching from Deribit", now - last);
+    match self.fetch_deribit_price().await {
+        Ok(fresh_price) => {
             let mut price_guard = self.latest_deribit_price.write().unwrap();
             let mut time_guard = self.last_deribit_update.write().unwrap();
             *price_guard = fresh_price;
-            *time_guard = now_timestamp() as i64;
+            *time_guard = now_timestamp(); // i64
             info!("Updated Deribit price: ${:.2}", fresh_price);
             Ok(fresh_price)
         }
+        Err(e) => {
+            if cached_median > 0.0 {
+                warn!("Failed to fetch Deribit price: {}, falling back to stale median: ${:.2}", e, cached_median);
+                Ok(cached_median)
+            } else {
+                Err(PulserError::PriceFeedError(format!("No price available: {}", e)))
+            }
+        }
     }
+}
 
     async fn fetch_deribit_price(&self) -> Result<f64, PulserError> {
         let url = "https://test.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL";
@@ -198,77 +219,57 @@ active_ws: Arc::new(TokioMutex::new(None)),
     }
 }
 
-pub async fn fetch_btc_usd_price(client: &Client) -> Result<PriceInfo, PulserError> {
+pub async fn fetch_btc_usd_price(client: &Client, price_feed: &PriceFeed) -> Result<PriceInfo, PulserError> {
     let (cached_price, cached_timestamp) = {
         let cache = PRICE_CACHE.read().unwrap();
         (cache.0, cache.1)
     };
-
-    let now = now_timestamp();
+    let now = now_timestamp(); // i64
     if cached_price > 0.0 && (now - cached_timestamp) < DEFAULT_CACHE_DURATION_SECS as i64 {
-        debug!("Using cached price: ${:.2}", cached_price);
-        return Ok(PriceInfo {
-            raw_btc_usd: cached_price,
-            timestamp: cached_timestamp,
-            price_feeds: HashMap::new(),
+        trace!("Using cached median price: ${:.2}", cached_price);
+        return Ok(PriceInfo { 
+            raw_btc_usd: cached_price, 
+            timestamp: cached_timestamp, 
+            price_feeds: HashMap::new() 
         });
     }
 
-    let start_time = Instant::now();
-    let max_duration = Duration::from_secs(DEFAULT_MAX_RETRY_TIME_SECS); // Fixed here
-
-    for retry in 0..DEFAULT_RETRY_MAX {
-        if start_time.elapsed() >= max_duration {
-            warn!("Price fetch exceeded {}s", DEFAULT_MAX_RETRY_TIME_SECS);
-            break;
-        }
-        if retry > 0 {
-            let backoff = Duration::from_millis(500 * 2u64.pow(retry));
-            debug!("Retry attempt {}", retry + 1);
-            sleep(backoff).await;
-        }
-        match fetch_from_sources(client).await {
-            Ok((price, feeds)) => {
-                let now = now_timestamp();
-                *PRICE_CACHE.write().unwrap() = (price, now);
-                let history = feeds.iter().map(|(source, &btc_usd)| PriceHistory {
-                    timestamp: now as u64,
-                    btc_usd,
-                    source: source.clone(),
-                }).collect::<Vec<PriceHistory>>();
-                if !history.is_empty() {
-                    tokio::spawn(async move {
-                        if let Err(e) = save_price_history(history).await {
-                            warn!("Failed to save price history: {}", e);
-                        }
-                    });
-                }
-                return Ok(PriceInfo {
-                    raw_btc_usd: price,
-                    timestamp: now,
-                    price_feeds: feeds,
-                });
-            }
-            Err(e) => warn!("Fetch attempt {} failed: {}", retry + 1, e),
-        }
+    let deribit_price = price_feed.get_deribit_price().await.ok();
+    if let Some(price) = deribit_price {
+        let now = now_timestamp(); // i64
+        *PRICE_CACHE.write().unwrap() = (price, now);
+        return Ok(PriceInfo { 
+            raw_btc_usd: price, 
+            timestamp: now, 
+            price_feeds: [("Deribit".to_string(), price)].into() 
+        });
     }
-    // ... rest of function unchanged ...
 
-
-    let (stale_price, stale_timestamp) = {
-        let cache = PRICE_CACHE.read().unwrap();
-        (cache.0, cache.1)
+    let (price, feeds) = fetch_from_sources(client).await?;
+    let now = now_timestamp(); // i64
+    *PRICE_CACHE.write().unwrap() = (price, now);
+    
+    let price_info = PriceInfo { 
+        raw_btc_usd: price, 
+        timestamp: now, 
+        price_feeds: feeds, 
     };
 
-    if stale_price > 0.0 {
-        warn!("Using stale price ${:.2} from {}s ago", stale_price, now - stale_timestamp);
-        return Ok(PriceInfo {
-            raw_btc_usd: stale_price,
-            timestamp: stale_timestamp,
-            price_feeds: HashMap::new(),
-        });
-    }
-    Err(PulserError::PriceFeedError("No price available".to_string()))
+    // Build history synchronously
+    let history = price_info.price_feeds.iter().map(|(source, &btc_usd)| PriceHistory {
+        timestamp: now as u64,
+        btc_usd,
+        source: source.clone(),
+    }).collect::<Vec<PriceHistory>>();
+
+    // Spawn with owned history
+    tokio::spawn(async move {
+        if let Err(e) = save_price_history(history).await {
+            warn!("Failed to save price history: {}", e);
+        }
+    });
+
+    Ok(price_info)
 }
 
 async fn fetch_from_sources(client: &Client) -> Result<(f64, HashMap<String, f64>), PulserError> {

@@ -8,13 +8,8 @@ use serde_json::json;
 use common::error::PulserError;
 use tokio::time::{sleep, timeout};
 use std::collections::VecDeque;
-use common::StateManager; // Updated importfv
-use common::storage::UtxoInfo as StorageUtxoInfo;
-use common::{StableChain, Bitcoin};
-use common::types::DepositAddressInfo;
-use common::types::HedgeNotification;
-use common::WebhookRetry;
-use common::UtxoInfo as TypesUtxoInfo;
+use common::StateManager;
+use common::types::{UtxoInfo, StableChain, WebhookRetry};
 
 #[derive(Clone)]
 pub struct WebhookConfig {
@@ -42,7 +37,7 @@ impl WebhookConfig {
 pub async fn notify_new_utxos(
     client: &Client,
     user_id: &str,
-    new_utxos: &[StorageUtxoInfo],
+    new_utxos: &[UtxoInfo],
     stable_chain: &StableChain,
     webhook_url: &str,
     retry_queue: Arc<Mutex<VecDeque<WebhookRetry>>>,
@@ -94,25 +89,9 @@ pub async fn notify_new_utxos(
     }
 
     let mut queue = retry_queue.lock().await;
-    // Convert from storage::UtxoInfo to types::UtxoInfo
-    let type_utxos = new_utxos.iter().map(|utxo| TypesUtxoInfo {
-        txid: utxo.txid.clone(),
-        vout: utxo.vout,
-        amount_sat: utxo.amount_sat,
-        address: utxo.address.clone(),
-        keychain: utxo.keychain.clone(),
-        timestamp: utxo.timestamp,
-        confirmations: utxo.confirmations,
-        participants: utxo.participants.clone(),
-        stable_value_usd: utxo.stable_value_usd,
-        spendable: utxo.spendable,
-        derivation_path: utxo.derivation_path.clone(),
-        spent: utxo.spent,
-    }).collect();
-
     queue.push_back(WebhookRetry {
         user_id: user_id.to_string(),
-        utxos: type_utxos,
+        utxos: new_utxos.to_vec(),
         attempts: 0,
         next_attempt: timestamp + config.retry_interval_secs,
     });
@@ -132,10 +111,7 @@ pub async fn start_retry_task(
     info!("Starting webhook retry task");
     loop {
         tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("Retry task shutting down");
-                break;
-            }
+            _ = shutdown_rx.recv() => break,
             _ = sleep(Duration::from_secs(config.retry_interval_secs)) => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                 let retry = {
@@ -148,34 +124,22 @@ pub async fn start_retry_task(
                         queue.push_front(retry);
                     } else if retry.attempts >= config.retry_max_attempts {
                         error!("Webhook for user {} failed after {} retries", retry.user_id, config.retry_max_attempts);
-                    } else if let Ok(stable_chain) = state_manager.load_stable_chain(&retry.user_id).await {
+                    } else if let Ok(mut stable_chain) = state_manager.load_stable_chain(&retry.user_id).await {
                         let next_retry = WebhookRetry {
                             user_id: retry.user_id.clone(),
                             utxos: retry.utxos.clone(),
                             attempts: retry.attempts + 1,
                             next_attempt: now + (config.retry_interval_secs * 2u64.pow(retry.attempts)),
                         };
-                        let storage_utxos: Vec<StorageUtxoInfo> = retry.utxos.iter().map(|utxo| StorageUtxoInfo {
-                            txid: utxo.txid.clone(),
-                            vout: utxo.vout,
-                            amount_sat: utxo.amount_sat,
-                            address: utxo.address.clone(),
-                            keychain: utxo.keychain.clone(),
-                            timestamp: utxo.timestamp,
-                            confirmations: utxo.confirmations,
-                            participants: utxo.participants.clone(),
-                            stable_value_usd: utxo.stable_value_usd,
-                            spendable: utxo.spendable,
-                            derivation_path: utxo.derivation_path.clone(),
-                            spent: utxo.spent,
-                        }).collect();
-                        match notify_new_utxos(&client, &retry.user_id, &storage_utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
-                            Ok(_) => info!("Webhook retry succeeded for user {}", retry.user_id),
+                        match notify_new_utxos(&client, &retry.user_id, &retry.utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
+                            Ok(_) => {
+                                info!("Webhook retry succeeded for user {}", retry.user_id);
+                                state_manager.save_stable_chain(&retry.user_id, &stable_chain).await?;
+                            }
                             Err(_) => {
                                 let mut queue = retry_queue.lock().await;
-                                let attempts = next_retry.attempts;
-                                queue.push_back(next_retry);
-                                warn!("Webhook retry failed for user {}, queued again (attempt {}/{})", retry.user_id, attempts, config.retry_max_attempts);
+                                queue.push_back(next_retry.clone());
+                                warn!("Webhook retry failed for user {}, queued again (attempt {}/{})", retry.user_id, next_retry.attempts, config.retry_max_attempts);
                             }
                         }
                     } else {
@@ -187,8 +151,4 @@ pub async fn start_retry_task(
     }
     info!("Retry task shutdown complete");
     Ok(())
-}
-async fn get_stable_chain_for_user(user_id: &str) -> Result<StableChain, PulserError> {
-  
-    Err(PulserError::UserNotFound(user_id.to_string()))
 }

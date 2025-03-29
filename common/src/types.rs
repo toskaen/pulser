@@ -1,11 +1,9 @@
 // common/src/types.rs
-// Existing imports
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::collections::HashMap;
 use std::str::FromStr;
 
-/// Generic amount trait - implemented by each service for its own Bitcoin type
 pub trait Amount {
     fn to_sats(&self) -> u64;
     fn to_btc(&self) -> f64;
@@ -13,7 +11,6 @@ pub trait Amount {
     fn from_btc(btc: f64) -> Self;
 }
 
-/// Represents a Bitcoin amount.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bitcoin {
     pub sats: u64,
@@ -37,14 +34,11 @@ impl Amount for Bitcoin {
     fn from_btc(btc: f64) -> Self { Self::from_sats((btc * 100_000_000.0) as u64) }
 }
 
-/// Represents a USD amount.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct USD(pub f64);
 
 impl USD {
     pub fn from_f64(value: f64) -> Self { Self(value) }
-    
-    // Generic conversion - each service implements its own Amount type
     pub fn from_amount<T: Amount>(amount: &T, price: f64) -> Self { 
         Self(amount.to_btc() * price) 
     }
@@ -56,7 +50,6 @@ impl fmt::Display for USD {
     }
 }
 
-/// Represents UTXO information with metadata for tracking
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct UtxoInfo {
     pub txid: String,
@@ -73,7 +66,6 @@ pub struct UtxoInfo {
     pub spent: bool,
 }
 
-/// For webhook retry functionality
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WebhookRetry {
     pub user_id: String,
@@ -82,13 +74,12 @@ pub struct WebhookRetry {
     pub next_attempt: u64,
 }
 
-/// Core data structure for tracking stabilized Bitcoin
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StableChain {
     pub user_id: u32,
     pub is_stable_receiver: bool,
     pub counterparty: String,
-    pub accumulated_btc: Bitcoin,
+    pub accumulated_btc: Bitcoin, // Option 2: Keep and sync with get_balance()
     pub stabilized_usd: USD,
     pub timestamp: i64,
     pub formatted_datetime: String,
@@ -161,9 +152,7 @@ impl StableChain {
     }
 }
 
-// In common/src/types.rs
 impl UtxoInfo {
-    // Add a conversion method
     pub fn from_utxo(utxo: &Utxo, address: &str, keychain: &str) -> Self {
         Self {
             txid: utxo.txid.clone(),
@@ -176,13 +165,12 @@ impl UtxoInfo {
             participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
             stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
             spendable: utxo.confirmations >= 1,
-            derivation_path: "".to_string(), // Set default or pass as parameter
-            spent: false,
+            derivation_path: "".to_string(),
+            spent: utxo.spent, // Updated to use Utxo.spent
         }
     }
 }
 
-/// Event tracking for system activities
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
     pub timestamp: i64,
@@ -191,7 +179,6 @@ pub struct Event {
     pub details: String,
 }
 
-/// Price information - shared across all services
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceInfo {
     pub raw_btc_usd: f64,
@@ -199,27 +186,25 @@ pub struct PriceInfo {
     pub price_feeds: HashMap<String, f64>,
 }
 
-/// Deposit address information - serializable contract between services
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DepositAddressInfo {
     pub address: String,
     pub user_id: u32,
-    pub multisig_type: String, // "2-of-3" etc.
-    pub participants: Vec<String>, // pubkeys as hex strings
-    pub descriptor: Option<String>, // Optional descriptor for wallet creation
+    pub multisig_type: String,
+    pub participants: Vec<String>,
+    pub descriptor: Option<String>,
     pub path: String,
     pub user_pubkey: String,
     pub lsp_pubkey: String,
     pub trustee_pubkey: String,
 }
 
-/// StableChannel information - serializable contract between services
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelInfo {
     pub user_id: u32,
     pub channel_id: String,
     pub is_stable_receiver: bool,
-    pub counterparty: String, // pubkey as hex string
+    pub counterparty: String,
     pub expected_usd: f64,
     pub expected_sats: u64,
     pub stable_receiver_sats: u64,
@@ -259,10 +244,10 @@ pub struct Utxo {
     pub confirmations: u32,
     pub script_pubkey: String,
     pub height: Option<u32>,
-    pub usd_value: Option<USD>, // Static USD at deposit
+    pub usd_value: Option<USD>,
+    pub spent: bool, // NEW: Aligns with BDK LocalOutput
 }
 
-/// User status information - for tracking API and service state
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserStatus {
     pub user_id: String,
@@ -302,7 +287,6 @@ impl UserStatus {
     }
 }
 
-/// Service status information - for monitoring and health checks
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServiceStatus {
     pub up_since: u64,
@@ -321,11 +305,10 @@ pub struct ServiceStatus {
     pub silent_failures: u32,
     pub api_calls: u32,
     pub error_rate: f64,
-    pub users: HashMap<String, UserStatus>, // Add this
-
+    pub users: HashMap<String, UserStatus>,
+    pub websocket_active: bool,
 }
 
-/// HedgePosition for tracking futures positions
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HedgePosition {
     pub entry_price: f64,
@@ -335,15 +318,13 @@ pub struct HedgePosition {
     pub timestamp: u64,
 }
 
-
-/// Notification from deposit-service to hedging-service for hedge actions
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HedgeNotification {
-    pub user_id: String,          // Matches StableChain.user_id
-    pub action: String,           // "hedge", "adjust", etc.
-    pub btc_amount: f64,          // StableChain.accumulated_btc.to_btc()
-    pub usd_amount: f64,          // StableChain.stabilized_usd.0
-    pub current_price: f64,       // StableChain.raw_btc_usd
-    pub timestamp: i64,           // StableChain.timestamp
-    pub transaction_id: Option<String>, // StableChain.pending_sweep_txid
+    pub user_id: String,
+    pub action: String,
+    pub btc_amount: f64,
+    pub usd_amount: f64,
+    pub current_price: f64,
+    pub timestamp: i64,
+    pub transaction_id: Option<String>,
 }

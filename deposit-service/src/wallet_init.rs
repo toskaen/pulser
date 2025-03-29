@@ -28,6 +28,14 @@ pub struct Config {
     pub listening_port: u16,
     pub sync_interval_secs: u64,
     pub max_concurrent_users: usize,
+    pub min_confirmations: u32, // Added for sync_and_stabilize_utxos
+
+}
+
+impl Config {
+    pub fn from_toml(toml: &toml::Value) -> Result<Self, toml::de::Error> {
+        toml.clone().try_into()
+    }
 }
 
 pub struct WalletInitResult {

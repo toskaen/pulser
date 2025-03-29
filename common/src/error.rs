@@ -17,6 +17,7 @@ use bitcoin::address::ParseError; // Keep only if used
 use bitcoin::address::FromScriptError; // Keep only if used
 use bitcoin::hashes::hex::HexToBytesError; // Keep only if used
 use warp;
+use bincode; // Add
 
 impl warp::reject::Reject for PulserError {}
 
@@ -199,5 +200,11 @@ impl From<tokio_tungstenite::tungstenite::Error> for PulserError {
 impl From<tokio::sync::mpsc::error::SendError<String>> for PulserError {
     fn from(err: tokio::sync::mpsc::error::SendError<String>) -> Self {
         PulserError::ChannelError(err.to_string())
+    }
+}
+
+impl From<bincode::Error> for PulserError {
+    fn from(err: bincode::Error) -> Self {
+        PulserError::StorageError(err.to_string())
     }
 }
