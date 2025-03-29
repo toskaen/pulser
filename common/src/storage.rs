@@ -150,16 +150,38 @@ impl StateManager {
 pub async fn save_changeset(&self, user_id: &str, changeset: &ChangeSet) -> Result<(), PulserError> {
     let path = PathBuf::from(format!("user_{}/changeset.bin", user_id));
     let full_path = self.data_dir.join(&path);
-    fs::create_dir_all(full_path.parent().unwrap())?;
+    let temp_path = full_path.with_extension("temp");
+
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let lock = self.get_file_lock(full_path.to_str().unwrap_or("unknown")).await;
+    let _guard = lock.lock().await;
+
     let data = bincode::serialize(changeset)?;
-    fs::write(&full_path, &data)?;
+    fs::write(&temp_path, &data)?;
+    fs::rename(&temp_path, &full_path)?;
+
+    #[cfg(unix)]
+    fs::set_permissions(&full_path, fs::Permissions::from_mode(0o600))?;
+    #[cfg(not(unix))]
+    fs::set_permissions(&full_path, fs::Permissions::from_mode(0o644))?;
+
     debug!("Saved ChangeSet for user {} to {}", user_id, full_path.display());
     Ok(())
 }
+
 pub async fn load_changeset(&self, user_id: &str) -> Result<ChangeSet, PulserError> {
     let path = PathBuf::from(format!("user_{}/changeset.bin", user_id));
     let full_path = self.data_dir.join(&path);
-    if !full_path.exists() { return Err(PulserError::StorageError("ChangeSet not found".into())); }
+    if !full_path.exists() {
+        return Err(PulserError::StorageError("ChangeSet not found".into()));
+    }
+
+    let lock = self.get_file_lock(full_path.to_str().unwrap_or("unknown")).await;
+    let _guard = lock.lock().await;
+
     let data = fs::read(&full_path)?;
     bincode::deserialize(&data).map_err(|e| PulserError::StorageError(e.to_string()))
 }

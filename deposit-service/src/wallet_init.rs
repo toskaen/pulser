@@ -1,5 +1,5 @@
 use std::fs;
-use bdk_wallet::{Wallet, KeychainKind};
+use bdk_wallet::{Wallet, KeychainKind, ChangeSet};
 use bdk_wallet::bitcoin::{Network, Address};
 use bdk_wallet::bitcoin::secp256k1::Secp256k1;
 use bdk_wallet::bitcoin::bip32::{DerivationPath, Xpub, Fingerprint};
@@ -9,11 +9,10 @@ use bdk_wallet::miniscript::descriptor::{DescriptorXKey, Wildcard};
 use bdk_wallet::keys::DescriptorPublicKey;
 use common::error::PulserError;
 use common::types::DepositAddressInfo;
-use log::info;
+use log::{info, debug};
 use serde_json;
 use chrono::Utc;
 use std::str::FromStr;
-use bdk_wallet::miniscript::Tap;
 
 #[derive(serde::Deserialize)]
 pub struct Config {
@@ -28,8 +27,7 @@ pub struct Config {
     pub listening_port: u16,
     pub sync_interval_secs: u64,
     pub max_concurrent_users: usize,
-    pub min_confirmations: u32, // Added for sync_and_stabilize_utxos
-
+    pub min_confirmations: u32,
 }
 
 impl Config {
@@ -77,16 +75,11 @@ pub fn init_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, P
 
         let mnemonic: GeneratedKey<Mnemonic, miniscript::Tap> = Mnemonic::generate((WordCount::Words12, Language::English))
             .map_err(|e| PulserError::WalletError(format!("Mnemonic generation failed: {:?}", e)))?;
-
-        let user_extended_key: ExtendedKey<miniscript::Tap> = mnemonic
-            .clone()
-            .into_extended_key()
+        let user_extended_key: ExtendedKey<miniscript::Tap> = mnemonic.clone().into_extended_key()
             .map_err(|e| PulserError::WalletError(format!("Failed to get extended key: {:?}", e)))?;
-        let user_xpriv = user_extended_key
-            .into_xprv(network)
+        let user_xpriv = user_extended_key.into_xprv(network)
             .ok_or(PulserError::WalletError("Failed to get xprv".into()))?
-            .derive_priv(&secp, &external_path)
-            .map_err(|e| PulserError::WalletError(format!("Failed to derive private key: {}", e)))?;
+            .derive_priv(&secp, &external_path)?;
         let user_xpub = Xpub::from_priv(&secp, &user_xpriv);
 
         let user_pubkey = DescriptorPublicKey::XPub(DescriptorXKey {
@@ -102,27 +95,24 @@ pub fn init_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, P
             wildcard: Wildcard::Unhardened,
         });
         let trustee_pubkey = DescriptorPublicKey::XPub(DescriptorXKey {
-            origin: Some((Fingerprint::default(), external_path.clone())),
+            origin: Some((Fingerprint::default(), external_path)),
             xkey: trustee_xpub,
             derivation_path: DerivationPath::master(),
             wildcard: Wildcard::Unhardened,
         });
 
-let unspendable_key = DescriptorPublicKey::from_str(
-    "0254bb9928a0683b7e383de72943b214b0716f58aa54c7ba6bcea2328bc9c768",
-)?;
+        let unspendable_key = DescriptorPublicKey::from_str(
+            "0254bb9928a0683b7e383de72943b214b0716f58aa54c7ba6bcea2328bc9c768"
+        )?;
 
         let external_descriptor = format!(
             "tr({},multi_a(2,{},{},{}))",
             unspendable_key, lsp_pubkey, trustee_pubkey, user_pubkey
         );
 
-        let user_extended_key_internal: ExtendedKey<miniscript::Tap> = mnemonic
-            .clone()
-            .into_extended_key()
+        let user_extended_key_internal: ExtendedKey<miniscript::Tap> = mnemonic.clone().into_extended_key()
             .map_err(|e| PulserError::WalletError(format!("Failed to get extended key: {:?}", e)))?;
-        let user_xpriv_internal = user_extended_key_internal
-            .into_xprv(network)
+        let user_xpriv_internal = user_extended_key_internal.into_xprv(network)
             .ok_or(PulserError::WalletError("Failed to get xprv".into()))?
             .derive_priv(&secp, &internal_path)?;
         let user_xpub_internal = Xpub::from_priv(&secp, &user_xpriv_internal);
@@ -159,21 +149,21 @@ let unspendable_key = DescriptorPublicKey::from_str(
         .create_wallet_no_persist()?;
     let initial_addr = wallet.reveal_next_address(KeychainKind::External).address;
 
-let deposit_info = DepositAddressInfo {
-    address: initial_addr.to_string(),
-    user_id: user_id.parse().unwrap_or(0),
-    multisig_type: "2-of-3".to_string(),
-    participants: vec![
-        user_xpub_str.clone(),
-        config.lsp_pubkey.clone(),
-        config.trustee_pubkey.clone()
-    ],
-    descriptor: Some(external_descriptor.clone()),
-    path: "m/86'/1'/0'/0/0".to_string(),
-    user_pubkey: user_xpub_str.clone(),
-    lsp_pubkey: config.lsp_pubkey.clone(),
-    trustee_pubkey: config.trustee_pubkey.clone(),
-};
+    let deposit_info = DepositAddressInfo {
+        address: initial_addr.to_string(),
+        user_id: user_id.parse().unwrap_or(0),
+        multisig_type: "2-of-3".to_string(),
+        participants: vec![
+            user_xpub_str.clone(),
+            config.lsp_pubkey.clone(),
+            config.trustee_pubkey.clone(),
+        ],
+        descriptor: Some(external_descriptor.clone()),
+        path: "m/86'/1'/0'/0/0".to_string(),
+        user_pubkey: user_xpub_str.clone(),
+        lsp_pubkey: config.lsp_pubkey.clone(),
+        trustee_pubkey: config.trustee_pubkey.clone(),
+    };
 
     let public_data = if !is_preloaded {
         let public_data = serde_json::json!({
@@ -227,4 +217,35 @@ let deposit_info = DepositAddressInfo {
         recovery_doc,
         public_data,
     })
+}
+
+pub fn init_wallet_with_changeset(config: &Config, user_id: &str, _changeset: ChangeSet) -> Result<(Wallet, DepositAddressInfo), PulserError> {
+    let init_result = init_wallet(config, user_id)?;
+    let network = Network::from_str(&config.network)?;
+
+    let mut wallet = Wallet::create(init_result.external_descriptor.clone(), init_result.internal_descriptor.clone())
+        .network(network)
+        .create_wallet_no_persist()?;
+
+    let initial_addr = wallet.reveal_next_address(KeychainKind::External).address;
+    wallet.reveal_next_address(KeychainKind::Internal);
+
+    let deposit_info = DepositAddressInfo {
+        address: init_result.deposit_info.address.clone(),
+        user_id: user_id.parse().unwrap_or(0),
+        multisig_type: "2-of-3".to_string(),
+        participants: vec![
+            init_result.deposit_info.user_pubkey.clone(),
+            init_result.deposit_info.lsp_pubkey.clone(),
+            init_result.deposit_info.trustee_pubkey.clone()
+        ],
+        descriptor: init_result.deposit_info.descriptor.clone(),
+        path: init_result.deposit_info.path.clone(),
+        user_pubkey: init_result.deposit_info.user_pubkey.clone(),
+        lsp_pubkey: init_result.deposit_info.lsp_pubkey.clone(),
+        trustee_pubkey: init_result.deposit_info.trustee_pubkey.clone(),
+    };
+
+    info!("Initialized wallet with changeset for user {}: {}", user_id, deposit_info.address);
+    Ok((wallet, deposit_info))
 }

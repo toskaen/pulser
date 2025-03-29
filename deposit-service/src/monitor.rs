@@ -3,7 +3,7 @@ use tokio::sync::{Mutex, mpsc, broadcast};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::str::FromStr;
-use log::{info, warn, debug, error};
+use log::{info, warn, debug, error, trace};
 use bdk_wallet::bitcoin::{Address, Network};
 use bdk_esplora::esplora_client::AsyncClient;
 use bdk_esplora::EsploraAsyncExt;
@@ -11,7 +11,7 @@ use common::error::PulserError;
 use common::types::PriceInfo;
 use crate::wallet::DepositWallet;
 use common::{StableChain, UserStatus, ServiceStatus};
-use tokio::time::{sleep, interval};
+use tokio::time::{sleep, interval, timeout};
 use std::collections::HashMap;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use futures_util::{StreamExt, SinkExt};
@@ -46,14 +46,18 @@ impl MonitorConfig {
 
 async fn connect_websocket(url: &str) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, PulserError> {
     info!("Attempting to connect to WebSocket: {}", url);
-    match connect_async(url).await {
-        Ok((ws, _)) => {
+    match timeout(Duration::from_secs(30), connect_async(url)).await {
+        Ok(Ok((ws, _))) => {
             info!("Successfully connected to WebSocket: {}", url);
             Ok(ws)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("WebSocket connection failed: {}", e);
             Err(PulserError::NetworkError(e.to_string()))
+        }
+        Err(_) => {
+            error!("WebSocket connection timed out: {}", url);
+            Err(PulserError::NetworkError(format!("Connection to {} timed out", url)))
         }
     }
 }
@@ -83,13 +87,17 @@ pub async fn monitor_deposits(
     if !use_fallback {
         match connect_websocket(&config.websocket_url).await {
             Ok(mut websocket) => {
-                if let Err(e) = websocket.send(tokio_tungstenite::tungstenite::Message::Text(
+                match timeout(Duration::from_secs(10), websocket.send(tokio_tungstenite::tungstenite::Message::Text(
                     r#"{"action":"want","data":["blocks"]}"#.to_string()
-                )).await {
-                    warn!("Failed to subscribe to WebSocket blocks: {}", e);
-                    use_fallback = true;
-                } else {
-                    ws = Some(websocket);
+                ))).await {
+                    Ok(Ok(_)) => {
+                        ws = Some(websocket);
+                        debug!("Successfully subscribed to block notifications");
+                    }
+                    _ => {
+                        warn!("Failed to subscribe to WebSocket, switching to fallback");
+                        use_fallback = true;
+                    }
                 }
             }
             Err(e) => {
@@ -104,9 +112,9 @@ pub async fn monitor_deposits(
             let wallets_lock = wallets.lock().await;
             let statuses_lock = user_statuses.lock().await;
             let mut active_users = Vec::new();
-            for (id, _) in wallets_lock.iter() {
+            for (id, (_, chain)) in wallets_lock.iter() {
                 let address = statuses_lock.get(id).map(|s| s.current_deposit_address.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
+                    .unwrap_or_else(|| chain.multisig_addr.clone());
                 active_users.push((id.clone(), address));
             }
             info!("Active users to scan: {:?}", active_users.iter().map(|(id, addr)| format!("{}:{}", id, addr)).collect::<Vec<_>>());
@@ -117,7 +125,7 @@ pub async fn monitor_deposits(
             _ = shutdown_rx.recv() => {
                 info!("Monitor task shutting down");
                 if let Some(mut ws) = ws.take() {
-                    ws.close(None).await.ok();
+                    timeout(Duration::from_secs(5), ws.close(None)).await.ok();
                 }
                 break;
             }
@@ -133,27 +141,12 @@ pub async fn monitor_deposits(
                     Some(Ok(msg)) => {
                         let text = msg.into_text()?;
                         let value: Value = serde_json::from_str(&text)?;
-                        let new_block_detected = if let Some(block) = value.get("block") {
-                            if let Some(height) = block.get("height").and_then(|h| h.as_u64()) {
-                                if height > last_block_height {
-                                    info!("New block detected (WebSocket): {}", height);
-                                    last_block_height = height;
-                                    true
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if new_block_detected {
-                            for (user_id, _) in wallets.lock().await.iter() {
-                                debug!("Queuing sync for user {} after block height {}", user_id, last_block_height);
-                                if let Err(e) = sync_tx.clone().send(user_id.clone()).await {
-                                    warn!("Failed to queue sync for user {}: {}", user_id, e);
+                        if let Some(height) = value.get("block").and_then(|b| b.get("height").and_then(|h| h.as_u64())) {
+                            if height > last_block_height {
+                                info!("New block detected (WebSocket): {}", height);
+                                last_block_height = height;
+                                for (user_id, _) in active_user_data.iter() {
+                                    sync_tx.send(user_id.clone()).await?;
                                 }
                             }
                         }
@@ -162,105 +155,57 @@ pub async fn monitor_deposits(
                         warn!("WebSocket error: {}. Switching to fallback", e);
                         use_fallback = true;
                         ws = None;
-                        {
-                            let mut status = service_status.lock().await;
-                            status.websocket_active = false;
-                            status.silent_failures += 1;
-                        }
+                        service_status.lock().await.websocket_active = false;
                     }
                     None => {
                         warn!("WebSocket closed. Switching to fallback");
                         use_fallback = true;
                         ws = None;
-                        {
-                            let mut status = service_status.lock().await;
-                            status.websocket_active = false;
-                            status.silent_failures += 1;
-                        }
+                        service_status.lock().await.websocket_active = false;
                     }
                 }
             }
 
             _ = sleep(Duration::from_secs(10)), if use_fallback => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                if !ws.is_some() {
-                    match connect_websocket(&config.websocket_url).await {
-                        Ok(mut websocket) => {
-                            if websocket.send(tokio_tungstenite::tungstenite::Message::Text(
-                                r#"{"action":"want","data":["blocks"]}"#.to_string()
-                            )).await.is_ok() {
-                                info!("Reconnected to WebSocket: {}", config.websocket_url);
-                                use_fallback = false;
-                                ws = Some(websocket);
-                                service_status.lock().await.websocket_active = true;
-                            }
-                        }
-                        Err(e) => warn!("WebSocket reconnect failed: {}", e),
-                    }
-                }
                 if now - last_force_sync > FORCE_SYNC_INTERVAL {
-                    info!("Performing periodic forced sync for all users (every {} seconds)", FORCE_SYNC_INTERVAL);
+                    info!("Forced sync for all users");
                     last_force_sync = now;
                     for (user_id, _) in active_user_data.iter() {
-                        debug!("Queuing forced sync for user {}", user_id);
-                        if let Err(e) = sync_tx.clone().send(user_id.clone()).await {
-                            warn!("Failed to queue forced sync for user {}: {}", user_id, e);
-                        }
+                        sync_tx.send(user_id.clone()).await?;
                     }
                 }
             }
 
             _ = interval.tick() => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                debug!("Processing block at time: {} (height: {})", now, last_block_height);
-
-                for chunk in active_user_data.chunks(config.batch_size) {
-                    debug!("Processing batch of {} users", chunk.len());
-                    for (user_id, deposit_address) in chunk {
-                        let deposit_addr = match Address::from_str(deposit_address).map(|a| a.require_network(Network::Testnet)) {
-                            Ok(Ok(addr)) => addr,
-                            Ok(Err(e)) => {
-                                warn!("Invalid network for address {} of user {}: {}", deposit_address, user_id, e);
-                                continue;
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse address {} for user {}: {}", deposit_address, user_id, e);
-                                continue;
-                            }
-                        };
-
-                        let mut wallets_lock = wallets.lock().await;
-                        if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
-                            let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-                            let price_data = price_info.lock().await.clone();
-                            let config = crate::wallet_init::Config::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?)?;
-
-                            let new_utxos = wallet_utils::sync_and_stabilize_utxos(
-                                user_id, &mut wallet.wallet, &blockchain, chain, price_feed.clone(), &price_data,
-                                &deposit_addr, &change_addr, &state_manager, None, config.min_confirmations,
-                            ).await?;
-
-                            if !new_utxos.is_empty() {
-                                info!("New deposits detected for user {}: {} UTXOs", user_id, new_utxos.len());
-                                if let Err(e) = sync_tx.send(user_id.clone()).await {
-                                    warn!("Failed to queue sync for user {}: {}", user_id, e);
-                                }
-                                let mut statuses = user_statuses.lock().await;
-                                if let Some(status) = statuses.get_mut(user_id) {
-                                    let balance = wallet.wallet.balance();
-                                    status.last_deposit_time = Some(now);
-                                    status.total_value_btc = balance.confirmed.to_sat() as f64 / 100_000_000.0;
-                                    status.confirmations_pending = balance.untrusted_pending.to_sat() > 0;
-                                    debug!("Updated status for user {}: {} BTC, pending: {}", 
-                                        user_id, status.total_value_btc, status.confirmations_pending);
-                                }
-                            }
-
-                            let mut last_check_lock = last_activity_check.lock().await;
-                            last_check_lock.insert(user_id.clone(), now);
-                        } else {
-                            warn!("Wallet not found for user {}", user_id);
+                debug!("Processing block at time: {}", now);
+                for (user_id, deposit_address) in active_user_data {
+                    let deposit_addr = match Address::from_str(&deposit_address) {
+                        Ok(addr) => addr.assume_checked(),
+                        Err(e) => {
+                            warn!("Invalid address {} for user {}: {}", deposit_address, user_id, e);
+                            continue;
                         }
+                    };
+                    let mut wallets_lock = wallets.lock().await;
+                    if let Some((wallet, _)) = wallets_lock.get_mut(&user_id) {
+                        let price_data = price_info.lock().await.clone();
+                        let new_utxos = wallet.update_stable_chain(&price_data).await?;
+                        if !new_utxos.is_empty() {
+                            info!("New deposits for user {}: {} UTXOs", user_id, new_utxos.len());
+                            let new_deposit_addr = wallet.reveal_new_address().await?;
+                            let mut statuses = user_statuses.lock().await;
+                            if let Some(status) = statuses.get_mut(&user_id) {
+                                status.current_deposit_address = new_deposit_addr.to_string();
+                                status.last_deposit_time = Some(now);
+                                status.total_value_btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
+                                status.confirmations_pending = wallet.wallet.balance().untrusted_pending.to_sat() > 0;
+                                // No save here - keep UserStatus in memory
+                            }
+                            sync_tx.send(user_id.clone()).await?;
+                        }
+                        last_activity_check.lock().await.insert(user_id.clone(), now);
                     }
                 }
             }

@@ -124,7 +124,7 @@ pub async fn start_retry_task(
                         queue.push_front(retry);
                     } else if retry.attempts >= config.retry_max_attempts {
                         error!("Webhook for user {} failed after {} retries", retry.user_id, config.retry_max_attempts);
-                    } else if let Ok(mut stable_chain) = state_manager.load_stable_chain(&retry.user_id).await {
+                    } else if let Ok(stable_chain) = state_manager.load_stable_chain(&retry.user_id).await {
                         let next_retry = WebhookRetry {
                             user_id: retry.user_id.clone(),
                             utxos: retry.utxos.clone(),
@@ -134,7 +134,7 @@ pub async fn start_retry_task(
                         match notify_new_utxos(&client, &retry.user_id, &retry.utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
                             Ok(_) => {
                                 info!("Webhook retry succeeded for user {}", retry.user_id);
-                                state_manager.save_stable_chain(&retry.user_id, &stable_chain).await?;
+                                // No save here - StableChain unchanged, persistence handled by wallet_utils.rs
                             }
                             Err(_) => {
                                 let mut queue = retry_queue.lock().await;

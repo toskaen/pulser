@@ -87,7 +87,7 @@ let health = warp::path("health")
             let esplora_urls = esplora_urls.lock().await;
             let price_info = price_info.lock().await;
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
-            let websocket_active = status.silent_failures <= 0;
+            let websocket_active = status.websocket_active; // Use existing field
             let websocket_action = if websocket_active { "WebSocket operational" } else { "Action: Check WebSocket connection" };
             let price_staleness_secs = now - price_info.timestamp as u64;
             let price_action = if price_staleness_secs < 60 { "Price feed current" } else { "Action: Check Deribit connectivity" };
@@ -97,8 +97,6 @@ let health = warp::path("health")
                 "status": "OK",
                 "health": status.health.clone(),
                 "active_syncs": status.active_syncs,
-                "api_status": status.api_status.clone(),
-                "error_rate": status.error_rate,
                 "websocket": { "active": websocket_active, "action": websocket_action },
                 "price": { "staleness_secs": price_staleness_secs, "last_price": price_info.raw_btc_usd, "action": price_action },
                 "esplora": { "endpoints": esplora_status, "action": esplora_action }
@@ -123,9 +121,29 @@ let user_status = warp::path("user")
         move |user_id, 
               wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>, 
               statuses: Arc<Mutex<HashMap<String, UserStatus>>>| async move {
-            let wallets_lock = wallets.lock().await;
-            let statuses = statuses.lock().await;
-            match (statuses.get(&user_id), wallets_lock.get(&user_id)) {
+            // First lock both mutexes with timeouts
+            let wallets_lock = match tokio::time::timeout(
+                Duration::from_secs(5),
+                wallets.lock()
+            ).await {
+                Ok(lock) => lock,
+                Err(_) => return Ok::<_, Rejection>(warp::reply::json(&json!({
+                    "error": "Timeout acquiring wallets lock"
+                })))
+            };
+            
+            let statuses_lock = match tokio::time::timeout(
+                Duration::from_secs(5),
+                statuses.lock()
+            ).await {
+                Ok(lock) => lock,
+                Err(_) => return Ok::<_, Rejection>(warp::reply::json(&json!({
+                    "error": "Timeout acquiring statuses lock"
+                })))
+            };
+            
+            // Now use the locks to access the data
+            match (statuses_lock.get(&user_id), wallets_lock.get(&user_id)) {
                 (Some(status), Some((wallet, _))) => {
                     let balance = wallet.wallet.balance();
                     Ok::<_, Rejection>(warp::reply::json(&json!({
@@ -335,8 +353,6 @@ pub async fn sync_user(
 ) -> Result<bool, PulserError> {
     let start_time = Instant::now();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let user_dir = PathBuf::from(format!("user_{}", user_id));
-    let status_path = user_dir.join(format!("status_{}.json", user_id));
 
     let mut statuses = user_statuses.lock().await;
     let status = statuses.entry(user_id.to_string()).or_insert_with(|| UserStatus::new(user_id));
@@ -346,36 +362,18 @@ pub async fn sync_user(
     let should_full_sync = last_sync == 0 || now - last_sync > sync_interval;
     debug!("Syncing user {}: last_sync={}, should_full_sync={}", user_id, last_sync, should_full_sync);
 
-    {
-        let mut wallets_lock = wallets.lock().await;
-        if !wallets_lock.contains_key(user_id) {
-            let (wallet, deposit_info, chain) = DepositWallet::from_config("config/service_config.toml", user_id, &state_manager, price_feed.clone()).await?;
-            status.current_deposit_address = deposit_info.address;
-            wallets_lock.insert(user_id.to_string(), (wallet, chain));
-            info!("Initialized wallet for user {} during sync", user_id);
-        }
+    let mut wallets_lock = wallets.lock().await;
+    if !wallets_lock.contains_key(user_id) {
+        let (wallet, deposit_info, chain) = DepositWallet::from_config("config/service_config.toml", user_id, &state_manager, price_feed.clone()).await?;
+        status.current_deposit_address = deposit_info.address;
+        wallets_lock.insert(user_id.to_string(), (wallet, chain));
+        info!("Initialized wallet for user {} during sync", user_id);
     }
 
-    let deposit_addr = Address::from_str(&status.current_deposit_address)?.assume_checked();
-    let change_addr = {
-        let mut wallets_lock = wallets.lock().await;
-        if let Some((wallet, _)) = wallets_lock.get_mut(user_id) {
-            wallet.wallet.reveal_next_address(KeychainKind::Internal).address
-        } else {
-            return Err(PulserError::UserNotFound(user_id.to_string()));
-        }
-    };
-    debug!("Checking deposit address {} and change address {} for user {}", deposit_addr, change_addr, user_id);
-
-    let mut wallets_lock = wallets.lock().await;
     let (wallet, chain) = wallets_lock.get_mut(user_id)
         .ok_or_else(|| PulserError::UserNotFound(user_id.to_string()))?;
     let price_info_data = price_info.lock().await.clone();
-    let config = wallet_init::Config::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?)?;
-    let new_utxos = wallet_utils::sync_and_stabilize_utxos(
-        user_id, &mut wallet.wallet, esplora, chain, price_feed.clone(), &price_info_data,
-        &deposit_addr, &change_addr, &state_manager, None, config.min_confirmations,
-    ).await?;
+    let new_utxos = wallet.update_stable_chain(&price_info_data).await?;
 
     let new_funds_detected = !new_utxos.is_empty();
     if new_funds_detected && !webhook_url.is_empty() {
@@ -391,19 +389,15 @@ pub async fn sync_user(
     status.sync_status = "completed".to_string();
     status.utxo_count = chain.utxos.len() as u32;
     status.total_value_btc = balance.confirmed.to_sat() as f64 / 100_000_000.0;
-    status.total_value_usd = chain.stabilized_usd.0;
+    status.total_value_usd = chain.stabilized_usd.0; // Extract f64 from USD
+
     status.last_success = now;
     status.sync_duration_ms = start_time.elapsed().as_millis() as u64;
     status.last_update_message = if new_funds_detected { "Sync completed with new funds".to_string() } else { "Sync completed".to_string() };
     status.confirmations_pending = balance.untrusted_pending.to_sat() > 0;
-    if let Err(e) = state_manager.save(&status_path, status).await {
-        warn!("Failed to save status for user {}: {}", user_id, e);
-    } else {
-        debug!("Saved status for user {}: {} UTXOs, {} BTC (${:.2})", user_id, status.utxo_count, status.total_value_btc, status.total_value_usd);
-    }
 
     if !chain.utxos.is_empty() {
-        info!("User {} sync complete: {} UTXOs, {} BTC (${:.2})", user_id, chain.utxos.len(), balance.confirmed.to_sat() as f64 / 100_000_000.0, chain.stabilized_usd.0);
+        info!("User {} sync complete: {} UTXOs, {} BTC (${:.2})", user_id, chain.utxos.len(), balance.confirmed.to_sat() as f64 / 100_000_000.0, chain.stabilized_usd);
     } else if should_full_sync {
         info!("No deposits yet for user {} (balance: 0 BTC)", user_id);
     }

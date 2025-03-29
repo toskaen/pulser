@@ -297,16 +297,16 @@ pub struct ServiceStatus {
     pub total_value_btc: f64,
     pub total_value_usd: f64,
     pub health: String,
-    pub api_status: HashMap<String, bool>,
     pub last_price: f64,
     pub price_update_count: u32,
     pub active_syncs: u32,
-    pub price_cache_staleness_secs: u64,
-    pub silent_failures: u32,
-    pub api_calls: u32,
-    pub error_rate: f64,
-    pub users: HashMap<String, UserStatus>,
     pub websocket_active: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HedgingStatus {
+    pub total_btc_value: f64,
+    pub total_usd_stabilized: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

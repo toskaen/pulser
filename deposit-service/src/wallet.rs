@@ -1,23 +1,18 @@
-// deposit-service/src/wallet.rs
 use std::fs;
 use std::str::FromStr;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use bdk_wallet::{Wallet, KeychainKind};
 use bdk_esplora::esplora_client;
-use bdk_esplora::EsploraAsyncExt;
-use bdk_wallet::bitcoin::{Network, Address, Txid};
-use bdk_chain::ChainPosition;
+use bdk_wallet::bitcoin::{Network, Address};
 use common::error::PulserError;
-use common::types::{USD, Event, PriceInfo, Utxo};
+use common::types::{PriceInfo, UtxoInfo, Event};
 use crate::wallet_init::{Config, init_wallet};
 use log::{info, warn, debug};
 use chrono::Utc;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
 use common::price_feed::PriceFeed;
-use common::types::UtxoInfo;
 use common::StateManager;
 use common::{StableChain, Bitcoin};
 use common::types::DepositAddressInfo;
@@ -80,7 +75,7 @@ impl DepositWallet {
             trustee_pubkey: init_result.deposit_info.trustee_pubkey.clone(),
         };
 
-        let stable_chain = state_manager.load_or_init_stable_chain(user_id, &wallet_path, initial_addr.to_string()).await?;
+        let stable_chain = wallet.stable_chain.clone(); // Clone before returning
         Ok((wallet, deposit_info, stable_chain))
     }
 
@@ -103,13 +98,15 @@ impl DepositWallet {
         let mut logged = LOGGED_ADDRESSES.lock().await;
         logged.insert(user_id.to_string(), initial_addr.clone());
 
+        let stable_chain = state_manager.load_or_init_stable_chain(user_id, wallet_path, initial_addr.to_string()).await?;
+
         Ok(DepositWallet {
             wallet,
             blockchain,
             network,
             wallet_path: wallet_path.to_string(),
             events: Vec::new(),
-            stable_chain: state_manager.load_or_init_stable_chain(user_id, wallet_path, initial_addr.to_string()).await?,
+            stable_chain,
             state_manager: state_manager.clone(),
             price_feed,
         })
@@ -123,7 +120,7 @@ impl DepositWallet {
         Ok(addr_info.address)
     }
 
-    pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Vec<Utxo>, PulserError> {
+    pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Vec<UtxoInfo>, PulserError> {
         let logged = LOGGED_ADDRESSES.lock().await;
         let current_addr = logged.get(&self.stable_chain.user_id.to_string())
             .ok_or_else(|| {
@@ -140,21 +137,20 @@ impl DepositWallet {
             &mut self.stable_chain,
             self.price_feed.clone(),
             price_info,
-            &current_addr,
+            &current_addr, // Fixed: Use current_addr, not ¤t_addr
             &change_addr,
             &self.state_manager,
-            None,
             config.min_confirmations,
         ).await?;
 
-        let total_sats: u64 = self.stable_chain.utxos.iter().map(|u| u.amount).sum();
-        self.stable_chain.accumulated_btc = Bitcoin::from_sats(total_sats);
+        self.stable_chain.timestamp = chrono::Utc::now().timestamp(); // Fixed: Use i64
+        self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();
         info!("Updated StableChain for user {}: {} BTC (${:.2}), {} UTXOs",
-            self.stable_chain.user_id, self.stable_chain.accumulated_btc.to_btc(), self.stable_chain.stabilized_usd.0, self.stable_chain.utxos.len());
-        Ok(self.stable_chain.utxos.clone())
+            self.stable_chain.user_id, self.stable_chain.accumulated_btc.to_btc(), self.stable_chain.stabilized_usd, self.stable_chain.utxos.len());
+        Ok(new_utxos)
     }
 
-    pub fn list_utxos(&self) -> Result<Vec<Utxo>, PulserError> {
+    pub fn list_utxos(&self) -> Result<Vec<UtxoInfo>, PulserError> {
         match Address::from_str(&self.stable_chain.multisig_addr) {
             Ok(address) => self.list_unspent_for_address(&address.assume_checked()),
             Err(e) => {
@@ -173,32 +169,62 @@ impl DepositWallet {
             self.stable_chain.old_addresses.remove(0);
         }
         self.stable_chain.multisig_addr = new_addr.to_string();
+        self.stable_chain.timestamp = chrono::Utc::now().timestamp(); // Fixed: Use i64
+        self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();
         self.state_manager.save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain).await?;
+        if let Some(changeset) = self.wallet.take_staged() {
+            self.state_manager.save_changeset(&self.stable_chain.user_id.to_string(), &changeset).await?;
+        }
         info!("Revealed new deposit address for user {}: {}", self.stable_chain.user_id, new_addr);
         Ok(new_addr)
     }
 
-    pub fn get_cached_utxos(&self) -> Vec<Utxo> {
-        if Utc::now().timestamp() - self.stable_chain.timestamp > 3600 {
-            warn!("Cached UTXOs for user {} may be stale (>1h)", self.stable_chain.user_id);
-        }
-        self.stable_chain.utxos.clone()
+pub fn get_cached_utxos(&self) -> Vec<UtxoInfo> {
+    if Utc::now().timestamp() - self.stable_chain.timestamp > 3600 {
+        warn!("Cached UTXOs for user {} may be stale (>1h)", self.stable_chain.user_id);
     }
+    self.stable_chain.utxos.iter().map(|utxo| UtxoInfo {
+        txid: utxo.txid.clone(),
+        vout: utxo.vout,
+        amount_sat: utxo.amount,
+        address: self.stable_chain.multisig_addr.clone(),
+        confirmations: utxo.confirmations,
+        spent: utxo.spent,
+        stable_value_usd: utxo.usd_value.as_ref().map_or(0.0, |usd| usd.0), // Borrow with as_ref()
+        keychain: "External".to_string(),
+        timestamp: chrono::Utc::now().timestamp() as u64,
+        participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+        spendable: utxo.confirmations >= 1,
+        derivation_path: "".to_string(),
+    }).collect()
+}
 
-    fn list_unspent_for_address(&self, address: &Address) -> Result<Vec<Utxo>, PulserError> {
+    fn list_unspent_for_address(&self, address: &Address) -> Result<Vec<UtxoInfo>, PulserError> {
         let script = address.script_pubkey();
         let utxos = self.wallet.list_unspent()
             .into_iter()
             .filter(|utxo| utxo.txout.script_pubkey == script)
-            .map(|utxo| Utxo {
-                txid: utxo.outpoint.txid.to_string(),
-                vout: utxo.outpoint.vout,
-                amount: utxo.txout.value.to_sat(),
-                script_pubkey: utxo.txout.script_pubkey.to_hex_string(),
-                confirmations: 0,
-                height: None,
-                usd_value: None,
-                spent: utxo.is_spent,
+            .map(|utxo| {
+                let confirmations = match utxo.chain_position {
+                    bdk_chain::ChainPosition::Confirmed { anchor, .. } => {
+                        self.wallet.latest_checkpoint().height() - anchor.block_id.height + 1
+                    }
+                    bdk_chain::ChainPosition::Unconfirmed { .. } => 0,
+                };
+                UtxoInfo {
+                    txid: utxo.outpoint.txid.to_string(),
+                    vout: utxo.outpoint.vout,
+                    amount_sat: utxo.txout.value.to_sat(),
+                    address: address.to_string(),
+                    confirmations,
+                    spent: utxo.is_spent,
+                    stable_value_usd: 0.0,
+                    keychain: "External".to_string(),
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                    participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+                    spendable: confirmations >= 1,
+                    derivation_path: "".to_string(),
+                }
             })
             .collect();
         Ok(utxos)

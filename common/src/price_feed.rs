@@ -68,12 +68,19 @@ active_ws: Arc::new(TokioMutex::new(None)),
                     info!("Deribit feed shutting down");
                     // Properly close any active WebSocket connection
                     let mut ws_guard = self.active_ws.lock().await;
-                    if let Some(mut ws) = ws_guard.take() {
-                        info!("Closing Deribit WebSocket connection");
-                        if let Err(e) = ws.close(None).await {
-                            warn!("Error closing Deribit WebSocket: {}", e);
-                        }
-                    }
+if let Some(mut ws) = ws_guard.take() {
+    info!("Closing Deribit WebSocket connection");
+    match tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await {
+        Ok(result) => {
+            if let Err(e) = result {
+                warn!("Error closing Deribit WebSocket: {}", e);
+            }
+        },
+        Err(_) => {
+            warn!("Timeout closing Deribit WebSocket, abandoning connection");
+        }
+    }
+}
                     break;
                 }
                 _ = async {

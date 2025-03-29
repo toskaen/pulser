@@ -8,6 +8,9 @@ use bdk_chain::spk_client::FullScanResponse;
 use crate::{types::{StableChain, UtxoInfo, USD, Bitcoin, Utxo}, error::PulserError, StateManager, price_feed::PriceFeed};
 use crate::types::PriceInfo;
 use std::str::FromStr;
+use log::{info, warn};
+use std::time::Duration;
+
 
 pub async fn sync_and_stabilize_utxos(
     user_id: &str,
@@ -19,7 +22,6 @@ pub async fn sync_and_stabilize_utxos(
     deposit_addr: &Address,
     change_addr: &Address,
     state_manager: &StateManager,
-    spent_utxos: Option<Vec<(String, u32)>>,
     min_confirmations: u32,
 ) -> Result<Vec<UtxoInfo>, PulserError> {
     let stabilization_price = price_feed.get_deribit_price().await?;
@@ -27,7 +29,18 @@ pub async fn sync_and_stabilize_utxos(
     let previous_utxos = chain.utxos.clone();
 
     let request = wallet.start_full_scan();
-    let update = esplora.full_scan(request, 10, 5).await?;
+    let update = match tokio::time::timeout(Duration::from_secs(30), esplora.full_scan(request, 10, 5)).await {
+        Ok(Ok(update)) => update,
+        Ok(Err(e)) => {
+            warn!("Error scanning blockchain for user {}: {}", user_id, e);
+            return Ok(Vec::new());
+        },
+        Err(_) => {
+            warn!("Timeout scanning blockchain for user {}", user_id);
+            return Ok(Vec::new());
+        }
+    };
+
     wallet.apply_update(update)?;
 
     let utxos: Vec<UtxoInfo> = wallet.list_unspent().into_iter().map(|u| {
@@ -50,8 +63,8 @@ pub async fn sync_and_stabilize_utxos(
             derivation_path: "".to_string(),
         }
     }).collect();
-    let utxos_info = utxos.into_iter().map(|u| Ok::<UtxoInfo, PulserError>(u)).collect::<Result<Vec<_>, _>>()?;
-    let utxos: Vec<Utxo> = utxos_info.iter().map(|u| Ok::<Utxo, PulserError>(Utxo {
+
+    let utxos: Vec<Utxo> = utxos.iter().map(|u| Ok::<Utxo, PulserError>(Utxo {
         txid: u.txid.clone(),
         vout: u.vout,
         amount: u.amount_sat,
@@ -62,21 +75,25 @@ pub async fn sync_and_stabilize_utxos(
         spent: u.spent,
     })).collect::<Result<Vec<_>, _>>()?;
 
-    for utxo in &utxos_info {
-        let stable_value_usd = (utxo.amount_sat as f64 / 100_000_000.0) * stabilization_price;
+    for utxo in &utxos {
+        let stable_value_usd = (utxo.amount as f64 / 100_000_000.0) * stabilization_price;
         if !previous_utxos.iter().any(|u| u.txid == utxo.txid && u.vout == utxo.vout) && utxo.confirmations >= min_confirmations {
-            let mut utxo_info = utxo.clone();
-            utxo_info.stable_value_usd = stable_value_usd;
+            let utxo_info = UtxoInfo {
+                txid: utxo.txid.clone(),
+                vout: utxo.vout,
+                amount_sat: utxo.amount,
+                address: deposit_addr.to_string(),
+                confirmations: utxo.confirmations,
+                spent: utxo.spent,
+                stable_value_usd,
+                keychain: "External".to_string(),
+                timestamp: chrono::Utc::now().timestamp() as u64,
+                participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+                spendable: utxo.confirmations >= 1,
+                derivation_path: "".to_string(),
+            };
             chain.history.push(utxo_info.clone());
             new_utxos.push(utxo_info);
-        }
-    }
-
-    if let Some(spent_utxos) = spent_utxos {
-        for (txid, vout) in spent_utxos {
-            if let Some(utxo) = chain.history.iter_mut().find(|h| h.txid == txid && h.vout == vout) {
-                utxo.spent = true;
-            }
         }
     }
 
@@ -91,5 +108,6 @@ pub async fn sync_and_stabilize_utxos(
         state_manager.save_changeset(user_id, &changeset).await?;
     }
 
+    info!("Synced and stabilized UTXOs for user {}: {} new UTXOs", user_id, new_utxos.len());
     Ok(new_utxos)
 }
