@@ -37,7 +37,7 @@ webhook_secret = "your_webhook_secret"
 webhook_max_retries = 3
 webhook_timeout_secs = 5
 webhook_max_retry_time_secs = 120
-webhook_retry_max_attempts = 3
+webhook_retry_max_attempts = 5
 webhook_base_backoff_ms = 500
 # Monitor configuration
 

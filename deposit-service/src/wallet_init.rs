@@ -28,6 +28,8 @@ pub struct Config {
     pub sync_interval_secs: u64,
     pub max_concurrent_users: usize,
     pub min_confirmations: u32,
+        pub request_timeout_secs: Option<u64>,
+
 }
 
 impl Config {

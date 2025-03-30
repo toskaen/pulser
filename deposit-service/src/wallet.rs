@@ -16,7 +16,7 @@ use common::price_feed::PriceFeed;
 use common::StateManager;
 use common::{StableChain, Bitcoin};
 use common::types::DepositAddressInfo;
-use common::wallet_utils;
+use common::wallet_sync;
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -130,7 +130,7 @@ impl DepositWallet {
 
         let change_addr = self.wallet.reveal_next_address(KeychainKind::Internal).address;
         let config = Config::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?)?;
-        let new_utxos = wallet_utils::sync_and_stabilize_utxos(
+        let new_utxos = wallet_sync::sync_and_stabilize_utxos(
             &self.stable_chain.user_id.to_string(),
             &mut self.wallet,
             &self.blockchain,

@@ -4,8 +4,8 @@ pub mod price_feed;
 pub mod utils;
 pub mod types;
 pub mod storage;
-pub mod wallet_utils;
 pub mod task_manager;
+pub mod wallet_sync;
 
 pub use error::PulserError;
 pub use types::{Amount, Bitcoin, USD, StableChain, UserStatus, ServiceStatus, 
