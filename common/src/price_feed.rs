@@ -13,10 +13,11 @@ use futures_util::stream::StreamExt;
 use crate::error::PulserError;
 use crate::types::PriceInfo;
 use crate::utils::now_timestamp;
-use tokio::sync::{mspc, broadcast};
+use tokio::sync::{mpsc, broadcast};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio::sync::Mutex as TokioMutex;
 use std::future::Future;
+use std::sync::Mutex;
 
 
 
@@ -73,10 +74,14 @@ impl PriceFeed {
             last_ws_activity: Arc::new(RwLock::new(Instant::now())),
             is_connecting: Arc::new(RwLock::new(false)),
             error_counts: Arc::new(RwLock::new(HashMap::new())),
+            connected: Arc::new(RwLock::new(false)), // Initialize as disconnected
             last_price_update: Arc::new(RwLock::new(Instant::now())),
         }
     }
     
+    pub async fn is_websocket_connected(&self) -> bool {
+        *self.connected.read().unwrap()
+    }
     pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
         let config: toml::Value = match fs::read_to_string("config/service_config.toml") {
             Ok(content) => toml::from_str(&content)?,
@@ -102,6 +107,7 @@ impl PriceFeed {
                     let mut ws_guard = self.active_ws.lock().await;
                     if let Some(mut ws) = ws_guard.take() {
                         info!("Closing Deribit WebSocket connection");
+                                                *self.connected.write().unwrap() = false; // Mark as disconnected
                         match tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await {
                             Ok(result) => {
                                 if let Err(e) = result {
@@ -129,6 +135,8 @@ impl PriceFeed {
                                 warn!("Failed to send ping: {}", e);
                                 *ws_guard = None;
                                 *self.is_connecting.write().unwrap() = false;
+                                                                *self.connected.write().unwrap() = false; // Mark as disconnected
+
                             }
                         }
                     }
@@ -161,10 +169,14 @@ impl PriceFeed {
                             Ok(_) => {
                                 info!("Successfully connected to Deribit");
                                 attempts = 0; // Reset on success
+                                                                *self.connected.write().unwrap() = true; // Mark as connected
+
                             },
                             Err(e) => {
                                 warn!("Deribit WebSocket connection failed: {}", e);
                                 attempts = attempts.saturating_add(1);
+                                                                *self.connected.write().unwrap() = false; // Mark as disconnected
+
                             }
                         }
                         
@@ -186,10 +198,20 @@ impl PriceFeed {
         let connect_result = match timeout(
             Duration::from_secs(WS_CONNECTION_TIMEOUT_SECS),
             connect_async("wss://test.deribit.com/ws/api/v2")
-        ).await {
-            Ok(Ok((ws_conn, _))) => Ok(ws_conn),
-            Ok(Err(e)) => Err(PulserError::NetworkError(format!("WebSocket connection error: {}", e))),
-            Err(_) => Err(PulserError::NetworkError("WebSocket connection timeout".to_string())),
+         ).await {
+            Ok(Ok((ws_conn, _))) => {
+                // Successfully connected
+                *self.connected.write().unwrap() = true; // Mark as connected
+                Ok(ws_conn)
+            },
+            Ok(Err(e)) => {
+                *self.connected.write().unwrap() = false; // Mark as disconnected
+                Err(PulserError::NetworkError(format!("WebSocket connection error: {}", e)))
+            },
+            Err(_) => {
+                *self.connected.write().unwrap() = false; // Mark as disconnected
+                Err(PulserError::NetworkError("WebSocket connection timeout".to_string()))
+            },
         }?;
         
         let mut ws_conn = connect_result;
@@ -200,16 +222,24 @@ impl PriceFeed {
         // Auth message
         let auth_msg = json!({"jsonrpc": "2.0", "id": 1, "method": "public/auth", "params": {"grant_type": "client_credentials", "client_id": api_key, "client_secret": secret}});
         if let Err(e) = ws_conn.send(Message::Text(auth_msg.to_string())).await {
+                    *self.connected.write().unwrap() = false; // Mark as disconnected
+
             return Err(PulserError::ApiError(format!("Failed to send auth message: {}", e)));
         }
         
-        // Wait for auth response with timeout
-        let token_msg = match timeout(Duration::from_secs(10), ws_conn.next()).await {
-            Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(e))) => return Err(PulserError::ApiError(format!("WebSocket error: {}", e))),
-            Ok(None) => return Err(PulserError::ApiError("WebSocket closed".to_string())),
-            Err(_) => return Err(PulserError::ApiError("Auth response timeout".to_string())),
-        };
+// Wait for auth response with timeout
+let token_msg = match timeout(Duration::from_secs(10), ws_conn.next()).await {
+    Ok(Some(Ok(msg))) => msg,
+    Ok(Some(Err(e))) => {
+        *self.connected.write().unwrap() = false; // Mark as disconnected
+        return Err(PulserError::ApiError(format!("WebSocket error: {}", e)));
+    }, // Added closing brace
+    Ok(None) => {
+        *self.connected.write().unwrap() = false; // Mark as disconnected
+        return Err(PulserError::ApiError("WebSocket closed".to_string()));
+    }, // Added closing brace
+    Err(_) => return Err(PulserError::ApiError("Auth response timeout".to_string())),
+};
         
         // Update activity time
         *self.last_ws_activity.write().unwrap() = Instant::now();
@@ -325,6 +355,7 @@ tokio::spawn(async move {
         
         Ok(())
     }
+    }
 
     pub async fn get_deribit_price(&self) -> Result<f64, PulserError> {
         let price = *self.latest_deribit_price.read().unwrap();
@@ -417,7 +448,7 @@ match emergency_fetch_price(&self.client).await {
             Err(_) => Err(PulserError::NetworkError("Deribit request timed out".to_string())),
         }
     }
-}
+
 // Place this outside of impl PriceFeed
 pub async fn emergency_fetch_price(client: &Client) -> Result<f64, PulserError> {
     let mut prices = Vec::new();

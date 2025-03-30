@@ -137,13 +137,13 @@ impl StateManager {
 
         debug!("Saved {} in {}ms", path_str, start_time.elapsed().as_millis());
 
-        if path_str.contains("stable_chain") {
-            if let Ok(chain) = serde_json::from_str::<StableChain>(&json) {
-                if let Err(e) = utils::validate_stablechain(&chain) {
-                    warn!("Saved StableChain validation warning: {}", e);
-                }
-            }
+if path_str.contains("stable_chain") {
+    if let Ok(chain_data) = serde_json::from_str::<StableChain>(&json) {
+        if let Err(e) = utils::validate_stablechain(&chain_data) {
+            warn!("Saved StableChain validation warning: {}", e);
         }
+    }
+}
 
         Ok(())
     }
@@ -202,7 +202,13 @@ impl StateManager {
     }
 
     pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain) -> Result<(), PulserError> {
+    
+        if let Err(e) = utils::validate_stablechain(chain) {
+        warn!("Validation warning before saving StableChain for user {}: {}", user_id, e);
+        // Optionally return the error instead of just warning
+    }
         let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
+        
         info!("Saving StableChain for user {}: {} BTC (${:.2}), {} history entries", 
             user_id, stable_chain.accumulated_btc.to_btc(), stable_chain.stabilized_usd.0, stable_chain.history.len());
         self.save(&sc_path, stable_chain).await
@@ -364,9 +370,10 @@ impl StateManager {
     }
 
     pub async fn update_price_cache(&self, price: f64, timestamp: i64) -> Result<(), PulserError> {
-        tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SECS), self.price_cache.write()).await
-            .map_err(|_| PulserError::StorageError("Timeout acquiring write lock for price cache".to_string()))?
-            .set((price, timestamp));
+let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SECS), self.price_cache.write()).await
+    .map_err(|_| PulserError::StorageError("Timeout acquiring write lock for price cache".to_string()))?;
+*price_cache = (price, timestamp);
+
         Ok(())
     }
 

@@ -176,7 +176,13 @@ pub fn init_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, P
             "user_pubkey": &user_xpub_str,
             "user_id": user_id
         });
-        fs::write(&public_path, serde_json::to_string_pretty(&public_data)?)?;
+if let Some(parent) = std::path::Path::new(&public_path).parent() {
+    fs::create_dir_all(parent)?;
+}
+
+let temp_path = format!("{}.tmp", public_path);
+fs::write(&temp_path, serde_json::to_string_pretty(&public_data)?)?;
+fs::rename(&temp_path, &public_path)?;
         info!("Public data saved to {}", public_path);
         public_data
     } else {

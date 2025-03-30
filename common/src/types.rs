@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::collections::HashMap;
 use std::str::FromStr;
+use crate::PulserError;
+use crate::StateManager;
 
 pub trait Amount {
     fn to_sats(&self) -> u64;
@@ -100,6 +102,8 @@ pub struct StableChain {
     pub short_reduction_amount: Option<f64>,
     pub old_addresses: Vec<String>,
     pub history: Vec<UtxoInfo>,
+        pub change_log: Vec<ChangeEntry>,
+
 }
 
 impl StableChain {
@@ -134,8 +138,25 @@ impl StableChain {
             short_reduction_amount: None,
             old_addresses: Vec::new(),
             history: Vec::new(),
-        })
-    }
+                        change_log: Vec::new(), // Initialize empty change log
+        });
+    
+    pub async fn update_with_transaction<F>(&mut self, 
+                                           state_manager: &StateManager, 
+                                           user_id: &str,
+                                           update_fn: F) -> Result<(), PulserError>
+    where
+        F: FnOnce(&mut StableChain) -> Result<(), PulserError>, // Replace Self with StableChain
+
+    {
+        // Apply the update function to this chain
+        update_fn(self)?;
+
+        
+        // Save the updated chain
+        state_manager.save_stable_chain(user_id, self).await
+ 
+   }
 
     pub fn is_ready_for_channel(&self, min_confirmations: u32, channel_threshold_usd: f64) -> bool {
         self.utxos.iter().all(|utxo| utxo.confirmations >= min_confirmations) &&
@@ -150,6 +171,25 @@ impl StableChain {
             details: details.to_string(),
         });
     }
+    
+    pub fn log_change(&mut self, change_type: &str, btc_delta: f64, usd_delta: f64, service: &str, details: Option<String>) {
+        let entry = ChangeEntry {
+            timestamp: chrono::Utc::now().timestamp(),
+            change_type: change_type.to_string(),
+            btc_delta,
+            usd_delta,
+            service: service.to_string(),
+            details,
+        };
+        
+        self.change_log.push(entry);
+        
+        // Keep log size reasonable - keep last 100 entries
+        if self.change_log.len() > 100 {
+            self.change_log = self.change_log.split_off(self.change_log.len() - 100);
+        }
+    }
+}
 }
 
 impl UtxoInfo {
@@ -301,6 +341,17 @@ pub struct ServiceStatus {
     pub price_update_count: u32,
     pub active_syncs: u32,
     pub websocket_active: bool,
+    
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangeEntry {
+    pub timestamp: i64,
+    pub change_type: String, // "deposit", "withdrawal", "stabilization", "hedge", etc.
+    pub btc_delta: f64,      // Change in BTC amount (positive or negative)
+    pub usd_delta: f64,      // Change in USD amount (positive or negative)
+    pub service: String,     // Which service made the change ("deposit", "hedge", "withdraw")
+    pub details: Option<String>, // Optional additional details (txid, etc.)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -22,7 +22,7 @@ pub async fn sync_and_stabilize_utxos(
     wallet: &mut Wallet,
     esplora: &AsyncClient,
     chain: &mut StableChain,
-deribit_price: f64
+deribit_price: f64,
     price_info: &PriceInfo,
     deposit_addr: &Address,
     change_addr: &Address,
@@ -186,26 +186,49 @@ let mut new_utxos: Vec<UtxoInfo> = Vec::new();
                    utxo.txid, utxo.vout, utxo.confirmations, min_confirmations);
         }
     }
-
-    // Update chain state
-    chain.utxos = chain_utxos;
-    let new_balance = wallet.balance();
-    chain.accumulated_btc = Bitcoin::from_sats(new_balance.confirmed.to_sat());
     
-    // Calculate stabilized USD based on history (only include unspent UTXOs)
-    chain.stabilized_usd = USD(chain.history.iter()
-        .filter(|h| !h.spent)
-        .map(|h| h.stable_value_usd)
-        .sum());
-    
-    chain.raw_btc_usd = stabilization_price;
 
-    // Save state atomically - first to memory, then to disk
-    let state_save_result = state_manager.save_stable_chain(user_id, chain).await;
-    if let Err(e) = state_save_result {
-        error!("Failed to save StableChain for user {}: {}", user_id, e);
-        return Err(e);
-    }
+// Get the current balance
+let new_balance = wallet.balance();
+
+// Calculate BTC delta (for change logging)
+let btc_delta = (new_balance.confirmed.to_sat() - previous_balance.confirmed.to_sat()) as f64 / 100_000_000.0;
+
+// Update chain state directly
+chain.utxos = chain_utxos;
+chain.accumulated_btc = Bitcoin::from_sats(new_balance.confirmed.to_sat());
+
+// Calculate stabilized USD based on history (only include unspent UTXOs)
+chain.stabilized_usd = USD(chain.history.iter()
+    .filter(|h| !h.spent)
+    .map(|h| h.stable_value_usd)
+    .sum());
+
+chain.raw_btc_usd = stabilization_price;
+
+// Log the change if it's a deposit (positive BTC delta)
+if btc_delta > 0.0 {
+    // Calculate USD delta from new UTXOs
+    let usd_delta: f64 = processed_utxos.iter()
+        .map(|u| u.stable_value_usd)
+        .sum();
+        
+    // Log the deposit
+    chain.log_change(
+        "deposit", 
+        btc_delta, 
+        usd_delta, 
+        "deposit-service", 
+        Some(format!("{} UTXOs confirmed", processed_utxos.len()))
+    );
+}
+
+// Save the updated chain
+let state_save_result = state_manager.save_stable_chain(user_id, chain).await;
+if let Err(e) = state_save_result {
+    error!("Failed to save StableChain for user {}: {}", user_id, e);
+    return Err(e);
+}
 
     // Save wallet changeset if available
     if let Some(changeset) = wallet.take_staged() {

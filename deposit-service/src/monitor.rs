@@ -137,10 +137,38 @@ pub async fn monitor_deposits(
     }
 
     loop {
-        let active_user_data = {
-            let wallets_lock = wallets.lock().await;
-            let statuses_lock = user_statuses.lock().await;
-            let mut active_users = Vec::new();
+       let active_user_data = {
+    // First get wallets with timeout
+    let wallets_lock = match tokio::time::timeout(
+        Duration::from_secs(5),
+        wallets.lock()
+    ).await {
+        Ok(lock) => lock,
+        Err(_) => {
+            warn!("Timeout acquiring wallets lock for user scan");
+            vec![] // Return empty list if we can't get the lock
+        }
+    };
+    let statuses_lock = match tokio::time::timeout(
+        Duration::from_secs(5),
+        user_statuses.lock()
+    ).await {
+        Ok(lock) => lock,
+        Err(_) => {
+            warn!("Timeout acquiring user_statuses lock for user scan");
+            return vec![]; // Return empty list if we can't get the lock
+        }
+    };
+    let mut active_users = Vec::new();
+    for (id, (_, chain)) in wallets_lock.iter() {
+        let address = statuses_lock.get(id)
+            .map(|s| s.current_deposit_address.clone())
+            .unwrap_or_else(|| chain.multisig_addr.clone());
+        active_users.push((id.clone(), address));
+    }
+    debug!("Active users to scan: {}", active_users.len());
+    active_users
+};
             for (id, (_, chain)) in wallets_lock.iter() {
                 let address = statuses_lock.get(id)
                     .map(|s| s.current_deposit_address.clone())

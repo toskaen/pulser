@@ -268,7 +268,7 @@ async fn main() -> Result<(), PulserError> {
                     }
                     _ = interval.tick() => {
                         // Note: Requires price_feed.is_websocket_connected() implementation
-                        let is_connected = true; // Placeholder until price_feed.rs updated
+                    let is_connected = price_feed.is_websocket_connected().await;
                         let mut status = service_status.lock().await;
                         let previous_state = status.websocket_active;
                         status.websocket_active = is_connected;
@@ -278,6 +278,12 @@ async fn main() -> Result<(), PulserError> {
                             } else {
                                 warn!("Deribit WebSocket connection lost");
                             }
+                            
+                             state_manager.save_service_status(&status).await.unwrap_or_else(|e| {
+        warn!("Failed to save service status after WebSocket state change: {}", e);
+    });
+
+                           
                         }
                     }
                 }
@@ -511,28 +517,60 @@ async fn main() -> Result<(), PulserError> {
     });
 
     // Shutdown handling
-    shutdown_tx.subscribe().recv().await?;
-    info!("Shutting down...");
-    let handles = vec![
-        price_handle,
-        deribit_feed_handle,
-        ws_health_handle,
-        retry_handle,
-        monitor_handle,
-        sync_handle,
-        status_update_handle,
-        server_handle,
-        save_status_handle,
-    ];
-    match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
-        Ok(results) => {
-            for result in results {
-                result??;
-            }
-            info!("All tasks shut down gracefully");
-        }
-        Err(_) => warn!("Shutdown timed out after {}s", MAX_SHUTDOWN_WAIT_SECS),
+// Enhanced shutdown handling
+shutdown_tx.subscribe().recv().await?;
+info!("Shutting down...");
+
+// First explicitly close WebSocket connections
+info!("Closing WebSocket connections...");
+if let Some(mut ws) = {
+    let mut active_ws = price_feed.active_ws.lock().await;
+    active_ws.take()
+} {
+    match tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await {
+        Ok(Ok(_)) => info!("WebSocket closed successfully"),
+        Ok(Err(e)) => warn!("Error closing WebSocket: {}", e),
+        Err(_) => warn!("Timeout closing WebSocket"),
     }
-    info!("Deposit service shutdown complete");
+}
+
+// Save final service status
+info!("Saving final service status...");
+{
+    let status = service_status.lock().await;
+    if let Err(e) = state_manager.save_service_status(&status).await {
+        warn!("Failed to save final service status: {}", e);
+    }
+}
+
+let handles = vec![
+    price_handle,
+    deribit_feed_handle,
+    ws_health_handle,
+    retry_handle,
+    monitor_handle,
+    sync_handle,
+    status_update_handle,
+    server_handle,
+    save_status_handle,
+];
+
+// Give tasks time to shut down gracefully
+info!("Waiting for tasks to complete...");
+match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
+    Ok(results) => {
+        for result in results {
+            if let Err(e) = result {
+                warn!("Task error during shutdown: {}", e);
+            }
+        }
+        info!("All tasks shut down gracefully");
+    }
+    Err(_) => {
+        warn!("Shutdown timed out after {}s, some tasks may not have completed", MAX_SHUTDOWN_WAIT_SECS);
+    }
+}
+
+info!("Deposit service shutdown complete");
     Ok(())
 }

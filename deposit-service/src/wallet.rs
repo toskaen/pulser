@@ -160,24 +160,45 @@ impl DepositWallet {
         }
     }
 
-    pub async fn reveal_new_address(&mut self) -> Result<Address, PulserError> {
-        let new_addr = self.wallet.reveal_next_address(KeychainKind::External).address;
-        let mut logged = LOGGED_ADDRESSES.lock().await;
-        logged.insert(self.stable_chain.user_id.to_string(), new_addr.clone());
-        self.stable_chain.old_addresses.push(self.stable_chain.multisig_addr.clone());
-        if self.stable_chain.old_addresses.len() > 4 {
-            self.stable_chain.old_addresses.remove(0);
-        }
-        self.stable_chain.multisig_addr = new_addr.to_string();
-        self.stable_chain.timestamp = chrono::Utc::now().timestamp(); // Fixed: Use i64
-        self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();
-        self.state_manager.save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain).await?;
-        if let Some(changeset) = self.wallet.take_staged() {
-            self.state_manager.save_changeset(&self.stable_chain.user_id.to_string(), &changeset).await?;
-        }
-        info!("Revealed new deposit address for user {}: {}", self.stable_chain.user_id, new_addr);
-        Ok(new_addr)
+pub async fn reveal_new_address(&mut self) -> Result<Address, PulserError> {
+    let new_addr = self.wallet.reveal_next_address(KeychainKind::External).address;
+    let mut logged = LOGGED_ADDRESSES.lock().await;
+    logged.insert(self.stable_chain.user_id.to_string(), new_addr.clone());
+    
+    // Save the old address before changing it
+    let old_addr = self.stable_chain.multisig_addr.clone();
+    
+    // Update the old_addresses list
+    self.stable_chain.old_addresses.push(self.stable_chain.multisig_addr.clone());
+    if self.stable_chain.old_addresses.len() > 4 {
+        self.stable_chain.old_addresses.remove(0);
     }
+    
+    // Set the new address
+    self.stable_chain.multisig_addr = new_addr.to_string();
+    
+    // Add log_change here, after updating the address but before updating timestamps
+    self.stable_chain.log_change(
+        "address_change", 
+        0.0, // No BTC change
+        0.0, // No USD change
+        "deposit-service",
+        Some(format!("Old: {}, New: {}", old_addr, new_addr.to_string()))
+    );
+    
+    // Continue with the existing timestamp updates
+    self.stable_chain.timestamp = chrono::Utc::now().timestamp();
+    self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();
+    
+    // Save and update wallet state as before
+    self.state_manager.save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain).await?;
+    if let Some(changeset) = self.wallet.take_staged() {
+        self.state_manager.save_changeset(&self.stable_chain.user_id.to_string(), &changeset).await?;
+    }
+    
+    info!("Revealed new deposit address for user {}: {}", self.stable_chain.user_id, new_addr);
+    Ok(new_addr)
+}
 
 pub fn get_cached_utxos(&self) -> Vec<UtxoInfo> {
     if Utc::now().timestamp() - self.stable_chain.timestamp > 3600 {

@@ -7,6 +7,7 @@ use log::warn;
 use crate::StableChain;
 use crate::error::PulserError;
 use crate::types::Amount;
+use std::fs;
 
 
 /// Get current timestamp in seconds
@@ -136,5 +137,32 @@ pub fn ensure_user_dir(data_dir: &str, user_id: &str) -> Result<(), std::io::Err
     if !user_dir.exists() {
         std::fs::create_dir_all(&user_dir)?;
     }
+    Ok(())
+}
+
+// Add to utils.rs
+pub fn write_file_atomically(path: &str, content: &str) -> Result<(), std::io::Error> {
+    let temp_path = format!("{}.tmp", path);
+    
+    // Ensure parent directory exists
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    
+    // Write to temp file
+    fs::write(&temp_path, content)?;
+    
+    // Rename to target (atomic on most filesystems)
+    fs::rename(&temp_path, path)?;
+    
+    // Set permissions if needed
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    
     Ok(())
 }
