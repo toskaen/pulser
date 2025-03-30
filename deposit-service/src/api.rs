@@ -491,7 +491,7 @@ pub async fn sync_user(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     price_info: Arc<Mutex<PriceInfo>>,
-    price_feed: Arc<PriceFeed>,
+    deribit_price: f64, // Replace price_feed
     esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
     esplora: &bdk_esplora::esplora_client::AsyncClient,
     state_manager: Arc<StateManager>,
@@ -516,7 +516,7 @@ pub async fn sync_user(
         }
     };
 
-    // Check if price data is valid
+    // Check if price data is validf
     if price_info_data.raw_btc_usd <= 0.0 {
         error!("Invalid price data for user {}: ${}", user_id, price_info_data.raw_btc_usd);
         update_user_status(user_id, "error", "Invalid price data", &user_statuses).await;
@@ -925,6 +925,7 @@ fn improved_user_status_route(
             }
         })
 }
+
 // Improved route for force sync with better concurrency control
 fn improved_force_sync_route(
     sync_tx: mpsc::Sender<String>,
@@ -938,81 +939,81 @@ fn improved_force_sync_route(
             let active_tasks_manager = active_tasks_manager.clone();
             let wallets = wallets.clone();
             
-            async move {
-                // First check if the user exists
-                let user_exists = match tokio::time::timeout(
-                    Duration::from_secs(3), 
-                    wallets.lock()
-                ).await {
-                    Ok(wallets_lock) => wallets_lock.contains_key(&user_id),
-                    Err(_) => {
-                        warn!("Timeout checking if user {} exists", user_id);
-                        return Ok::<_, Rejection>(warp::reply::json(&json!({
-                            "status": "error", 
-                            "message": "Timeout checking if user exists"
-                        })));
-                    }
-                };
-                
-                if !user_exists {
-                    return Ok::<_, Rejection>(warp::reply::json(&json!({
+async move {
+    // First check if the user exists
+    let user_exists = match tokio::time::timeout(
+        Duration::from_secs(3), 
+        wallets.lock()
+    ).await {
+        Ok(wallets_lock) => wallets_lock.contains_key(&user_id),
+        Err(_) => {
+            warn!("Timeout checking if user {} exists", user_id);
+            return Ok::<_, Rejection>(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "Timeout checking if user exists"
+            })));
+        }
+    };
+    
+    if !user_exists {
+        return Ok::<_, Rejection>(warp::reply::json(&json!({
+            "status": "error", 
+            "message": "User not found"
+        })));
+    }
+    
+    // Check if the user is already being synced
+    let is_active = match tokio::time::timeout(
+        Duration::from_secs(3),
+        active_tasks_manager.is_user_active(&user_id)
+    ).await {
+        Ok(active) => active,
+        Err(_) => {
+            warn!("Timeout checking if user {} is active", user_id);
+            return Ok::<_, Rejection>(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "Timeout checking if user is active"
+            })));
+        }
+    };
+    
+    if is_active {
+        return Ok::<_, Rejection>(warp::reply::json(&json!({
+            "status": "error", 
+            "message": "User already syncing"
+        })));
+    }
+    
+    // Try to send the sync request
+    match tx.try_send(user_id.clone()) {
+        Ok(_) => {
+            info!("Force sync triggered for user {}", user_id);
+            Ok(warp::reply::json(&json!({
+                "status": "ok", 
+                "message": "Sync triggered"
+            })))
+        },
+        Err(error) => {
+            error!("Failed to trigger sync: {:?}", error);
+            match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    Ok(warp::reply::json(&json!({
                         "status": "error", 
-                        "message": "User not found"
-                    })));
-                }
-                
-                // Check if the user is already being synced
-                let is_active = match tokio::time::timeout(
-                    Duration::from_secs(3),
-                    active_tasks_manager.is_user_active(&user_id)
-                ).await {
-                    Ok(active) => active,
-                    Err(_) => {
-                        warn!("Timeout checking if user {} is active", user_id);
-                        return Ok::<_, Rejection>(warp::reply::json(&json!({
-                            "status": "error", 
-                            "message": "Timeout checking if user is active"
-                        })));
-                    }
-                };
-                
-                if is_active {
-                    return Ok::<_, Rejection>(warp::reply::json(&json!({
+                        "message": "Sync queue is full, try again later"
+                    })))
+                },
+                _ => {
+                    Ok(warp::reply::json(&json!({
                         "status": "error", 
-                        "message": "User already syncing"
-                    })));
-                }
-                
-                // Try to send the sync request
-                match tx.try_send(user_id.clone()) {
-                    Ok(_) => {
-                        info!("Force sync triggered for user {}", user_id);
-                        Ok(warp::reply::json(&json!({
-                            "status": "ok", 
-                            "message": "Sync triggered"
-                        })))
-                    },
-                    Err(error) => {
-                        error!("Failed to trigger sync: {:?}", error);
-                        match error {
-                            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                                Ok(warp::reply::json(&json!({
-                                    "status": "error", 
-                                    "message": "Sync queue is full, try again later"
-                                })))
-                            },
-                            _ => {
-                                Ok(warp::reply::json(&json!({
-                                    "status": "error", 
-                                    "message": "Failed to trigger sync"
-                                })))
-                            }
-                        }
-                    }
+                        "message": "Failed to trigger sync"
+                    })))
                 }
             }
-        })
+        }
+    }
 }
+}
+
 fn with_wallets(wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>) -> impl Filter<Extract = (Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || wallets.clone())
 }

@@ -13,7 +13,7 @@ use futures_util::stream::StreamExt;
 use crate::error::PulserError;
 use crate::types::PriceInfo;
 use crate::utils::now_timestamp;
-use tokio::sync::broadcast;
+use tokio::sync::{mspc, broadcast};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio::sync::Mutex as TokioMutex;
 use std::future::Future;
@@ -52,6 +52,7 @@ pub struct PriceFeed {
     last_ws_activity: Arc<RwLock<Instant>>,
     is_connecting: Arc<RwLock<bool>>,
     error_counts: Arc<RwLock<HashMap<String, u32>>>,
+        connected: Arc<Mutex<bool>>, // New field
     last_price_update: Arc<RwLock<Instant>>,  // For rate limiting
 }
 
@@ -242,82 +243,85 @@ impl PriceFeed {
         let latest_price_clone = self.latest_deribit_price.clone();
         let last_update_clone = self.last_deribit_update.clone();
         let last_activity_clone = self.last_ws_activity.clone();
-        let last_price_update_clone = self.last_price_update.clone();
-        
-        tokio::spawn(async move {
-            loop {
-                let mut ws_lock = active_ws_clone.lock().await;
-                let ws_opt = &mut *ws_lock;
-                
-                if let Some(ws) = ws_opt {
-                    match timeout(Duration::from_secs(10), ws.next()).await {
-                        Ok(Some(Ok(msg))) => {
-                            // Update last activity time
-                            *last_activity_clone.write().unwrap() = Instant::now();
-                            
-                            match msg {
-                                Message::Text(text) => {
-                                    if let Ok(data) = serde_json::from_str::<Value>(&text) {
-                                        if let Some(price) = data.get("params")
-                                            .and_then(|p| p.get("data"))
-                                            .and_then(|d| d.get("last_price"))
-                                            .and_then(|p| p.as_f64()) 
-                                        {
-let now = Instant::now();
-let last_update = *last_price_update_clone.read().unwrap();
-if now.duration_since(last_update).as_millis() >= PRICE_UPDATE_INTERVAL_MS as u128 {
-    // Only update price and timestamp if enough time has passed
-    *latest_price_clone.write().unwrap() = price;
-    *last_update_clone.write().unwrap() = now_timestamp();
-    *last_price_update_clone.write().unwrap() = now;
-    trace!("Deribit BTC/USD: ${:.2} (throttled)", price);
-}
-                                        }
-                                    }
-                                }
-                                Message::Ping(data) => {
-                                    // Respond to ping with pong
-                                    if let Err(e) = ws.send(Message::Pong(data)).await {
-                                        warn!("Failed to send pong: {}", e);
-                                        break;
-                                    }
-                                }
-                                Message::Close(_) => {
-                                    debug!("WebSocket close frame received");
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        Ok(Some(Err(e))) => {
-                            warn!("WebSocket error: {}", e);
-                            break;
-                        }
-                        Ok(None) => {
-                            debug!("WebSocket connection closed");
-                            break;
-                        }
-                        Err(_) => {
-                            warn!("WebSocket message timeout");
-                            break;
-                        }
+       let last_price_update_clone = self.last_price_update.clone();
+
+// Create a bounded channel to buffer WebSocket messages
+let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(100); // 100-message buffer
+
+// Spawn a task to read from WebSocket and send to the channel
+let ws_clone = self.active_ws.clone();
+tokio::spawn(async move {
+    let mut ws_lock = ws_clone.lock().await;
+    if let Some(mut ws) = ws_lock.take() { // Take ownership to ensure cleanup
+        while let Some(msg_result) = ws.next().await {
+            match msg_result {
+                Ok(msg) => {
+                    if tx.send(msg).await.is_err() {
+                        warn!("Deribit WSS buffer full, dropping messages");
+                        break; // Receiver dropped or channel closed
                     }
-                } else {
+                }
+                Err(e) => {
+                    warn!("WebSocket read error: {}", e);
                     break;
                 }
-                
-                // Release the lock to allow other operations
-                drop(ws_lock);
-                
-                // Small sleep to prevent CPU spinning
-                sleep(Duration::from_millis(10)).await;
             }
-            
-            // Clear the WebSocket connection when the task ends
-            let mut ws_lock = active_ws_clone.lock().await;
-            *ws_lock = None;
-            debug!("Deribit price feed task ended");
-        });
+        }
+        debug!("Deribit WebSocket reader task ended");
+    }
+    // WebSocket is implicitly closed when ws goes out of scope
+});
+
+// Spawn the processing task using the channel receiver
+tokio::spawn(async move {
+    while let Some(msg) = rx.recv().await {
+        // Update last activity time
+        *last_activity_clone.write().unwrap() = Instant::now();
+
+        match msg {
+            Message::Text(text) => {
+                if let Ok(data) = serde_json::from_str::<Value>(&text) {
+                    if let Some(price) = data.get("params")
+                        .and_then(|p| p.get("data"))
+                        .and_then(|d| d.get("last_price"))
+                        .and_then(|p| p.as_f64())
+                    {
+                        let now = Instant::now();
+                        let last_update = *last_price_update_clone.read().unwrap();
+                        if now.duration_since(last_update).as_millis() >= PRICE_UPDATE_INTERVAL_MS as u128 {
+                            // Only update price and timestamp if enough time has passed
+                            *latest_price_clone.write().unwrap() = price;
+                            *last_update_clone.write().unwrap() = now_timestamp();
+                            *last_price_update_clone.write().unwrap() = now;
+                            trace!("Deribit BTC/USD: ${:.2} (throttled)", price);
+                        }
+                    }
+                }
+            }
+            Message::Ping(data) => {
+                // Respond to ping with pong
+                let mut ws_lock = active_ws_clone.lock().await;
+                if let Some(ws) = ws_lock.as_mut() {
+                    if let Err(e) = ws.send(Message::Pong(data)).await {
+                        warn!("Failed to send pong: {}", e);
+                        break;
+                    }
+                } else {
+                    break; // WebSocket gone
+                }
+            }
+            Message::Close(_) => {
+                debug!("WebSocket close frame received");
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Clear the WebSocket connection when the task ends
+    let mut ws_lock = active_ws_clone.lock().await;
+    *ws_lock = None;
+    debug!("Deribit price feed processor task ended");
+});
         
         Ok(())
     }

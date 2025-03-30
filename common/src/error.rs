@@ -208,3 +208,7 @@ impl From<bincode::Error> for PulserError {
         PulserError::StorageError(err.to_string())
     }
 }
+
+impl From<std::num::ParseFloatError> for PulserError {
+    fn from(err: std::num::ParseFloatError) -> Self { PulserError::ApiError(err.to_string()) }
+}

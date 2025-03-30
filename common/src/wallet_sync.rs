@@ -22,7 +22,7 @@ pub async fn sync_and_stabilize_utxos(
     wallet: &mut Wallet,
     esplora: &AsyncClient,
     chain: &mut StableChain,
-    price_feed: Arc<PriceFeed>,
+deribit_price: f64
     price_info: &PriceInfo,
     deposit_addr: &Address,
     change_addr: &Address,
@@ -33,24 +33,16 @@ pub async fn sync_and_stabilize_utxos(
     let start_time = Instant::now();
 
     // Get current BTC/USD price for stabilization 
-    let stabilization_price = match price_feed.get_deribit_price().await {
-        Ok(price) => {
-            if price <= 0.0 {
-                warn!("Invalid price from Deribit: {}, falling back to median price", price);
-                price_info.raw_btc_usd
-            } else {
-                price
-            }
-        },
-        Err(e) => {
-            warn!("Failed to get Deribit price: {}, falling back to median price", e);
-            price_info.raw_btc_usd
-        }
-    };
-    
-    if stabilization_price <= 0.0 {
-        return Err(PulserError::PriceFeedError("No valid price available for stabilization".to_string()));
-    }
+let stabilization_price = if deribit_price <= 0.0 {
+    warn!("Invalid Deribit price passed: {}, falling back to median price", deribit_price);
+    price_info.raw_btc_usd
+} else {
+    deribit_price
+};
+
+if stabilization_price <= 0.0 {
+    return Err(PulserError::PriceFeedError("No valid price available for stabilization".to_string()));
+}
 
 let mut new_utxos: Vec<UtxoInfo> = Vec::new();
     let previous_utxos = chain.utxos.clone();
