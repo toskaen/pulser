@@ -29,6 +29,8 @@ use futures_util::FutureExt; // Add this to imports
 use std::pin::Pin; // Add this to imports
 use warp::reply::Json;
 use crate::config::Config; // Add this
+use crate::wallet_init::init_wallet;
+
 
 
 #[derive(Serialize)]
@@ -344,121 +346,151 @@ let user_txs = warp::path("user")
         }
     });
 
-    let sync_route = warp::post()
-        .and(warp::path!("sync" / String))
-        .and(with_wallets(wallets.clone()))
-        .and(with_statuses(user_statuses.clone()))
-        .and(with_price(price_info.clone()))
-        .and(with_esplora_urls(esplora_urls.clone()))
-.and(warp::any().map({
-            let esplora_clone = Arc::clone(&esplora_clone); // Clone for this route
-            move || Arc::clone(&esplora_clone)
-        }))
-        .and(with_state_manager(state_manager.clone()))
-        .and(with_retry_queue(retry_queue.clone()))
-        .and(warp::any().map(move || webhook_url.clone()))
-        .and(warp::any().map(move || webhook_config.clone()))
-        .and(warp::any().map(move || client_for_sync.clone()))
-        .and(with_active_tasks_manager(active_tasks_manager.clone()))
-        .and(warp::any().map(move || price_feed_for_sync.clone()))
-            .and(with_service_status(service_status.clone())) // Add this line
-    .and(with_config(config.clone())) // Use with_config
-        .and_then(sync_user_handler);
+let sync_route = warp::post()
+    .and(warp::path!("sync" / String))
+    .and(with_wallets(wallets.clone()))
+    .and(with_statuses(user_statuses.clone()))
+    .and(with_price(price_info.clone()))
+    .and(with_esplora_urls(esplora_urls.clone()))
+    .and(warp::any().map({
+        let esplora_clone = Arc::clone(&esplora_clone); // Clone for this route
+        move || Arc::clone(&esplora_clone)
+    }))
+    .and(with_state_manager(state_manager.clone()))
+    .and(with_retry_queue(retry_queue.clone()))
+    .and(warp::any().map(move || webhook_url.clone()))
+    .and(warp::any().map(move || webhook_config.clone()))
+    .and(warp::any().map(move || client_for_sync.clone()))
+    .and(with_active_tasks_manager(active_tasks_manager.clone()))
+    .and(warp::any().map(move || price_feed_for_sync.clone()))
+    .and(with_service_status(service_status.clone())) 
+    .and(with_config(config.clone())) // Make sure we include config
+    .and_then(sync_user_handler);
 
 let force_sync = warp::path!("force_sync" / String)
     .and(warp::post())
     .and(with_wallets(wallets.clone()))
     .and(with_active_tasks_manager(active_tasks_manager.clone()))
     .and(with_price(price_info.clone()))
-        .and(warp::any().map({
-            let esplora_clone = Arc::clone(&esplora_clone); // Clone for this route
-            move || Arc::clone(&esplora_clone)
-        }))
+    .and(warp::any().map({
+        let esplora_clone = Arc::clone(&esplora);
+        move || Arc::clone(&esplora_clone)
+    }))
     .and(with_state_manager(state_manager.clone()))
-    .and_then(move |
-        user_id: String,
-        wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
-        active_tasks_manager: Arc<UserTaskLock>,
-        price_info: Arc<Mutex<PriceInfo>>,
-        esplora: Arc<bdk_esplora::esplora_client::AsyncClient>,
-        state_manager: Arc<StateManager>
-    | async move {
-        debug!("Received force_sync request for user {}", user_id);
+    .and(with_config(config.clone()))
+    .and_then(force_sync_handler);
 
-        // Check user existence
-        let mut wallets_lock = match tokio::time::timeout(Duration::from_secs(3), wallets.lock()).await {
-            Ok(lock) => lock,
-            Err(_) => {
-                warn!("Timeout checking if user {} exists", &user_id);
-                return Ok::<_, Rejection>(warp::reply::json(&json!({"status": "error", "message": "Timeout checking if user exists"})));
-            }
-        };
-        let (wallet, chain) = match wallets_lock.get_mut(&user_id) {
-            Some(entry) => entry,
-            None => return Ok::<_, Rejection>(warp::reply::json(&json!({"status": "error", "message": "User not found"}))),
-        };
+// Define the handler function separately to avoid closure issues
+async fn force_sync_handler(
+    user_id: String,
+    wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
+    active_tasks_manager: Arc<UserTaskLock>,
+    price_info: Arc<Mutex<PriceInfo>>,
+    esplora: Arc<bdk_esplora::esplora_client::AsyncClient>,
+    state_manager: Arc<StateManager>,
+    config: Arc<Config>
+) -> Result<impl Reply, Rejection> {
+    debug!("Received force_sync request for user {}", user_id);
 
-        // Check if user is already syncing
-        if active_tasks_manager.is_user_active(&user_id).await {
-            debug!("User {} already being synced", &user_id);
-            return Ok::<_, Rejection>(warp::reply::json(&json!({"status": "error", "message": "User already syncing"})));
+    // Get price_feed from a dependency injection mechanism or create a new one
+    let price_feed = Arc::new(PriceFeed::new());
+
+    // Check user existence
+    let mut wallets_lock = match tokio::time::timeout(Duration::from_secs(3), wallets.lock()).await {
+        Ok(lock) => lock,
+        Err(_) => {
+            warn!("Timeout checking if user {} exists", &user_id);
+            return Ok(warp::reply::json(&json!({"status": "error", "message": "Timeout checking if user exists"})));
         }
-
-        // Mark user active
-        if !active_tasks_manager.mark_user_active(&user_id, "force_sync").await {
-            return Ok::<_, Rejection>(warp::reply::json(&json!({"status": "error", "message": "Failed to lock user for sync"})));
-        }
-        let _guard = ActivityGuard { user_id: &user_id, manager: &active_tasks_manager };
-
-        // Get price info
-        let price_info = match tokio::time::timeout(Duration::from_secs(3), price_info.lock()).await {
-            Ok(lock) => lock.clone(),
-            Err(_) => {
-                warn!("Timeout acquiring price info for user {}", &user_id);
-                return Ok::<_, Rejection>(warp::reply::json(&json!({"status": "error", "message": "Timeout acquiring price info"})));
-            }
-        };
-
-        // Execute full resync
-        match resync_full_history(
-            &user_id,
-            &mut wallet.wallet,
-            &esplora,
-            chain,
-            &price_info,
-            &state_manager,
-            1, // min_confirmations
-        ).await {
-            Ok(new_utxos) => {
-                info!("Full resync completed for user {}: {} new UTXOs", &user_id, new_utxos.len());
-                Ok(warp::reply::json(&json!({"status": "ok", "message": format!("Full resync completed, {} new UTXOs", new_utxos.len())})))
-            },
-            Err(e) => {
-                error!("Full resync failed for user {}: {}", &user_id, e);
-                Ok(warp::reply::json(&json!({"status": "error", "message": format!("Full resync failed: {}", e)})))
-            }
-        }
-    });
+    };
     
-// In api.rs - register endpoint
+    // If user doesn't exist, try to initialize with config
+    if !wallets_lock.contains_key(&user_id) {
+        debug!("User {} not found, attempting to initialize wallet", &user_id);
+        match DepositWallet::from_config(&config, &user_id, &state_manager, price_feed.clone()).await {
+            Ok((wallet, deposit_info, chain)) => {
+                debug!("Initialized wallet for user {}", &user_id);
+                wallets_lock.insert(user_id.clone(), (wallet, chain));
+            }
+            Err(e) => {
+                error!("Failed to initialize wallet for user {}: {}", &user_id, e);
+                return Ok(warp::reply::json(&json!({"status": "error", "message": format!("Failed to initialize wallet: {}", e)})));
+            }
+        }
+    }
+    
+    let (wallet, chain) = match wallets_lock.get_mut(&user_id) {
+        Some(entry) => entry,
+        None => return Ok(warp::reply::json(&json!({"status": "error", "message": "User not found"})))
+    };
+
+    // Check if user is already syncing
+    if active_tasks_manager.is_user_active(&user_id).await {
+        debug!("User {} already being synced", &user_id);
+        return Ok(warp::reply::json(&json!({"status": "error", "message": "User already syncing"})));
+    }
+
+    // Mark user active
+    if !active_tasks_manager.mark_user_active(&user_id, "force_sync").await {
+        return Ok(warp::reply::json(&json!({"status": "error", "message": "Failed to lock user for sync"})));
+    }
+    let _guard = ActivityGuard { user_id: &user_id, manager: &active_tasks_manager };
+
+    // Get price info
+    let price_info = match tokio::time::timeout(Duration::from_secs(3), price_info.lock()).await {
+        Ok(lock) => lock.clone(),
+        Err(_) => {
+            warn!("Timeout acquiring price info for user {}", &user_id);
+            return Ok(warp::reply::json(&json!({"status": "error", "message": "Timeout acquiring price info"})));
+        }
+    };
+
+    // Execute full resync
+    match resync_full_history(
+        &user_id,
+        &mut wallet.wallet,
+        &esplora,
+        chain,
+        &price_info,
+        &state_manager,
+        config.min_confirmations, // Use config value instead of hardcoded 1
+    ).await {
+        Ok(new_utxos) => {
+            info!("Full resync completed for user {}: {} new UTXOs", &user_id, new_utxos.len());
+            Ok(warp::reply::json(&json!({"status": "ok", "message": format!("Full resync completed, {} new UTXOs", new_utxos.len())})))
+        },
+        Err(e) => {
+            error!("Full resync failed for user {}: {}", &user_id, e);
+            Ok(warp::reply::json(&json!({"status": "error", "message": format!("Full resync failed: {}", e)})))
+        }
+    }
+}
+
+// Add this helper function for the price_feed filter
+fn with_price_feed(
+    price_feed: Arc<PriceFeed>
+) -> impl Filter<Extract = (Arc<PriceFeed>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || price_feed.clone())
+}
+    
 let register = warp::path("register")
     .and(warp::post())
     .and(warp::body::json())
-        .and(with_config(config.clone())) // Add config via filter
+    .and(with_config(config.clone()))
     .and_then({
         let state_manager = state_manager.clone();
         let wallets = wallets.clone();
         let service_status = service_status.clone();
         let user_statuses = user_statuses.clone();
         let price_feed = price_feed.clone();
-        move |public_data: serde_json::Value, config: Arc<Config>| { // Add config as arg
+        move |public_data: serde_json::Value, config: Arc<Config>| {
             let state_manager = state_manager.clone();
             let wallets = wallets.clone();
             let service_status = service_status.clone();
             let user_statuses = user_statuses.clone();
             let price_feed = price_feed.clone();
             async move {
-                // Validate user_id
+                // Validate user_id from request
                 let user_id = match public_data["user_id"].as_str() {
                     Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => id.to_string(),
                     _ => return Ok::<_, Rejection>(warp::reply::json(&json!({
@@ -471,35 +503,8 @@ let register = warp::path("register")
                 let user_dir = PathBuf::from(format!("user_{}", user_id));
                 let public_path = user_dir.join(format!("user_{}_public.json", user_id));
                 
-                // Save with timeout protection
-                match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    state_manager.save(&public_path, &public_data)
-                ).await {
-                    Ok(Ok(_)) => {},
-                    Ok(Err(e)) => {
-                        error!("Failed to save user {} public data: {}", user_id, e);
-                        return Ok::<_, Rejection>(warp::reply::json(&json!({
-                            "status": "error",
-                            "message": format!("Failed to save user data: {}", e)
-                        })));
-                    },
-                    Err(_) => {
-                        error!("Timeout saving user {} public data", user_id);
-                        return Ok::<_, Rejection>(warp::reply::json(&json!({
-                            "status": "error",
-                            "message": "Timeout saving user data"
-                        })));
-                    }
-                }
-                
-                info!("Registered user: {}", user_id);
-
-                // Check if user already exists
-                let mut wallets_lock = match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    wallets.lock()
-                ).await {
+                // Lock wallets early to check existence
+                let mut wallets_lock = match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
                     Ok(lock) => lock,
                     Err(_) => {
                         warn!("Timeout acquiring wallets lock for user {} registration", user_id);
@@ -510,13 +515,35 @@ let register = warp::path("register")
                     }
                 };
                 
+                // If user doesn’t exist, initialize wallet and update public data
                 if !wallets_lock.contains_key(&user_id) {
-match DepositWallet::from_config(&config, &user_id, &state_manager, price_feed.clone()).await {
+                    match DepositWallet::from_config(&config, &user_id, &state_manager, price_feed.clone()).await {
                         Ok((wallet, deposit_info, chain)) => {
-                            let mut statuses = match tokio::time::timeout(
-                                Duration::from_secs(5),
-                                user_statuses.lock()
-                            ).await {
+                            // Use the public_data from init_wallet (via DepositWallet::from_config)
+                            let init_result = init_wallet(&config, &user_id)?;
+                            let full_public_data = init_result.public_data;
+                            
+                            // Save the full public data (includes descriptors)
+                            match tokio::time::timeout(Duration::from_secs(5), state_manager.save(&public_path, &full_public_data)).await {
+                                Ok(Ok(_)) => info!("Public data with descriptors saved to {}", public_path.display()),
+                                Ok(Err(e)) => {
+                                    error!("Failed to save user {} public data: {}", user_id, e);
+                                    return Ok::<_, Rejection>(warp::reply::json(&json!({
+                                        "status": "error",
+                                        "message": format!("Failed to save user data: {}", e)
+                                    })));
+                                },
+                                Err(_) => {
+                                    error!("Timeout saving user {} public data", user_id);
+                                    return Ok::<_, Rejection>(warp::reply::json(&json!({
+                                        "status": "error",
+                                        "message": "Timeout saving user data"
+                                    })));
+                                }
+                            }
+                            
+                            // Update user_statuses
+                            let mut statuses = match tokio::time::timeout(Duration::from_secs(5), user_statuses.lock()).await {
                                 Ok(lock) => lock,
                                 Err(_) => {
                                     wallets_lock.insert(user_id.clone(), (wallet, chain));
@@ -546,13 +573,12 @@ match DepositWallet::from_config(&config, &user_id, &state_manager, price_feed.c
                             wallets_lock.insert(user_id.clone(), (wallet, chain));
                             
                             // Update service status
-                            match tokio::time::timeout(
-                                Duration::from_secs(5),
-                                service_status.lock()
-                            ).await {
+                            match tokio::time::timeout(Duration::from_secs(5), service_status.lock()).await {
                                 Ok(mut status) => status.users_monitored = wallets_lock.len() as u32,
                                 Err(_) => warn!("Timeout updating service status for new user {}", user_id)
                             }
+                            
+                            info!("Registered user {} with descriptors", user_id);
                         }
                         Err(e) => {
                             warn!("Failed to init wallet for {}: {}", user_id, e);
@@ -564,24 +590,32 @@ match DepositWallet::from_config(&config, &user_id, &state_manager, price_feed.c
                     }
                 } else {
                     debug!("User {} already registered, updating public data", user_id);
+                    // If user exists, still ensure public data is updated if needed
+                    let init_result = init_wallet(&config, &user_id)?;
+                    if !public_path.exists() {
+                        match tokio::time::timeout(Duration::from_secs(5), state_manager.save(&public_path, &init_result.public_data)).await {
+                            Ok(Ok(_)) => info!("Updated public data for existing user {}", user_id),
+                            Ok(Err(e)) => error!("Failed to update public data for {}: {}", user_id, e),
+                            Err(_) => error!("Timeout updating public data for {}", user_id),
+                        }
+                    }
                 }
                 
                 Ok::<_, Rejection>(warp::reply::json(&json!({"status": "registered"})))
             }
         }
     });
-    
-    // In api.rs - Add this to your routes
+
+// Add helper filter function for config
+fn with_config(config: Arc<Config>) -> impl Filter<Extract = (Arc<Config>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || config.clone())
+}
 
 let user_address = warp::path!("user" / String / "address")
     .and(warp::get())
-    .and(with_statuses(user_statuses.clone())) // Fixed typo
+    .and(with_statuses(user_statuses.clone()))
     .and_then(move |user_id: String, user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>| async move {
-        // Get user status with timeout protection
-        let statuses_lock = match tokio::time::timeout(
-            Duration::from_secs(3),
-            user_statuses.lock()
-        ).await {
+        let statuses_lock = match tokio::time::timeout(Duration::from_secs(3), user_statuses.lock()).await {
             Ok(lock) => lock,
             Err(_) => {
                 warn!("Timeout acquiring user_statuses lock for address request");
@@ -592,22 +626,15 @@ let user_address = warp::path!("user" / String / "address")
             }
         };
         
-        // Check if user exists and get address
         match statuses_lock.get(&user_id) {
             Some(status) => {
+                // Return only address-related info
                 Ok::<_, Rejection>(warp::reply::json(&json!({
-                    "status": "success",
-                    "user_id": user_id,
                     "deposit_address": status.current_deposit_address,
                     "ready": status.sync_status != "error" && status.sync_status != "initializing"
                 })))
             },
-            None => {
-                Ok::<_, Rejection>(warp::reply::json(&json!({
-                    "status": "error",
-                    "message": "User not found"
-                })))
-            }
+            None => Ok::<_, Rejection>(warp::reply::json(&json!({"error": "User not found"}))),
         }
     });
     
@@ -775,6 +802,7 @@ async fn sync_user_handler(
     }
 }
 
+// And also fix the sync_user method to correctly use config:
 pub async fn sync_user(
     user_id: &str,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -788,8 +816,7 @@ pub async fn sync_user(
     webhook_url: &str,
     webhook_config: &WebhookConfig,
     client: Client,
-        config: Arc<Config>, // Add this
-
+    config: Arc<Config>, // Add this parameter
 ) -> Result<bool, PulserError> {
     let start_time = Instant::now();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -828,7 +855,7 @@ pub async fn sync_user(
         // Initialize wallet if it doesn't exist
         if !wallets_guard.contains_key(user_id) {
             debug!("Initializing wallet for user {}", user_id);
-match DepositWallet::from_config(&config, user_id, &state_manager, price_feed.clone()).await {
+            match DepositWallet::from_config(&config, user_id, &state_manager, price_feed.clone()).await {
                 Ok((wallet, deposit_info, chain)) => {
                     // Update user status with address (with timeout)
                     match tokio::time::timeout(Duration::from_secs(5), user_statuses.lock()).await {

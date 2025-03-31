@@ -28,7 +28,7 @@ const WEBSOCKET_HEALTH_CHECK_SECS: u64 = 30;
 
 async fn preload_existing_users(
     data_dir: &str,
-        config: &Config, // Already added in last fix
+    config: &Config,
     state_manager: &Arc<StateManager>,
     price_feed: Arc<PriceFeed>,
     wallets: &Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -44,23 +44,17 @@ async fn preload_existing_users(
         if path.is_dir() {
             if let Some(user_id) = path.file_name().and_then(|f| f.to_str()).and_then(|s| s.strip_prefix("user_")) {
                 debug!("Preloading user: {}", user_id);
-                match DepositWallet::from_config(
-                    config, // Pass config instead of path
-                    user_id,
-                    state_manager,
-                    price_feed.clone(),
-                ).await {
+                match DepositWallet::from_config(config, user_id, state_manager, price_feed.clone()).await {
                     Ok((wallet, deposit_info, chain)) => {
-                        let current_balance = wallet.wallet.balance().confirmed.to_sat();
                         let status = UserStatus {
                             user_id: user_id.to_string(),
                             last_sync: 0,
-                            sync_status: "loaded".to_string(),
+                            sync_status: "pending".to_string(),  // Mark as unsynced
                             utxo_count: chain.utxos.len() as u32,
-                            total_value_btc: current_balance as f64 / 100_000_000.0,
+                            total_value_btc: 0.0,  // Defer to monitor
                             total_value_usd: chain.stabilized_usd.0,
-                            confirmations_pending: wallet.wallet.balance().untrusted_pending.to_sat() > 0,
-                            last_update_message: "Preloaded from disk".to_string(),
+                            confirmations_pending: false,
+                            last_update_message: "Preloaded from disk, awaiting sync".to_string(),
                             sync_duration_ms: 0,
                             last_error: None,
                             last_success: 0,
@@ -76,6 +70,7 @@ async fn preload_existing_users(
                             let mut statuses_lock = user_statuses.lock().await;
                             statuses_lock.insert(user_id.to_string(), status);
                         }
+                        sync_tx.send(user_id.to_string()).await?;  // Queue for monitor
                         loaded_count += 1;
                     }
                     Err(e) => {
@@ -335,35 +330,24 @@ let data_lsp = config.data_dir.clone();
         let service_status = service_status.clone();
         let shutdown_tx_clone = shutdown_tx.clone();
 
-        async move {
-            monitor_deposits(
-                wallets,
-                user_statuses,
-                last_activity_check,
-                sync_tx,
-                price_info,
-                MonitorConfig {
-                    deposit_window_hours: config.deposit_window_hours,
-                    batch_size: config.monitor_batch_size,
-                    esplora_url: config.esplora_url.clone(),
-                    websocket_url: config.websocket_url.clone(),
-                    fallback_esplora_url: config.fallback_esplora_url.clone(),
-                    fallback_sync_interval_secs: config.fallback_sync_interval_secs,
-                    websocket_ping_interval_secs: config.websocket_ping_interval_secs,
-                    websocket_reconnect_max_attempts: config.websocket_reconnect_max_attempts,
-                    websocket_reconnect_base_delay_secs: config.websocket_reconnect_base_delay_secs,
-                    max_concurrent_users: config.max_concurrent_users,
-                },
-                shutdown_tx_clone.subscribe(),
-                price_feed,
-                client,
-                blockchain,
-                state_manager,
-                service_status,
-            ).await?;
-            info!("Monitor handle completed");
-            Ok::<(), PulserError>(())
-        }
+async move {
+    monitor_deposits(
+        wallets,
+        user_statuses,
+        last_activity_check,
+        sync_tx,
+        price_info,
+    (*config).clone(), // Dereference Arc and clone the Config
+        shutdown_tx_clone.subscribe(),
+        price_feed,
+        client,
+        blockchain,
+        state_manager,
+        service_status,
+    ).await?;
+    info!("Monitor handle completed");
+    Ok::<(), PulserError>(())
+}
     });
 
 let sync_handle = tokio::spawn({
@@ -458,55 +442,53 @@ let sync_handle = tokio::spawn({
     }
 });
 
-    let status_update_handle = tokio::spawn({
-        let service_status = service_status.clone();
-        let wallets = wallets.clone();
-        let state_manager = state_manager.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(STATUS_UPDATE_INTERVAL_SECS));
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        info!("Status update handle shutting down");
-                        break;
+  let status_update_handle = tokio::spawn({
+    let service_status = service_status.clone();
+    let wallets = wallets.clone();
+    let state_manager = state_manager.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(STATUS_UPDATE_INTERVAL_SECS));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Status update handle shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                    let mut status = service_status.lock().await;
+match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
+    Ok(wallets_lock) => {
+        status.users_monitored = wallets_lock.len() as u32;
+        status.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
+        status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
+            let btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
+            debug!("User {} balance: {:.8} BTC", wallet.wallet.descriptor().to_string(), btc);
+            btc
+        }).sum();
+        status.total_value_usd = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();
+    }
+    Err(_) => {
+        warn!("Timeout locking wallets, using last values");
+    }
+};
+                    status.last_update = now;
+                    if status.health != "price feed error" && status.health != "websocket error" {
+                        status.health = "healthy".to_string();
                     }
-                    _ = interval.tick() => {
-                        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                        let (total_utxos, total_value_btc, total_value_usd, users_count) = match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
-                            Ok(wallets_lock) => {
-                                let users = wallets_lock.len() as u32;
-                                let utxos: u32 = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
-                                let btc_value: f64 = wallets_lock.values().map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0).sum();
-                                let usd_value: f64 = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();
-                                (utxos, btc_value, usd_value, users)
-                            }
-                            Err(_) => {
-                                warn!("Timeout locking wallets for status update");
-                                (0, 0.0, 0.0, 0)
-                            }
-                        };
-                        let updated_status = {
-                            let mut status = service_status.lock().await;
-                            status.total_utxos = total_utxos;
-                            status.total_value_btc = total_value_btc;
-                            status.total_value_usd = total_value_usd;
-                            status.users_monitored = users_count;
-                            status.last_update = now;
-                            if status.health != "price feed error" && status.health != "websocket error" {
-                                status.health = "healthy".to_string();
-                            }
-                            status.clone()
-                        };
-                        state_manager.save_service_status(&updated_status).await?;
-                        trace!("Status: {} users, {} UTXOs, {} BTC, ${} USD", users_count, total_utxos, total_value_btc, total_value_usd);
-                    }
+                    debug!("Updating ServiceStatus: {} users, {:.8} BTC, ${:.2} USD", 
+                           status.users_monitored, status.total_value_btc, status.total_value_usd);
+                    state_manager.save_service_status(&status).await?;
+                    trace!("Status: {} users, {} UTXOs, {} BTC, ${} USD", 
+                           status.users_monitored, status.total_utxos, status.total_value_btc, status.total_value_usd);
                 }
             }
-            info!("Status update handle completed");
-            Ok::<(), PulserError>(())
         }
-    });
+        info!("Status update handle completed");
+        Ok::<(), PulserError>(())
+    }
+});
 
     let server_handle = tokio::spawn({
         let config = config.clone();
