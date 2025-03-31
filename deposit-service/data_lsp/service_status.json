@@ -1,0 +1,14 @@
+{
+  "up_since": 1743380845,
+  "last_update": 1743453875,
+  "version": "unknown",
+  "users_monitored": 7,
+  "total_utxos": 14,
+  "total_value_btc": 0.00050196,
+  "total_value_usd": 41.372929420000006,
+  "health": "degraded",
+  "last_price": 82687.5,
+  "price_update_count": 29,
+  "active_syncs": 0,
+  "websocket_active": true
+}

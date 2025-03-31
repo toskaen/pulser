@@ -1,0 +1,142 @@
+{
+  "user_id": 3,
+  "is_stable_receiver": false,
+  "counterparty": "unknown",
+  "accumulated_btc": {
+    "sats": 3300
+  },
+  "stabilized_usd": 2.7196784999999997,
+  "timestamp": 1743444685,
+  "formatted_datetime": "2025-03-31T18:11:25.807147809+00:00",
+  "sc_dir": "data_lsp/user_3",
+  "raw_btc_usd": 82414.5,
+  "prices": {},
+  "multisig_addr": "tb1p6yghr83c29gg9swykn494gdecjntjakjnqanezmvrj02lacescys0enw80",
+  "utxos": [
+    {
+      "txid": "f7824aa8e8a7ffe4c9980a2f337b710157e5990594b050849a903a12b667e7cf",
+      "vout": 0,
+      "amount": 1200,
+      "confirmations": 4596,
+      "script_pubkey": "512007344c346b5b507e4a49f63ee757a720c59d474fad3c3e2e16a08fad5f73f607",
+      "height": null,
+      "usd_value": 0.988974,
+      "spent": false
+    },
+    {
+      "txid": "f1f16ffcfe451f31698d3badc215963225effe18720661b6b05c854a4f4b64db",
+      "vout": 0,
+      "amount": 2100,
+      "confirmations": 15816,
+      "script_pubkey": "512007344c346b5b507e4a49f63ee757a720c59d474fad3c3e2e16a08fad5f73f607",
+      "height": null,
+      "usd_value": 1.7307044999999999,
+      "spent": false
+    }
+  ],
+  "pending_sweep_txid": null,
+  "events": [],
+  "total_withdrawn_usd": 0.0,
+  "expected_usd": 0.0,
+  "hedge_position_id": null,
+  "pending_channel_id": null,
+  "shorts": [],
+  "hedge_ready": false,
+  "last_hedge_time": 0,
+  "short_reduction_amount": null,
+  "old_addresses": [
+    "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp"
+  ],
+  "history": [
+    {
+      "txid": "f7824aa8e8a7ffe4c9980a2f337b710157e5990594b050849a903a12b667e7cf",
+      "vout": 0,
+      "amount_sat": 1200,
+      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+      "keychain": "External",
+      "timestamp": 1743449851,
+      "confirmations": 0,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.0,
+      "spendable": false,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "f1f16ffcfe451f31698d3badc215963225effe18720661b6b05c854a4f4b64db",
+      "vout": 0,
+      "amount_sat": 2100,
+      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+      "keychain": "External",
+      "timestamp": 1743449851,
+      "confirmations": 0,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.0,
+      "spendable": false,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "f7824aa8e8a7ffe4c9980a2f337b710157e5990594b050849a903a12b667e7cf",
+      "vout": 0,
+      "amount_sat": 1200,
+      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+      "keychain": "External",
+      "timestamp": 1743451191,
+      "confirmations": 4596,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.988974,
+      "spendable": true,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "f1f16ffcfe451f31698d3badc215963225effe18720661b6b05c854a4f4b64db",
+      "vout": 0,
+      "amount_sat": 2100,
+      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+      "keychain": "External",
+      "timestamp": 1743451191,
+      "confirmations": 15816,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 1.7307044999999999,
+      "spendable": true,
+      "derivation_path": "",
+      "spent": false
+    }
+  ],
+  "change_log": [
+    {
+      "timestamp": 1743449851,
+      "change_type": "deposit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.0,
+      "service": "deposit-service",
+      "details": "2 UTXOs confirmed"
+    },
+    {
+      "timestamp": 1743451191,
+      "change_type": "recovery",
+      "btc_delta": 0.000033,
+      "usd_delta": 2.7196784999999997,
+      "service": "full-resync",
+      "details": "2 UTXOs recovered via full scan"
+    }
+  ]
+}

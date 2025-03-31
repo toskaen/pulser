@@ -1,0 +1,96 @@
+{
+  "user_id": 7,
+  "is_stable_receiver": false,
+  "counterparty": "unknown",
+  "accumulated_btc": {
+    "sats": 1200
+  },
+  "stabilized_usd": 0.988974,
+  "timestamp": 1743444686,
+  "formatted_datetime": "2025-03-31T18:11:26.189571899+00:00",
+  "sc_dir": "data_lsp/user_7",
+  "raw_btc_usd": 82414.5,
+  "prices": {},
+  "multisig_addr": "tb1p2u7vw9tdatkq3uylpc6e03s03c9sg75vyzfac8a67x4v7da3q9fscvaj0m",
+  "utxos": [
+    {
+      "txid": "6921aae26657029cac52645a2127c2c77ad1c2372aa8735f14a6ad8e198d4015",
+      "vout": 3,
+      "amount": 1200,
+      "confirmations": 41,
+      "script_pubkey": "51207a7885c3f68e8097e64eb26abbe575c9a7c5fd850c0ddf791755be413d4c7010",
+      "height": null,
+      "usd_value": 0.988974,
+      "spent": false
+    }
+  ],
+  "pending_sweep_txid": null,
+  "events": [],
+  "total_withdrawn_usd": 0.0,
+  "expected_usd": 0.0,
+  "hedge_position_id": null,
+  "pending_channel_id": null,
+  "shorts": [],
+  "hedge_ready": false,
+  "last_hedge_time": 0,
+  "short_reduction_amount": null,
+  "old_addresses": [
+    "tb1p0fugtslk36qf0ejwkf4thet4exnutlv9psxa77gh2klyz02vwqgqp27et5"
+  ],
+  "history": [
+    {
+      "txid": "6921aae26657029cac52645a2127c2c77ad1c2372aa8735f14a6ad8e198d4015",
+      "vout": 3,
+      "amount_sat": 1200,
+      "address": "tb1p0fugtslk36qf0ejwkf4thet4exnutlv9psxa77gh2klyz02vwqgqp27et5",
+      "keychain": "External",
+      "timestamp": 1743449851,
+      "confirmations": 0,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.0,
+      "spendable": false,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "6921aae26657029cac52645a2127c2c77ad1c2372aa8735f14a6ad8e198d4015",
+      "vout": 3,
+      "amount_sat": 1200,
+      "address": "tb1p0fugtslk36qf0ejwkf4thet4exnutlv9psxa77gh2klyz02vwqgqp27et5",
+      "keychain": "External",
+      "timestamp": 1743451178,
+      "confirmations": 41,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.988974,
+      "spendable": true,
+      "derivation_path": "",
+      "spent": false
+    }
+  ],
+  "change_log": [
+    {
+      "timestamp": 1743449851,
+      "change_type": "deposit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.0,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed"
+    },
+    {
+      "timestamp": 1743451178,
+      "change_type": "recovery",
+      "btc_delta": 0.000012,
+      "usd_delta": 0.988974,
+      "service": "full-resync",
+      "details": "1 UTXOs recovered via full scan"
+    }
+  ]
+}
