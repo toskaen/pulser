@@ -386,8 +386,10 @@ let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SE
     // Added: Save ServiceStatus to service_status.json
     pub async fn save_service_status(&self, status: &ServiceStatus) -> Result<(), PulserError> {
         let path = PathBuf::from("service_status.json");
+        debug!("Updating ServiceStatus: {} users, {} BTC, ${:.8} USD", 
+               status.users_monitored, status.total_value_btc, status.total_value_usd);
         info!("Saving ServiceStatus: {} users, {} BTC, ${} USD", 
-            status.users_monitored, status.total_value_btc, status.total_value_usd);
+             status.users_monitored, status.total_value_btc, status.total_value_usd);
         self.save(&path, status).await
     }
 
