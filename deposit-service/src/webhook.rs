@@ -175,16 +175,15 @@ pub async fn start_retry_task(
                             attempts: retry.attempts + 1,
                             next_attempt: now + (config.retry_interval_secs * 2u64.pow(retry.attempts)),
                         };
-                        match notify_new_utxos(&client, &retry.user_id, &retry.utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
-                            Ok(_) => {
-                                info!("Webhook retry succeeded for user {}", retry.user_id);
-                                let updated_queue_data = {
-                                    let queue = retry_queue.lock().await;
-                                    queue.iter().cloned().collect::<Vec<WebhookRetry>>()
-                                };
-                                save_retry_queue(&state_manager, updated_queue_data).await.ok();
-                            }
-                            Err(_) => {
+match notify_new_utxos(&client, &retry.user_id, &retry.utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
+    Ok(_) => {
+        info!("Webhook retry succeeded for user {}", retry.user_id);
+        // Remove ALL retries for this user to prevent loops
+        let mut queue = retry_queue.lock().await;
+        queue.retain(|r| r.user_id != retry.user_id);
+        save_retry_queue(&state_manager, queue.iter().cloned().collect::<Vec<_>>()).await.ok();
+    }
+    Err(_) => {
                                 let mut queue = retry_queue.lock().await;
                                 queue.push_back(next_retry.clone());
                                 warn!("Webhook retry failed for user {}, queued again (attempt {}/{})", retry.user_id, next_retry.attempts, config.retry_max_attempts);

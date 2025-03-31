@@ -18,6 +18,8 @@ use deposit_service::monitor::{monitor_deposits, MonitorConfig};
 use deposit_service::wallet::DepositWallet;
 use deposit_service::webhook::{start_retry_task, WebhookConfig};
 use futures::future::join_all;
+use bdk_wallet::KeychainKind;
+
 
 // Constants
 const STATUS_UPDATE_INTERVAL_SECS: u64 = 60;
@@ -33,6 +35,7 @@ async fn preload_existing_users(
     price_feed: Arc<PriceFeed>,
     wallets: &Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: &Arc<Mutex<HashMap<String, UserStatus>>>,
+        sync_tx: mpsc::Sender<String>,  // Add this parameter
 ) -> Result<(usize, usize), PulserError> {
     let start_time = Instant::now();
     let mut loaded_count = 0;
@@ -143,7 +146,7 @@ let data_lsp = config.data_dir.clone();
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
 
     // Preload users (unchanged)
-    match preload_existing_users(&data_lsp,&config, &state_manager, price_feed.clone(), &wallets, &user_statuses).await {
+    match preload_existing_users(&data_lsp,&config, &state_manager, price_feed.clone(), &wallets, &user_statuses, sync_tx.clone(), ).await {
         Ok((loaded_count, error_count)) => {
             let mut status = service_status.lock().await;
             status.users_monitored = loaded_count as u32;
@@ -464,7 +467,8 @@ match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
         status.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
         status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
             let btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
-            debug!("User {} balance: {:.8} BTC", wallet.wallet.descriptor().to_string(), btc);
+debug!("User {} balance: {:.8} BTC", wallet.wallet.public_descriptor(KeychainKind::External).to_string(), btc);
+
             btc
         }).sum();
         status.total_value_usd = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();

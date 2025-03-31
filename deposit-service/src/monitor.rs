@@ -21,11 +21,11 @@ use serde_json::Value;
 use common::StateManager;
 use bdk_wallet::{KeychainKind, Wallet};
 use bdk_chain::ChainPosition;
-use bdk_chain::spk_client::FullScanRequest;
 use common::wallet_sync::sync_and_stabilize_utxos;
-use bdk_chain::spk_client::SyncRequest; // Add this
+use bdk_chain::spk_client::SyncRequest;
+use crate::config::Config;
 
-
+// MonitorConfig: Holds configuration for the deposit monitor, parsed from TOML.
 #[derive(Clone)]
 pub struct MonitorConfig {
     pub deposit_window_hours: u64,
@@ -41,6 +41,7 @@ pub struct MonitorConfig {
 }
 
 impl MonitorConfig {
+    // from_toml: Creates a MonitorConfig from a TOML value with defaults.
     pub fn from_toml(config: &toml::Value) -> Self {
         Self {
             deposit_window_hours: config.get("monitor_deposit_window_hours").and_then(|v| v.as_integer()).unwrap_or(24) as u64,
@@ -57,6 +58,7 @@ impl MonitorConfig {
     }
 }
 
+// connect_websocket: Establishes a WebSocket connection with a timeout, logging success/failure.
 async fn connect_websocket(url: &str) -> Result<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, PulserError> {
     info!("Attempting to connect to WebSocket: {}", url);
     match timeout(Duration::from_secs(30), connect_async(url)).await {
@@ -69,6 +71,7 @@ async fn connect_websocket(url: &str) -> Result<WebSocketStream<MaybeTlsStream<t
     }
 }
 
+// subscribe_to_blocks: Subscribes to block notifications via WebSocket with a timeout.
 async fn subscribe_to_blocks(ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>) -> Result<(), PulserError> {
     let subscribe_msg = Message::Text(r#"{"action":"want","data":["blocks"]}"#.to_string());
     timeout(Duration::from_secs(10), ws.send(subscribe_msg)).await??;
@@ -76,12 +79,14 @@ async fn subscribe_to_blocks(ws: &mut WebSocketStream<MaybeTlsStream<tokio::net:
     Ok(())
 }
 
+// send_ping: Sends a ping message to keep the WebSocket alive, with a timeout.
 async fn send_ping(ws: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>) -> Result<(), PulserError> {
     let ping_msg = Message::Ping(vec![1, 2, 3, 4]);
     timeout(Duration::from_secs(5), ws.send(ping_msg)).await??;
     Ok(())
 }
 
+// get_blockchain_tip: Fetches the current blockchain tip height from an Esplora URL.
 async fn get_blockchain_tip(client: &Client, esplora_url: &str) -> Result<u64, PulserError> {
     let url = format!("{}/blocks/tip/height", esplora_url);
     let response = timeout(Duration::from_secs(10), client.get(&url).send()).await??;
@@ -93,6 +98,7 @@ async fn get_blockchain_tip(client: &Client, esplora_url: &str) -> Result<u64, P
     }
 }
 
+// prune_inactive_users: Removes users inactive beyond a threshold, saving their StableChain state.
 async fn prune_inactive_users(
     activity: &mut HashMap<String, u64>,
     prune_threshold: u64,
@@ -127,13 +133,14 @@ async fn prune_inactive_users(
     Ok(())
 }
 
+// monitor_deposits: Main task to monitor blockchain for deposits, triggering syncs as needed.
 pub async fn monitor_deposits(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     last_activity_check: Arc<Mutex<HashMap<String, u64>>>,
     sync_tx: mpsc::Sender<String>,
     price_info: Arc<Mutex<PriceInfo>>,
-    config: MonitorConfig,
+    config: Config,
     mut shutdown_rx: broadcast::Receiver<()>,
     price_feed: Arc<PriceFeed>,
     client: Client,
@@ -141,7 +148,7 @@ pub async fn monitor_deposits(
     state_manager: Arc<StateManager>,
     service_status: Arc<Mutex<ServiceStatus>>,
 ) -> Result<(), PulserError> {
-    info!("Starting deposit monitor task with batch_size: {}", config.batch_size);
+    info!("Starting deposit monitor task with batch_size: {}", config.monitor_batch_size);
     
     let mut ws: Option<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>> = None;
     let mut use_fallback = false;
@@ -227,49 +234,44 @@ pub async fn monitor_deposits(
                                             info!("New block detected (WebSocket): {}", height);
                                             last_block_height = height;
                                             let mut wallets_lock = wallets.lock().await;
-                                            let mut active_users_with_pending: Vec<(String, String)> = Vec::new();
-for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
-    let addr = Address::from_str(&chain.multisig_addr).expect("valid address").assume_checked();
-    let spk = addr.script_pubkey();
-    let request = SyncRequest::builder().spks(core::iter::once(spk)).build();
-    wallet.blockchain.sync(request, 5).await?;
-    if wallet.wallet.list_unspent().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }) && u.txout.value > Amount::from_sat(0)) {
-        debug!("Found unconfirmed UTXO for user {}: {:?}", user_id, wallet.wallet.list_unspent().collect::<Vec<_>>());
-        active_users_with_pending.push((user_id.clone(), chain.multisig_addr.clone()));
+                                            let mut users_to_sync: Vec<(String, String)> = Vec::new();
+ for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
+    // Collect unspent outputs into a vector to avoid consuming the iterator
+    let utxos = wallet.wallet.list_unspent().collect::<Vec<_>>();
+    
+    // Check if any unconfirmed UTXOs exist
+    let has_unconfirmed = utxos.iter().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }));
+    
+    if has_unconfirmed {
+        info!("Detected unconfirmed UTXOs for user {}", user_id);
+        users_to_sync.push((user_id.clone(), chain.multisig_addr.clone()));
     }
 }
                                             drop(wallets_lock);
-                                            for chunk in active_users_with_pending.chunks(config.batch_size) {
+                                            let price_info_lock = price_info.lock().await;
+                                            for chunk in users_to_sync.chunks(config.monitor_batch_size) {
                                                 for (user_id, deposit_address) in chunk {
-                                                    let deposit_addr = Address::from_str(deposit_address)?.assume_checked();
+                                                    let deposit_addr = Address::from_str(&deposit_address)?.assume_checked();
                                                     let mut wallets_lock = wallets.lock().await;
-                                                    if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
-                                                        let price_btc_usd = price_feed.get_deribit_price().await.unwrap_or(0.0);
+                                                   if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
                                                         let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
                                                         let new_utxos = sync_and_stabilize_utxos(
-                                                            user_id.as_str(),
+                                                            &user_id,
                                                             &mut wallet.wallet,
                                                             &wallet.blockchain,
                                                             chain,
-                                                            price_btc_usd,
-                                                            &*price_info.lock().await,
+                                                            price_info_lock.raw_btc_usd,
+                                                            &*price_info_lock,
                                                             &deposit_addr,
                                                             &change_addr,
                                                             &state_manager,
-                                                            1,
+                                                            config.min_confirmations,
                                                         ).await?;
                                                         if !new_utxos.is_empty() {
                                                             info!("Stabilized {} UTXOs for user {} on block {}", new_utxos.len(), user_id, height);
                                                         }
-                                                        let now_instant = Instant::now();
-                                                        let last = last_sync.entry(user_id.to_string()).or_insert(now_instant);
-                                                        let sync_cooldown = Duration::from_secs(604_800);
-                                                        if now_instant.duration_since(*last) >= sync_cooldown {
-                                                            sync_tx.send(user_id.to_string()).await?;
-                                                            *last = now_instant;
-                                                        }
+                                                        last_activity_check.lock().await.insert(user_id.to_string(), now_timestamp());
                                                     }
-                                                    last_activity_check.lock().await.insert(user_id.to_string(), now_timestamp());
                                                 }
                                             }
                                             let mut activity = last_activity_check.lock().await;
@@ -320,62 +322,84 @@ for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
                 }
             }
 
-            _ = fallback_interval.tick(), if use_fallback || ws.is_none() => {
-                let now = now_timestamp();
-                if ws.is_none() && reconnect_attempts < config.websocket_reconnect_max_attempts {
-                    let backoff_secs = config.websocket_reconnect_base_delay_secs * (1u64 << reconnect_attempts.min(10)) + (now % 3);
-                    info!("Reconnecting WebSocket (attempt {}/{}), backoff: {}s", reconnect_attempts + 1, config.websocket_reconnect_max_attempts, backoff_secs);
-                    sleep(Duration::from_secs(backoff_secs)).await;
-                    match connect_websocket(&config.websocket_url).await {
-                        Ok(mut websocket) => {
-                            subscribe_to_blocks(&mut websocket).await?;
-                            ws = Some(websocket);
-                            use_fallback = false;
-                            service_status.lock().await.websocket_active = true;
-                            last_websocket_activity = Instant::now();
-                            reconnect_attempts = 0;
-                        }
-                        Err(_) => { reconnect_attempts += 1; }
-                    }
-                }
-                if now - last_fallback_sync >= config.fallback_sync_interval_secs {
-                    let mut wallets_lock = wallets.lock().await;
-                    let mut active_users_with_pending: Vec<(String, String)> = Vec::new();
-for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
-    let addr = Address::from_str(&chain.multisig_addr).expect("valid address").assume_checked();
-    let spk = addr.script_pubkey();
-    let request = SyncRequest::builder().spks(core::iter::once(spk)).build();
-    wallet.blockchain.sync(request, 5).await?;
-    if wallet.wallet.list_unspent().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }) && u.txout.value > Amount::from_sat(0)) {
-        debug!("Found unconfirmed UTXO for user {}: {:?}", user_id, wallet.wallet.list_unspent().collect::<Vec<_>>());
-        active_users_with_pending.push((user_id.clone(), chain.multisig_addr.clone()));
+_ = fallback_interval.tick(), if use_fallback || ws.is_none() => {
+    let now = now_timestamp();
+    if ws.is_none() && reconnect_attempts < config.websocket_reconnect_max_attempts {
+        let backoff_secs = config.websocket_reconnect_base_delay_secs * (1u64 << reconnect_attempts.min(10)) + (now % 3);
+        info!("Reconnecting WebSocket (attempt {}/{}), backoff: {}s", reconnect_attempts + 1, config.websocket_reconnect_max_attempts, backoff_secs);
+        sleep(Duration::from_secs(backoff_secs)).await;
+        match connect_websocket(&config.websocket_url).await {
+            Ok(mut websocket) => {
+                subscribe_to_blocks(&mut websocket).await?;
+                ws = Some(websocket);
+                use_fallback = false;
+                service_status.lock().await.websocket_active = true;
+                last_websocket_activity = Instant::now();
+                reconnect_attempts = 0;
+            }
+            Err(_) => { reconnect_attempts += 1; }
+        }
     }
-}
-                    drop(wallets_lock);
-                    let active_count = service_status.lock().await.active_syncs;
-                    if active_count < config.max_concurrent_users as u32 {
-                        info!("Running fallback sync for {} users", active_users_with_pending.len());
-                        last_fallback_sync = now;
-                        if let Ok(height) = get_blockchain_tip(&client, &config.esplora_url).await {
-                            if height > last_block_height {
-                                info!("New block detected (fallback): {}", height);
-                                last_block_height = height;
-                            }
+    if now - last_fallback_sync >= config.fallback_sync_interval_secs {
+        let mut wallets_lock = wallets.lock().await;
+        let mut active_users_with_pending: Vec<(String, String)> = Vec::new();
+        for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
+            let mut spks = vec![Address::from_str(&chain.multisig_addr)?.assume_checked().script_pubkey()];
+            for i in 0..=wallet.wallet.derivation_index(KeychainKind::Internal).unwrap_or(0) {
+                spks.push(wallet.wallet.peek_address(KeychainKind::Internal, i).address.script_pubkey());
+            }
+            let request = SyncRequest::builder().spks(spks.into_iter()).build();
+            wallet.blockchain.sync(request, 5).await?;
+            let mut unspent = wallet.wallet.list_unspent();
+            if unspent.any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }) && u.txout.value > Amount::from_sat(0)) {
+                debug!("Found unconfirmed UTXO for user {}: {:?}", user_id, wallet.wallet.list_unspent().collect::<Vec<_>>());
+                active_users_with_pending.push((user_id.clone(), chain.multisig_addr.clone()));
+            }
+        }
+        drop(wallets_lock);
+        let active_count = service_status.lock().await.active_syncs;
+        if active_count < config.max_concurrent_users as u32 {
+            info!("Running fallback sync for {} users", active_users_with_pending.len());
+            last_fallback_sync = now;
+            if let Ok(height) = get_blockchain_tip(&client, &config.esplora_url).await {
+                if height > last_block_height {
+                    info!("New block detected (fallback): {}", height);
+                    last_block_height = height;
+                }
+            }
+            let price_info_lock = price_info.lock().await;
+            for chunk in active_users_with_pending.chunks(config.monitor_batch_size) {
+                for (user_id, deposit_address) in chunk {
+                    let deposit_addr = Address::from_str(&deposit_address)?.assume_checked();
+                    let mut wallets_lock = wallets.lock().await;
+if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
+
+                        let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
+                        let new_utxos = sync_and_stabilize_utxos(
+                            &user_id,
+                            &mut wallet.wallet,
+                            &wallet.blockchain,
+                            chain,
+                            price_info_lock.raw_btc_usd,
+                            &*price_info_lock,
+                            &deposit_addr,
+                            &change_addr,
+                            &state_manager,
+                            config.min_confirmations,
+                        ).await?;
+                        if !new_utxos.is_empty() {
+                            info!("Stabilized {} UTXOs for user {} in fallback", new_utxos.len(), user_id);
                         }
-                        for chunk in active_users_with_pending.chunks(config.batch_size) {
-                            for (user_id, _) in chunk {
-                                service_status.lock().await.active_syncs += 1;
-                                sync_tx.send(user_id.to_string()).await?;
-                                service_status.lock().await.active_syncs -= 1;
-                            }
-                        }
+                        last_activity_check.lock().await.insert(user_id.to_string(), now_timestamp());
                     }
-                    let mut activity = last_activity_check.lock().await;
-                    prune_inactive_users(&mut activity, config.deposit_window_hours * 3600, &state_manager).await?;
                 }
             }
         }
-
+        let mut activity = last_activity_check.lock().await;
+        prune_inactive_users(&mut activity, config.deposit_window_hours * 3600, &state_manager).await?;
+    }
+}
+}
         let now = now_timestamp();
         let mut service_status_lock = service_status.lock().await;
         service_status_lock.total_utxos = wallets.lock().await.values().map(|(_, c)| c.utxos.len() as u32).sum();
@@ -388,6 +412,7 @@ for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
     Ok(())
 }
 
+// now_timestamp: Returns the current Unix timestamp in seconds.
 fn now_timestamp() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
