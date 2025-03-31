@@ -28,6 +28,7 @@ const WEBSOCKET_HEALTH_CHECK_SECS: u64 = 30;
 
 async fn preload_existing_users(
     data_dir: &str,
+        config: &Config, // Already added in last fix
     state_manager: &Arc<StateManager>,
     price_feed: Arc<PriceFeed>,
     wallets: &Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -44,7 +45,7 @@ async fn preload_existing_users(
             if let Some(user_id) = path.file_name().and_then(|f| f.to_str()).and_then(|s| s.strip_prefix("user_")) {
                 debug!("Preloading user: {}", user_id);
                 match DepositWallet::from_config(
-                    "config/service_config.toml",
+                    config, // Pass config instead of path
                     user_id,
                     state_manager,
                     price_feed.clone(),
@@ -91,10 +92,19 @@ async fn preload_existing_users(
 
 #[tokio::main]
 async fn main() -> Result<(), PulserError> {
-    // Load configuration
     let config = Config::from_file("config/service_config.toml")?;
-    let data_lsp = format!("{}_lsp", config.data_dir);
+        let config = Arc::new(config); // Wrap in Arc once here
+let data_lsp = config.data_dir.clone();
     fs::create_dir_all(&data_lsp)?;
+    
+  let webhook_config = WebhookConfig {
+        max_retries: config.webhook_max_retries,
+        timeout_secs: config.webhook_timeout_secs,
+        max_retry_time_secs: config.webhook_max_retry_time_secs,
+        retry_max_attempts: config.webhook_retry_max_attempts,
+        base_backoff_ms: config.webhook_base_backoff_ms,
+        retry_interval_secs: config.webhook_retry_interval_secs,
+    };
 
     // Initialize logging
     let log_level = match config.log_level.to_lowercase().as_str() {
@@ -115,7 +125,7 @@ async fn main() -> Result<(), PulserError> {
 
     // Shared resources
     let state_manager = Arc::new(StateManager::new(&data_lsp));
-    let service_status = Arc::new(Mutex::new(state_manager.load_service_status().await?)); // Load from storage
+    let service_status = Arc::new(Mutex::new(state_manager.load_service_status().await?));
     let wallets = Arc::new(Mutex::new(HashMap::<String, (DepositWallet, StableChain)>::new()));
     let user_statuses = Arc::new(Mutex::new(HashMap::<String, UserStatus>::new()));
     let retry_queue = Arc::new(Mutex::new(VecDeque::<WebhookRetry>::new()));
@@ -137,8 +147,8 @@ async fn main() -> Result<(), PulserError> {
     let (sync_tx, sync_rx) = mpsc::channel::<String>(config.max_concurrent_users * 2);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
 
-    // Preload users
-    match preload_existing_users(&data_lsp, &state_manager, price_feed.clone(), &wallets, &user_statuses).await {
+    // Preload users (unchanged)
+    match preload_existing_users(&data_lsp,&config, &state_manager, price_feed.clone(), &wallets, &user_statuses).await {
         Ok((loaded_count, error_count)) => {
             let mut status = service_status.lock().await;
             status.users_monitored = loaded_count as u32;
@@ -179,7 +189,7 @@ async fn main() -> Result<(), PulserError> {
         let state_manager = state_manager.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
         async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(PRICE_UPDATE_INTERVAL_SECS)); // 10min
+            let mut interval = tokio::time::interval(Duration::from_secs(PRICE_UPDATE_INTERVAL_SECS));
             let mut failures = 0;
             loop {
                 tokio::select! {
@@ -257,6 +267,7 @@ async fn main() -> Result<(), PulserError> {
     let ws_health_handle = tokio::spawn({
         let price_feed = price_feed.clone();
         let service_status = service_status.clone();
+        let state_manager = state_manager.clone(); // Clone before move
         let mut shutdown_rx = shutdown_tx.subscribe();
         async move {
             let mut interval = tokio::time::interval(Duration::from_secs(WEBSOCKET_HEALTH_CHECK_SECS));
@@ -267,8 +278,7 @@ async fn main() -> Result<(), PulserError> {
                         break;
                     }
                     _ = interval.tick() => {
-                        // Note: Requires price_feed.is_websocket_connected() implementation
-                    let is_connected = price_feed.is_websocket_connected().await;
+                        let is_connected = price_feed.is_websocket_connected().await;
                         let mut status = service_status.lock().await;
                         let previous_state = status.websocket_active;
                         status.websocket_active = is_connected;
@@ -278,12 +288,9 @@ async fn main() -> Result<(), PulserError> {
                             } else {
                                 warn!("Deribit WebSocket connection lost");
                             }
-                            
-                             state_manager.save_service_status(&status).await.unwrap_or_else(|e| {
-        warn!("Failed to save service status after WebSocket state change: {}", e);
-    });
-
-                           
+                            state_manager.save_service_status(&status).await.unwrap_or_else(|e| {
+                                warn!("Failed to save service status after WebSocket state change: {}", e);
+                            });
                         }
                     }
                 }
@@ -296,130 +303,160 @@ async fn main() -> Result<(), PulserError> {
     let retry_handle = tokio::spawn({
         let retry_queue = retry_queue.clone();
         let state_manager = state_manager.clone();
+        let client = client.clone(); // Clone before move
+        let webhook_url = config.webhook_url.clone();
+        let webhook_config = WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?);
+        let shutdown_tx_clone = shutdown_tx.clone(); // Clone before move
         async move {
             start_retry_task(
-                client.clone(),
+                client,
                 retry_queue,
-                config.webhook_url.clone(),
-                WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?),
-                shutdown_tx.subscribe(),
-                state_manager.clone(),
+                webhook_url,
+                webhook_config,
+                shutdown_tx_clone.subscribe(),
+                state_manager,
             ).await?;
             info!("Retry handle completed");
             Ok::<(), PulserError>(())
         }
     });
-
+    
     let monitor_handle = tokio::spawn({
-        let config_value = toml::from_str(&fs::read_to_string("config/service_config.toml")?)?;
+        let config = config.clone();
+        let wallets = wallets.clone();
+        let user_statuses = user_statuses.clone();
+        let last_activity_check = last_activity_check.clone();
+        let sync_tx = sync_tx.clone();
+        let price_info = price_info.clone();
+        let price_feed = price_feed.clone();
+        let client = client.clone();
+        let blockchain = blockchain.clone();
+        let state_manager = state_manager.clone();
+        let service_status = service_status.clone();
+        let shutdown_tx_clone = shutdown_tx.clone();
+
         async move {
             monitor_deposits(
-                wallets.clone(),
-                user_statuses.clone(),
-                last_activity_check.clone(),
-                sync_tx.clone(),
-                price_info.clone(),
-                MonitorConfig::from_toml(&config_value),
-                shutdown_tx.subscribe(),
-                price_feed.clone(),
-                client.clone(),
-                blockchain.clone(),
-                state_manager.clone(),
-                service_status.clone(),
+                wallets,
+                user_statuses,
+                last_activity_check,
+                sync_tx,
+                price_info,
+                MonitorConfig {
+                    deposit_window_hours: config.deposit_window_hours,
+                    batch_size: config.monitor_batch_size,
+                    esplora_url: config.esplora_url.clone(),
+                    websocket_url: config.websocket_url.clone(),
+                    fallback_esplora_url: config.fallback_esplora_url.clone(),
+                    fallback_sync_interval_secs: config.fallback_sync_interval_secs,
+                    websocket_ping_interval_secs: config.websocket_ping_interval_secs,
+                    websocket_reconnect_max_attempts: config.websocket_reconnect_max_attempts,
+                    websocket_reconnect_base_delay_secs: config.websocket_reconnect_base_delay_secs,
+                    max_concurrent_users: config.max_concurrent_users,
+                },
+                shutdown_tx_clone.subscribe(),
+                price_feed,
+                client,
+                blockchain,
+                state_manager,
+                service_status,
             ).await?;
             info!("Monitor handle completed");
             Ok::<(), PulserError>(())
         }
     });
 
-    let sync_handle = tokio::spawn({
-        let mut sync_rx = sync_rx;
-        let active_tasks_manager = active_tasks_manager.clone();
-        let service_status = service_status.clone();
-        let wallets = wallets.clone();
-        let user_statuses = user_statuses.clone();
-        let price_info = price_info.clone();
-        let esplora_urls = esplora_urls.clone();
-        let state_manager = state_manager.clone();
-        let retry_queue = retry_queue.clone();
-        let webhook_url = config.webhook_url.clone();
-        let webhook_config = WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?);
-        let client = client.clone();
-        let price_feed = price_feed.clone();
-        let blockchain = blockchain.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            let mut pending_users = Vec::new();
-            let mut cleanup_interval = tokio::time::interval(Duration::from_secs(STALE_LOCK_CLEANUP_SECS));
-            loop {
-                tokio::select! {
-                    Some(user_id) = sync_rx.recv() => {
-                        if !pending_users.contains(&user_id) {
-                            pending_users.push(user_id);
+let sync_handle = tokio::spawn({
+    let mut sync_rx = sync_rx;
+    let active_tasks_manager = active_tasks_manager.clone();
+    let service_status = service_status.clone();
+    let wallets = wallets.clone();
+    let user_statuses = user_statuses.clone();
+    let price_info = price_info.clone();
+    let esplora_urls = esplora_urls.clone();
+    let state_manager = state_manager.clone();
+    let retry_queue = retry_queue.clone();
+    let webhook_url = config.webhook_url.clone();
+    let webhook_config = webhook_config.clone(); // Use outer webhook_config
+    let client = client.clone();
+    let price_feed = price_feed.clone();
+    let blockchain = blockchain.clone();
+    let shutdown_tx_clone = shutdown_tx.clone();
+    let config = config.clone(); // Add config for sync_user
+
+    async move {
+        let mut pending_users = Vec::new();
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(STALE_LOCK_CLEANUP_SECS));
+        let mut shutdown_rx = shutdown_tx_clone.subscribe();
+        loop {
+            tokio::select! {
+                Some(user_id) = sync_rx.recv() => {
+                    if !pending_users.contains(&user_id) {
+                        pending_users.push(user_id);
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("Sync handle shutting down");
+                    break;
+                }
+                _ = cleanup_interval.tick() => {
+                    let cleaned = active_tasks_manager.clean_stale_tasks().await;
+                    if cleaned > 0 {
+                        debug!("Cleaned {} stale tasks", cleaned);
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)), if !pending_users.is_empty() => {
+                    let mut processed = Vec::new();
+                    let max_concurrent = config.max_concurrent_users as u32;
+                    let current_active = service_status.lock().await.active_syncs;
+                    for (i, user_id) in pending_users.iter().enumerate() {
+                        if current_active >= max_concurrent {
+                            break;
+                        }
+                        if active_tasks_manager.is_user_active(user_id).await {
+                            processed.push(i);
+                            continue;
+                        }
+                        if let Some(_task) = ScopedTask::new(&active_tasks_manager, user_id, "sync").await {
+                            {
+                                let mut status = service_status.lock().await;
+                                status.active_syncs += 1;
+                            }
+                            let result = api::sync_user(
+                                user_id,
+                                wallets.clone(),
+                                user_statuses.clone(),
+                                price_info.clone(),
+                                price_feed.clone(),
+                                esplora_urls.clone(),
+                                &blockchain,
+                                state_manager.clone(),
+                                retry_queue.clone(),
+                                &webhook_url,
+                                &webhook_config,
+                                client.clone(),
+                                config.clone(), // Use cloned Arc
+                            ).await;
+                            if let Err(e) = result {
+                                warn!("Sync failed for {}: {}", user_id, e);
+                            }
+                            {
+                                let mut status = service_status.lock().await;
+                                status.active_syncs = status.active_syncs.saturating_sub(1);
+                            }
+                            processed.push(i);
                         }
                     }
-                    _ = shutdown_rx.recv() => {
-                        info!("Sync handle shutting down");
-                        break;
-                    }
-                    _ = cleanup_interval.tick() => {
-                        let cleaned = active_tasks_manager.clean_stale_tasks().await;
-                        if cleaned > 0 {
-                            debug!("Cleaned {} stale tasks", cleaned);
-                        }
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(100)), if !pending_users.is_empty() => {
-                        let mut processed = Vec::new();
-                        let max_concurrent = config.max_concurrent_users as u32;
-                        let current_active = service_status.lock().await.active_syncs;
-                        for (i, user_id) in pending_users.iter().enumerate() {
-                            if current_active >= max_concurrent {
-                                break;
-                            }
-                            if active_tasks_manager.is_user_active(user_id).await {
-                                processed.push(i);
-                                continue;
-                            }
-                            if let Some(_task) = ScopedTask::new(&active_tasks_manager, user_id, "sync").await {
-                                {
-                                    let mut status = service_status.lock().await;
-                                    status.active_syncs += 1;
-                                }
-                                let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_info.lock().await.raw_btc_usd);
-                                let result = api::sync_user(
-                                    user_id,
-                                    wallets.clone(),
-                                    user_statuses.clone(),
-                                    price_info.clone(),
-                                    deribit_price, // Updated to f64
-                                    esplora_urls.clone(),
-                                    &blockchain,
-                                    state_manager.clone(),
-                                    retry_queue.clone(),
-                                    &webhook_url,
-                                    &webhook_config,
-                                    client.clone(),
-                                ).await;
-                                if let Err(e) = result {
-                                    warn!("Sync failed for {}: {}", user_id, e);
-                                }
-                                {
-                                    let mut status = service_status.lock().await;
-                                    status.active_syncs = status.active_syncs.saturating_sub(1);
-                                }
-                                processed.push(i);
-                            }
-                        }
-                        for idx in processed.into_iter().rev() {
-                            pending_users.remove(idx);
-                        }
+                    for idx in processed.into_iter().rev() {
+                        pending_users.remove(idx);
                     }
                 }
             }
-            info!("Sync handle completed");
-            Ok::<(), PulserError>(())
         }
-    });
+        info!("Sync handle completed");
+        Ok::<(), PulserError>(())
+    }
+});
 
     let status_update_handle = tokio::spawn({
         let service_status = service_status.clone();
@@ -472,6 +509,8 @@ async fn main() -> Result<(), PulserError> {
     });
 
     let server_handle = tokio::spawn({
+        let config = config.clone();
+    let webhook_config = webhook_config.clone(); // Requires Clone
         let routes = api::routes(
             service_status.clone(),
             wallets.clone(),
@@ -482,11 +521,13 @@ async fn main() -> Result<(), PulserError> {
             sync_tx.clone(),
             retry_queue.clone(),
             config.webhook_url.clone(),
-            WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?),
+            webhook_config, // Pass constructed WebhookConfig
             client.clone(),
             active_tasks_manager.clone(),
             price_feed.clone(),
             blockchain.clone(),
+                    config.clone(), // Use cloned Arc
+
         );
         let mut shutdown_rx = shutdown_tx.subscribe();
         async move {
@@ -517,60 +558,54 @@ async fn main() -> Result<(), PulserError> {
     });
 
     // Shutdown handling
-// Enhanced shutdown handling
-shutdown_tx.subscribe().recv().await?;
-info!("Shutting down...");
+    shutdown_tx.subscribe().recv().await?;
+    info!("Shutting down...");
 
-// First explicitly close WebSocket connections
-info!("Closing WebSocket connections...");
-if let Some(mut ws) = {
-    let mut active_ws = price_feed.active_ws.lock().await;
-    active_ws.take()
-} {
-    match tokio::time::timeout(Duration::from_secs(5), ws.close(None)).await {
-        Ok(Ok(_)) => info!("WebSocket closed successfully"),
-        Ok(Err(e)) => warn!("Error closing WebSocket: {}", e),
+    // Close WebSocket connections
+    info!("Closing WebSocket connections...");
+    match tokio::time::timeout(Duration::from_secs(5), price_feed.shutdown_websocket()).await {
+        Ok(Some(_)) => info!("WebSocket closed successfully"),
+        Ok(None) => info!("No active WebSocket to close"),
         Err(_) => warn!("Timeout closing WebSocket"),
     }
-}
 
-// Save final service status
-info!("Saving final service status...");
-{
-    let status = service_status.lock().await;
-    if let Err(e) = state_manager.save_service_status(&status).await {
-        warn!("Failed to save final service status: {}", e);
-    }
-}
-
-let handles = vec![
-    price_handle,
-    deribit_feed_handle,
-    ws_health_handle,
-    retry_handle,
-    monitor_handle,
-    sync_handle,
-    status_update_handle,
-    server_handle,
-    save_status_handle,
-];
-
-// Give tasks time to shut down gracefully
-info!("Waiting for tasks to complete...");
-match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
-    Ok(results) => {
-        for result in results {
-            if let Err(e) = result {
-                warn!("Task error during shutdown: {}", e);
-            }
+    // Save final service status
+    info!("Saving final service status...");
+    {
+        let status = service_status.lock().await;
+        if let Err(e) = state_manager.save_service_status(&status).await {
+            warn!("Failed to save final service status: {}", e);
         }
-        info!("All tasks shut down gracefully");
     }
-    Err(_) => {
-        warn!("Shutdown timed out after {}s, some tasks may not have completed", MAX_SHUTDOWN_WAIT_SECS);
-    }
-}
 
-info!("Deposit service shutdown complete");
+    let handles = vec![
+        price_handle,
+        deribit_feed_handle,
+        ws_health_handle,
+        retry_handle,
+        monitor_handle,
+        sync_handle,
+        status_update_handle,
+        server_handle,
+        save_status_handle,
+    ];
+
+    // Give tasks time to shut down gracefully
+    info!("Waiting for tasks to complete...");
+    match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
+        Ok(results) => {
+            for result in results {
+                if let Err(e) = result {
+                    warn!("Task error during shutdown: {}", e);
+                }
+            }
+            info!("All tasks shut down gracefully");
+        }
+        Err(_) => {
+            warn!("Shutdown timed out after {}s, some tasks may not have completed", MAX_SHUTDOWN_WAIT_SECS);
+        }
+    }
+
+    info!("Deposit service shutdown complete");
     Ok(())
 }

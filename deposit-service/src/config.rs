@@ -50,13 +50,52 @@ pub struct Config {
     pub webhook_timeout_secs: u64,
     
     // Monitoring settings
-    pub sync_interval_secs: u64,       // System-wide sync
-    pub user_scan_interval_secs: u64,  // User monitoring interval
     pub max_concurrent_users: usize,
     
     // Price settings
     pub price_feed_url: String,        // NEW: For Deribit WebSocket
     pub price_cache_duration_secs: u64,
+
+    #[serde(default = "default_webhook_enabled")]
+    pub webhook_enabled: bool,
+    #[serde(default = "default_webhook_secret")]
+    pub webhook_secret: String,
+    #[serde(default = "default_webhook_max_retry_time_secs")]
+    pub webhook_max_retry_time_secs: u64,
+    #[serde(default = "default_webhook_retry_max_attempts")]
+    pub webhook_retry_max_attempts: u32,
+    #[serde(default = "default_webhook_base_backoff_ms")]
+    pub webhook_base_backoff_ms: u64,
+    #[serde(default = "default_webhook_retry_interval_secs")]
+    pub webhook_retry_interval_secs: u64,
+    
+        #[serde(default = "default_deposit_window_hours")]
+    pub deposit_window_hours: u64,
+    #[serde(default = "default_monitor_batch_size")]
+    pub monitor_batch_size: usize,
+    #[serde(default = "default_websocket_url")]
+    pub websocket_url: String,
+    #[serde(default = "default_fallback_sync_interval_secs")]
+    pub fallback_sync_interval_secs: u64,
+    #[serde(default = "default_websocket_ping_interval_secs")]
+    pub websocket_ping_interval_secs: u64,
+    #[serde(default = "default_websocket_reconnect_max_attempts")]
+    pub websocket_reconnect_max_attempts: u32,
+    #[serde(default = "default_websocket_reconnect_base_delay_secs")]
+    pub websocket_reconnect_base_delay_secs: u64,
+    pub deribit_id: String,
+    #[serde(default = "default_deribit_secret")]
+    pub deribit_secret: String,
+    #[serde(default = "default_deribit_testnet_address")]
+    pub deribit_testnet_address: String,
+    pub kraken: String,
+    pub threshold_btc_address: String,
+    #[serde(default = "default_hedge_update_interval_secs")]
+    pub hedge_update_interval_secs: u64,
+    #[serde(default = "default_stagger_delay_secs")]
+    pub stagger_delay_secs: u64,
+    #[serde(default = "default_max_sync_retries")]
+    pub max_sync_retries: u32,
 }
 
 impl Config {
@@ -66,3 +105,23 @@ impl Config {
         Ok(config)
     }
 }
+
+fn default_webhook_enabled() -> bool { true }
+fn default_webhook_secret() -> String { "your_webhook_secret".to_string() }
+fn default_webhook_max_retry_time_secs() -> u64 { 120 }
+fn default_webhook_retry_max_attempts() -> u32 { 5 }
+fn default_webhook_base_backoff_ms() -> u64 { 500 }
+fn default_webhook_retry_interval_secs() -> u64 { 5 }
+fn default_deposit_window_hours() -> u64 { 24 }
+fn default_monitor_batch_size() -> usize { 15 }
+fn default_websocket_url() -> String { "wss://mempool.space/testnet/api/v1/ws".to_string() }
+fn default_fallback_sync_interval_secs() -> u64 { 900 }
+fn default_websocket_ping_interval_secs() -> u64 { 30 }
+fn default_websocket_reconnect_max_attempts() -> u32 { 5 }
+fn default_websocket_reconnect_base_delay_secs() -> u64 { 2 }
+fn default_deribit_id() -> String { "kYlR7m6s".to_string() }
+fn default_deribit_secret() -> String { "i2ZQLPi6nlnwfQKCHVF0VqYEyC9jTxMBiPfWvSpk7t0".to_string() }
+fn default_deribit_testnet_address() -> String { "tb1q_deribit_testnet_dummy".to_string() }
+fn default_hedge_update_interval_secs() -> u64 { 30 }
+fn default_stagger_delay_secs() -> u64 { 5 }
+fn default_max_sync_retries() -> u32 { 3 }

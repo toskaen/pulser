@@ -1,4 +1,3 @@
-// deposit-service/src/webhook.rs
 use tokio::sync::{Mutex, broadcast};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
@@ -10,6 +9,9 @@ use tokio::time::{sleep, timeout};
 use std::collections::VecDeque;
 use common::StateManager;
 use common::types::{UtxoInfo, StableChain, WebhookRetry};
+use std::path::Path;
+use serde::{Serialize, Deserialize};
+
 
 #[derive(Clone)]
 pub struct WebhookConfig {
@@ -34,19 +36,21 @@ impl WebhookConfig {
     }
 }
 
-// Add queue persistence to webhook.rs
-async fn save_retry_queue(state_manager: &StateManager, retry_queue: &[WebhookRetry]) -> Result<(), PulserError> {
-    state_manager.save(Path::new("webhook_retry_queue.json"), retry_queue).await
+// Updated to take Vec<WebhookRetry>
+async fn save_retry_queue(state_manager: &StateManager, retry_queue: Vec<WebhookRetry>) -> Result<(), PulserError> {
+    state_manager.save(Path::new("webhook_retry_queue.json"), &retry_queue).await
 }
 
 async fn load_retry_queue(state_manager: &StateManager) -> Result<VecDeque<WebhookRetry>, PulserError> {
-    match state_manager.load(Path::new("webhook_retry_queue.json")).await {
+    match state_manager.load::<Vec<WebhookRetry>>(Path::new("webhook_retry_queue.json")).await {
         Ok(retries) => Ok(VecDeque::from(retries)),
-        Err(_) => Ok(VecDeque::new())
+        Err(_) => {
+            warn!("No existing webhook retry queue found, starting with empty queue");
+            Ok(VecDeque::new())
+        }
     }
 }
 
-// In webhook.rs - notify_new_utxos function
 pub async fn notify_new_utxos(
     client: &Client,
     user_id: &str,
@@ -101,11 +105,7 @@ pub async fn notify_new_utxos(
         }
     }
 
-    // Queue for retry with timeout protection
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        retry_queue.lock()
-    ).await {
+    match tokio::time::timeout(Duration::from_secs(5), retry_queue.lock()).await {
         Ok(mut queue) => {
             queue.push_back(WebhookRetry {
                 user_id: user_id.to_string(),
@@ -115,13 +115,9 @@ pub async fn notify_new_utxos(
             });
             warn!("Queued webhook retry for user {}: {} UTXOs", user_id, new_utxos.len());
         },
-        Err(_) => {
-            warn!("Timeout queueing webhook retry for user {}", user_id);
-            // Continue processing even if retry queueing fails
-        }
+        Err(_) => warn!("Timeout queueing webhook retry for user {}", user_id),
     }
     
-    // Return error but don't block the caller's processing
     Err(PulserError::NetworkError(format!("Webhook attempts failed for user {}, queued for retry", user_id)))
 }
 
@@ -135,7 +131,6 @@ pub async fn start_retry_task(
 ) -> Result<(), PulserError> {
     info!("Starting webhook retry task");
     
-    // Load the persisted retry queue at startup
     let persisted_retries = load_retry_queue(&state_manager).await.unwrap_or_default();
     {
         let mut queue = retry_queue.lock().await;
@@ -147,22 +142,15 @@ pub async fn start_retry_task(
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                // Save queue before shutting down
                 let retry_queue_data = {
                     let queue = retry_queue.lock().await;
-                    queue.iter().cloned().collect::<Vec<_>>()
+                    queue.iter().cloned().collect::<Vec<WebhookRetry>>()
                 };
-                save_retry_queue(&state_manager, &retry_queue_data).await.ok();
+                save_retry_queue(&state_manager, retry_queue_data).await.ok();
                 break;
             },
             _ = sleep(Duration::from_secs(config.retry_interval_secs)) => {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                
-                // Store the current queue state before modification
-                let retry_queue_data = {
-                    let queue = retry_queue.lock().await;
-                    queue.iter().cloned().collect::<Vec<_>>()
-                };
                 
                 let retry = {
                     let mut queue = retry_queue.lock().await;
@@ -175,12 +163,11 @@ pub async fn start_retry_task(
                         queue.push_front(retry);
                     } else if retry.attempts >= config.retry_max_attempts {
                         error!("Webhook for user {} failed after {} retries", retry.user_id, config.retry_max_attempts);
-                        // Queue changed - save it
                         let updated_queue_data = {
                             let queue = retry_queue.lock().await;
-                            queue.iter().cloned().collect::<Vec<_>>()
+                            queue.iter().cloned().collect::<Vec<WebhookRetry>>()
                         };
-                        save_retry_queue(&state_manager, &updated_queue_data).await.ok();
+                        save_retry_queue(&state_manager, updated_queue_data).await.ok();
                     } else if let Ok(stable_chain) = state_manager.load_stable_chain(&retry.user_id).await {
                         let next_retry = WebhookRetry {
                             user_id: retry.user_id.clone(),
@@ -191,29 +178,26 @@ pub async fn start_retry_task(
                         match notify_new_utxos(&client, &retry.user_id, &retry.utxos, &stable_chain, &webhook_url, retry_queue.clone(), &config).await {
                             Ok(_) => {
                                 info!("Webhook retry succeeded for user {}", retry.user_id);
-                                // Queue changed - save it
                                 let updated_queue_data = {
                                     let queue = retry_queue.lock().await;
-                                    queue.iter().cloned().collect::<Vec<_>>()
+                                    queue.iter().cloned().collect::<Vec<WebhookRetry>>()
                                 };
-                                save_retry_queue(&state_manager, &updated_queue_data).await.ok();
+                                save_retry_queue(&state_manager, updated_queue_data).await.ok();
                             }
                             Err(_) => {
                                 let mut queue = retry_queue.lock().await;
                                 queue.push_back(next_retry.clone());
                                 warn!("Webhook retry failed for user {}, queued again (attempt {}/{})", retry.user_id, next_retry.attempts, config.retry_max_attempts);
-                                // Queue changed - save it
-                                drop(queue); // Release lock before saving
+                                drop(queue);
                                 let updated_queue_data = {
                                     let queue = retry_queue.lock().await;
-                                    queue.iter().cloned().collect::<Vec<_>>()
+                                    queue.iter().cloned().collect::<Vec<WebhookRetry>>()
                                 };
-                                save_retry_queue(&state_manager, &updated_queue_data).await.ok();
+                                save_retry_queue(&state_manager, updated_queue_data).await.ok();
                             }
                         }
                     } else {
                         error!("Failed to load stable chain for user {}", retry.user_id);
-                        // No queue changes to save
                     }
                 }
             }

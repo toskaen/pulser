@@ -13,30 +13,7 @@ use log::{info, debug};
 use serde_json;
 use chrono::Utc;
 use std::str::FromStr;
-
-#[derive(serde::Deserialize)]
-pub struct Config {
-    pub network: String,
-    pub data_dir: String,
-    pub lsp_pubkey: String,
-    pub trustee_pubkey: String,
-    pub esplora_url: String,
-    pub listening_address: String,
-    pub webhook_url: String,
-    pub fallback_esplora_url: String,
-    pub listening_port: u16,
-    pub sync_interval_secs: u64,
-    pub max_concurrent_users: usize,
-    pub min_confirmations: u32,
-        pub request_timeout_secs: Option<u64>,
-
-}
-
-impl Config {
-    pub fn from_toml(toml: &toml::Value) -> Result<Self, toml::de::Error> {
-        toml.clone().try_into()
-    }
-}
+use crate::config::Config; // Import the main Config
 
 pub struct WalletInitResult {
     pub external_descriptor: String,

@@ -3,35 +3,16 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 3300
+    "sats": 0
   },
-  "stabilized_usd": 2.76705,
-  "timestamp": 1743195188,
-  "formatted_datetime": "2025-03-28T20:52:49.137097858+00:00",
-  "sc_dir": "data_lsp/user_3/multisig",
-  "raw_btc_usd": 83850.0,
+  "stabilized_usd": 0.0,
+  "timestamp": 1743416130,
+  "formatted_datetime": "2025-03-31T10:15:30.928485365+00:00",
+  "sc_dir": "data_lsp/user_3",
+  "raw_btc_usd": 0.0,
   "prices": {},
-  "multisig_addr": "tb1p6yghr83c29gg9swykn494gdecjntjakjnqanezmvrj02lacescys0enw80",
-  "utxos": [
-    {
-      "txid": "f7824aa8e8a7ffe4c9980a2f337b710157e5990594b050849a903a12b667e7cf",
-      "vout": 0,
-      "amount": 1200,
-      "confirmations": 2240,
-      "script_pubkey": "512007344c346b5b507e4a49f63ee757a720c59d474fad3c3e2e16a08fad5f73f607",
-      "height": null,
-      "usd_value": 1.0062
-    },
-    {
-      "txid": "f1f16ffcfe451f31698d3badc215963225effe18720661b6b05c854a4f4b64db",
-      "vout": 0,
-      "amount": 2100,
-      "confirmations": 13460,
-      "script_pubkey": "512007344c346b5b507e4a49f63ee757a720c59d474fad3c3e2e16a08fad5f73f607",
-      "height": null,
-      "usd_value": 1.7608499999999998
-    }
-  ],
+  "multisig_addr": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
+  "utxos": [],
   "pending_sweep_txid": null,
   "events": [],
   "total_withdrawn_usd": 0.0,
@@ -43,42 +24,6 @@
   "last_hedge_time": 0,
   "short_reduction_amount": null,
   "old_addresses": [],
-  "history": [
-    {
-      "txid": "f7824aa8e8a7ffe4c9980a2f337b710157e5990594b050849a903a12b667e7cf",
-      "vout": 0,
-      "amount_sat": 1200,
-      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
-      "keychain": "External",
-      "timestamp": 1743084044,
-      "confirmations": 2240,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.0062,
-      "spendable": true,
-      "derivation_path": "m/86'/1'/0'/0/0",
-      "spent": false
-    },
-    {
-      "txid": "f1f16ffcfe451f31698d3badc215963225effe18720661b6b05c854a4f4b64db",
-      "vout": 0,
-      "amount_sat": 2100,
-      "address": "tb1pqu6ycdrttdg8ujjf7clww4a8yrze6360457rutsk5z866hmn7crscvwxxp",
-      "keychain": "Internal",
-      "timestamp": 1743195188,
-      "confirmations": 13460,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.7608499999999998,
-      "spendable": true,
-      "derivation_path": "m/84'/1'/0'/1/0",
-      "spent": false
-    }
-  ]
+  "history": [],
+  "change_log": []
 }

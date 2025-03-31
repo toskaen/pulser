@@ -8,7 +8,7 @@ use bdk_esplora::esplora_client;
 use bdk_wallet::bitcoin::{Network, Address};
 use common::error::PulserError;
 use common::types::{PriceInfo, UtxoInfo, Event};
-use crate::wallet_init::{Config, init_wallet};
+use crate::wallet_init::init_wallet;
 use log::{info, warn, debug};
 use chrono::Utc;
 use tokio::sync::Mutex;
@@ -17,6 +17,7 @@ use common::StateManager;
 use common::{StableChain, Bitcoin};
 use common::types::DepositAddressInfo;
 use common::wallet_sync;
+use crate::config::Config; // Replace crate::wallet_init::Config if present
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -32,17 +33,18 @@ pub struct DepositWallet {
     pub stable_chain: StableChain,
     pub state_manager: Arc<StateManager>,
     pub price_feed: Arc<PriceFeed>,
+        pub config: Arc<Config>, // Add this
+
 }
 
 impl DepositWallet {
     pub async fn from_config(
-        config_path: &str,
+        config: &Config, // Change from &str to &Config
         user_id: &str,
         state_manager: &Arc<StateManager>,
         price_feed: Arc<PriceFeed>,
     ) -> Result<(Self, DepositAddressInfo, StableChain), PulserError> {
-        let config_str = fs::read_to_string(config_path)?;
-        let config: Config = toml::from_str(&config_str)?;
+
         let init_result = init_wallet(&config, user_id)?;
 
         let wallet_path = format!("{}/user_{}", config.data_dir, user_id);
@@ -57,6 +59,8 @@ impl DepositWallet {
             initial_addr.clone(),
             state_manager,
             price_feed.clone(),
+                        config, // Pass config
+
         ).await?;
 
         let deposit_info = DepositAddressInfo {
@@ -89,6 +93,7 @@ impl DepositWallet {
         initial_addr: Address,
         state_manager: &Arc<StateManager>,
         price_feed: Arc<PriceFeed>,
+    config: &Config, // Using crate::config::Config
     ) -> Result<Self, PulserError> {
         let blockchain = esplora_client::Builder::new(esplora_url).build_async()?;
         let wallet = Wallet::create(external_descriptor, internal_descriptor)
@@ -109,6 +114,7 @@ impl DepositWallet {
             stable_chain,
             state_manager: state_manager.clone(),
             price_feed,
+        config: Arc::new(config.clone()), // Should work now with Clone
         })
     }
 
@@ -129,19 +135,19 @@ impl DepositWallet {
             })?.clone();
 
         let change_addr = self.wallet.reveal_next_address(KeychainKind::Internal).address;
-        let config = Config::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?)?;
-        let new_utxos = wallet_sync::sync_and_stabilize_utxos(
-            &self.stable_chain.user_id.to_string(),
-            &mut self.wallet,
-            &self.blockchain,
-            &mut self.stable_chain,
-            self.price_feed.clone(),
-            price_info,
-            &current_addr, // Fixed: Use current_addr, not ¤t_addr
-            &change_addr,
-            &self.state_manager,
-            config.min_confirmations,
-        ).await?;
+        let price_btc_usd = self.price_feed.get_deribit_price().await.unwrap_or(0.0);
+let new_utxos = wallet_sync::sync_and_stabilize_utxos(
+    &self.stable_chain.user_id.to_string(),
+    &mut self.wallet,
+    &self.blockchain,
+    &mut self.stable_chain,
+    price_btc_usd,
+    price_info,
+    &current_addr,
+    &change_addr,
+    &self.state_manager,
+            self.config.min_confirmations, // Use stored config
+).await?;
 
         self.stable_chain.timestamp = chrono::Utc::now().timestamp(); // Fixed: Use i64
         self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();
@@ -161,22 +167,18 @@ impl DepositWallet {
     }
 
 pub async fn reveal_new_address(&mut self) -> Result<Address, PulserError> {
-    let new_addr = self.wallet.reveal_next_address(KeychainKind::External).address;
-    let mut logged = LOGGED_ADDRESSES.lock().await;
-    logged.insert(self.stable_chain.user_id.to_string(), new_addr.clone());
-    
-    // Save the old address before changing it
-    let old_addr = self.stable_chain.multisig_addr.clone();
-    
-    // Update the old_addresses list
-    self.stable_chain.old_addresses.push(self.stable_chain.multisig_addr.clone());
-    if self.stable_chain.old_addresses.len() > 4 {
-        self.stable_chain.old_addresses.remove(0);
-    }
-    
-    // Set the new address
-    self.stable_chain.multisig_addr = new_addr.to_string();
-    
+   let new_addr = self.wallet.reveal_next_address(KeychainKind::External).address;
+let mut logged = LOGGED_ADDRESSES.lock().await;
+logged.insert(self.stable_chain.user_id.to_string(), new_addr.clone());
+
+// Save the old address before changing it
+let old_addr = self.stable_chain.multisig_addr.clone();
+
+// Update the old_addresses list (no cap)
+self.stable_chain.old_addresses.push(old_addr.clone());
+
+// Set the new address
+self.stable_chain.multisig_addr = new_addr.to_string();
     // Add log_change here, after updating the address but before updating timestamps
     self.stable_chain.log_change(
         "address_change", 

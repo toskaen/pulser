@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use std::str::FromStr;
 use log::{info, warn, debug, error, trace};
-use bdk_wallet::bitcoin::{Address, Network};
+use bdk_wallet::bitcoin::{Address, Network, Amount};
 use bdk_esplora::esplora_client::AsyncClient;
 use bdk_esplora::EsploraAsyncExt;
 use common::error::PulserError;
@@ -19,8 +19,12 @@ use common::price_feed::PriceFeed;
 use reqwest::Client;
 use serde_json::Value;
 use common::StateManager;
-use bdk_wallet::KeychainKind;
+use bdk_wallet::{KeychainKind, Wallet};
+use bdk_chain::ChainPosition;
+use bdk_chain::spk_client::FullScanRequest;
 use common::wallet_sync::sync_and_stabilize_utxos;
+use bdk_chain::spk_client::SyncRequest; // Add this
+
 
 #[derive(Clone)]
 pub struct MonitorConfig {
@@ -33,6 +37,7 @@ pub struct MonitorConfig {
     pub websocket_ping_interval_secs: u64,
     pub websocket_reconnect_max_attempts: u32,
     pub websocket_reconnect_base_delay_secs: u64,
+    pub max_concurrent_users: usize,
 }
 
 impl MonitorConfig {
@@ -43,10 +48,11 @@ impl MonitorConfig {
             esplora_url: config.get("esplora_url").and_then(|v| v.as_str()).unwrap_or("https://blockstream.info/testnet/api").to_string(),
             websocket_url: config.get("websocket_url").and_then(|v| v.as_str()).unwrap_or("wss://mempool.space/testnet/api/v1/ws").to_string(),
             fallback_esplora_url: config.get("fallback_esplora_url").and_then(|v| v.as_str()).unwrap_or("https://mempool.space/testnet/api").to_string(),
-            fallback_sync_interval_secs: config.get("fallback_sync_interval_secs").and_then(|v| v.as_integer()).unwrap_or(60) as u64,
+            fallback_sync_interval_secs: config.get("fallback_sync_interval_secs").and_then(|v| v.as_integer()).unwrap_or(900) as u64,
             websocket_ping_interval_secs: config.get("websocket_ping_interval_secs").and_then(|v| v.as_integer()).unwrap_or(30) as u64,
             websocket_reconnect_max_attempts: config.get("websocket_reconnect_max_attempts").and_then(|v| v.as_integer()).unwrap_or(5) as u32,
             websocket_reconnect_base_delay_secs: config.get("websocket_reconnect_base_delay_secs").and_then(|v| v.as_integer()).unwrap_or(2) as u64,
+            max_concurrent_users: config.get("max_concurrent_users").and_then(|v| v.as_integer()).unwrap_or(25) as usize,
         }
     }
 }
@@ -87,6 +93,40 @@ async fn get_blockchain_tip(client: &Client, esplora_url: &str) -> Result<u64, P
     }
 }
 
+async fn prune_inactive_users(
+    activity: &mut HashMap<String, u64>,
+    prune_threshold: u64,
+    state_manager: &StateManager,
+) -> Result<(), PulserError> {
+    let now = now_timestamp();
+    let before = activity.len();
+    let mut to_remove = Vec::new();
+
+    for (user_id, &ts) in activity.iter() {
+        let keep = now - ts <= prune_threshold;
+        if !keep {
+            debug!("Pruning inactive user {} (last active: {})", user_id, ts);
+            if let Ok(mut chain) = state_manager.load_stable_chain(user_id).await {
+                chain.timestamp = now as i64;
+                for attempt in 0..3 {
+                    if state_manager.save_stable_chain(user_id, &chain).await.is_ok() {
+                        break;
+                    }
+                    warn!("Retry {} saving StableChain for {}", attempt + 1, user_id);
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+            to_remove.push(user_id.clone());
+        }
+    }
+
+    for user_id in to_remove {
+        activity.remove(&user_id);
+    }
+    debug!("Pruned {} users, {} remain", before - activity.len(), activity.len());
+    Ok(())
+}
+
 pub async fn monitor_deposits(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
@@ -111,9 +151,7 @@ pub async fn monitor_deposits(
     let mut last_websocket_activity: Instant = Instant::now();
     let mut last_ping_time: Instant = Instant::now();
     let mut last_sync: HashMap<String, Instant> = HashMap::new();
-    let debounce_interval = Duration::from_secs(5);
 
-    let mut check_interval = interval(Duration::from_secs(60));
     let mut fallback_interval = interval(Duration::from_secs(config.fallback_sync_interval_secs));
     let mut ping_interval = interval(Duration::from_secs(config.websocket_ping_interval_secs));
 
@@ -137,42 +175,24 @@ pub async fn monitor_deposits(
     }
 
     loop {
-       let active_user_data = {
-    // First get wallets with timeout
-    let wallets_lock = match tokio::time::timeout(
-        Duration::from_secs(5),
-        wallets.lock()
-    ).await {
-        Ok(lock) => lock,
-        Err(_) => {
-            warn!("Timeout acquiring wallets lock for user scan");
-            vec![] // Return empty list if we can't get the lock
-        }
-    };
-    let statuses_lock = match tokio::time::timeout(
-        Duration::from_secs(5),
-        user_statuses.lock()
-    ).await {
-        Ok(lock) => lock,
-        Err(_) => {
-            warn!("Timeout acquiring user_statuses lock for user scan");
-            return vec![]; // Return empty list if we can't get the lock
-        }
-    };
-    let mut active_users = Vec::new();
-    for (id, (_, chain)) in wallets_lock.iter() {
-        let address = statuses_lock.get(id)
-            .map(|s| s.current_deposit_address.clone())
-            .unwrap_or_else(|| chain.multisig_addr.clone());
-        active_users.push((id.clone(), address));
-    }
-    debug!("Active users to scan: {}", active_users.len());
-    active_users
-};
+        let active_user_data = {
+            let wallets_lock = match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
+                Ok(lock) => lock,
+                Err(_) => {
+                    warn!("Timeout acquiring wallets lock for user scan");
+                    return Ok(());
+                }
+            };
+            let statuses_lock = match tokio::time::timeout(Duration::from_secs(5), user_statuses.lock()).await {
+                Ok(lock) => lock,
+                Err(_) => {
+                    warn!("Timeout acquiring user_statuses lock for user scan");
+                    return Ok(());
+                }
+            };
+            let mut active_users = Vec::new();
             for (id, (_, chain)) in wallets_lock.iter() {
-                let address = statuses_lock.get(id)
-                    .map(|s| s.current_deposit_address.clone())
-                    .unwrap_or_else(|| chain.multisig_addr.clone());
+                let address = statuses_lock.get(id).map(|s| s.current_deposit_address.clone()).unwrap_or_else(|| chain.multisig_addr.clone());
                 active_users.push((id.clone(), address));
             }
             debug!("Active users to scan: {}", active_users.len());
@@ -199,81 +219,68 @@ pub async fn monitor_deposits(
                     Ok(msg) => {
                         reconnect_attempts = 0;
                         last_websocket_activity = Instant::now();
-
                         match msg {
                             Message::Text(text) => {
-                                match serde_json::from_str::<Value>(&text) {
-                                    Ok(value) => {
-                                        if let Some(height) = value.get("block").and_then(|b| b.get("height")).and_then(|h| h.as_u64()) {
-                                            if height > last_block_height {
-                                                info!("New block detected (WebSocket): {}", height);
-                                                last_block_height = height;
-
-                                                // Check each user's pending TXs for confirmation
-                                                let mut wallets_lock = wallets.lock().await;
-                                                for (user_id, deposit_address) in active_user_data.iter() {
-                                                    if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
-                                                        let deposit_addr = Address::from_str(deposit_address)?.assume_checked();
-                                                        let unconfirmed_utxos = wallet.wallet.list_unspent()
-                                                            .into_iter()
-                                                            .filter(|u| u.confirmation_time.is_none() && u.txout.value > 0)
-                                                            .collect::<Vec<_>>();
-
-                                                        for utxo in unconfirmed_utxos {
-if let Ok(Some(_)) = blockchain.get_tx(&utxo.outpoint.txid.to_string()).await {
-    let price_data = price_info.lock().await.clone();
-    let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_data.0); // Fetch post-confirmation
-    let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-    let new_utxos = sync_and_stabilize_utxos(
-        user_id,
-        &mut wallet.wallet,
-        &blockchain,
-        chain,
-        deribit_price, // Raw f64, fetched now
-        &price_data,
-        &deposit_addr,
-        &change_addr,
-        &state_manager,
-        1,
-    ).await?;
-
-if !new_utxos.is_empty() {
-    info!("Stabilized {} UTXOs for user {} on block {}", new_utxos.len(), user_id, height);
-    let mut statuses = user_statuses.lock().await;
-    if let Some(status) = statuses.get_mut(user_id) {
-        status.utxo_count = chain.utxos.len() as u32;
-        status.total_value_usd = chain.stabilized_usd.0;
-        status.last_sync = now_timestamp();
-        status.sync_status = "confirmed".to_string();
+                                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                    if let Some(height) = value.get("block").and_then(|b| b.get("height")).and_then(|h| h.as_u64()) {
+                                        if height > last_block_height {
+                                            info!("New block detected (WebSocket): {}", height);
+                                            last_block_height = height;
+                                            let mut wallets_lock = wallets.lock().await;
+                                            let mut active_users_with_pending: Vec<(String, String)> = Vec::new();
+for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
+    let addr = Address::from_str(&chain.multisig_addr).expect("valid address").assume_checked();
+    let spk = addr.script_pubkey();
+    let request = SyncRequest::builder().spks(core::iter::once(spk)).build();
+    wallet.blockchain.sync(request, 5).await?;
+    if wallet.wallet.list_unspent().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }) && u.txout.value > Amount::from_sat(0)) {
+        debug!("Found unconfirmed UTXO for user {}: {:?}", user_id, wallet.wallet.list_unspent().collect::<Vec<_>>());
+        active_users_with_pending.push((user_id.clone(), chain.multisig_addr.clone()));
     }
 }
-                                                            }
+                                            drop(wallets_lock);
+                                            for chunk in active_users_with_pending.chunks(config.batch_size) {
+                                                for (user_id, deposit_address) in chunk {
+                                                    let deposit_addr = Address::from_str(deposit_address)?.assume_checked();
+                                                    let mut wallets_lock = wallets.lock().await;
+                                                    if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
+                                                        let price_btc_usd = price_feed.get_deribit_price().await.unwrap_or(0.0);
+                                                        let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
+                                                        let new_utxos = sync_and_stabilize_utxos(
+                                                            user_id.as_str(),
+                                                            &mut wallet.wallet,
+                                                            &wallet.blockchain,
+                                                            chain,
+                                                            price_btc_usd,
+                                                            &*price_info.lock().await,
+                                                            &deposit_addr,
+                                                            &change_addr,
+                                                            &state_manager,
+                                                            1,
+                                                        ).await?;
+                                                        if !new_utxos.is_empty() {
+                                                            info!("Stabilized {} UTXOs for user {} on block {}", new_utxos.len(), user_id, height);
                                                         }
-
-                                                        // Debounced secondary sync
-                                                        let now = Instant::now();
-                                                        let last = last_sync.entry(user_id.clone()).or_insert(Instant::now());
-                                                        if now.duration_since(*last) >= debounce_interval {
-                                                            sync_tx.try_send(user_id.clone()).map_err(|e| warn!("Failed to send sync for {}: {}", user_id, e))?;
-                                                            *last = now;
-                                                            debug!("Queued secondary sync for user {}", user_id);
+                                                        let now_instant = Instant::now();
+                                                        let last = last_sync.entry(user_id.to_string()).or_insert(now_instant);
+                                                        let sync_cooldown = Duration::from_secs(604_800);
+                                                        if now_instant.duration_since(*last) >= sync_cooldown {
+                                                            sync_tx.send(user_id.to_string()).await?;
+                                                            *last = now_instant;
                                                         }
                                                     }
+                                                    last_activity_check.lock().await.insert(user_id.to_string(), now_timestamp());
                                                 }
                                             }
+                                            let mut activity = last_activity_check.lock().await;
+                                            prune_inactive_users(&mut activity, config.deposit_window_hours * 3600, &state_manager).await?;
                                         }
                                     }
-                                    Err(e) => warn!("Failed to parse WebSocket JSON: {}", e),
                                 }
                             }
-                            Message::Ping(_) => {
-                                if let Some(ws_ref) = ws.as_mut() {
-                                    ws_ref.send(Message::Pong(vec![])).await?;
-                                }
-                            }
+                            Message::Ping(_) => { if let Some(ws_ref) = ws.as_mut() { ws_ref.send(Message::Pong(vec![])).await?; } }
                             Message::Pong(_) => trace!("Received pong"),
                             Message::Close(_) => {
-                                info!("WebSocket closed by server");
                                 ws = None;
                                 use_fallback = true;
                                 service_status.lock().await.websocket_active = false;
@@ -283,6 +290,9 @@ if !new_utxos.is_empty() {
                     }
                     Err(e) => {
                         warn!("WebSocket error: {}. Will reconnect.", e);
+                        if let Some(mut ws_ref) = ws.take() {
+                            ws_ref.close(None).await.ok();
+                        }
                         ws = None;
                         use_fallback = true;
                         service_status.lock().await.websocket_active = false;
@@ -292,9 +302,7 @@ if !new_utxos.is_empty() {
 
             _ = ping_interval.tick(), if ws.is_some() && !use_fallback => {
                 let now = Instant::now();
-                let idle_time = now.duration_since(last_websocket_activity).as_secs();
-                if idle_time >= config.websocket_ping_interval_secs {
-                    debug!("WebSocket idle for {}s, sending ping", idle_time);
+                if now.duration_since(last_websocket_activity).as_secs() >= config.websocket_ping_interval_secs {
                     if let Some(ws_ref) = ws.as_mut() {
                         send_ping(ws_ref).await?;
                         last_ping_time = now;
@@ -303,6 +311,9 @@ if !new_utxos.is_empty() {
                 if now.duration_since(last_ping_time).as_secs() >= 2 * config.websocket_ping_interval_secs &&
                    now.duration_since(last_websocket_activity).as_secs() >= 2 * config.websocket_ping_interval_secs {
                     warn!("WebSocket connection stale. Reconnecting.");
+                    if let Some(mut ws_ref) = ws.take() {
+                        ws_ref.close(None).await.ok();
+                    }
                     ws = None;
                     use_fallback = true;
                     service_status.lock().await.websocket_active = false;
@@ -310,12 +321,11 @@ if !new_utxos.is_empty() {
             }
 
             _ = fallback_interval.tick(), if use_fallback || ws.is_none() => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                let now = now_timestamp();
                 if ws.is_none() && reconnect_attempts < config.websocket_reconnect_max_attempts {
                     let backoff_secs = config.websocket_reconnect_base_delay_secs * (1u64 << reconnect_attempts.min(10)) + (now % 3);
                     info!("Reconnecting WebSocket (attempt {}/{}), backoff: {}s", reconnect_attempts + 1, config.websocket_reconnect_max_attempts, backoff_secs);
                     sleep(Duration::from_secs(backoff_secs)).await;
-
                     match connect_websocket(&config.websocket_url).await {
                         Ok(mut websocket) => {
                             subscribe_to_blocks(&mut websocket).await?;
@@ -325,110 +335,55 @@ if !new_utxos.is_empty() {
                             last_websocket_activity = Instant::now();
                             reconnect_attempts = 0;
                         }
-                        Err(e) => {
-                            warn!("Reconnect attempt {} failed: {}", reconnect_attempts + 1, e);
-                            reconnect_attempts += 1;
-                        }
+                        Err(_) => { reconnect_attempts += 1; }
                     }
                 }
-
                 if now - last_fallback_sync >= config.fallback_sync_interval_secs {
-                    info!("Running fallback sync for {} users", active_user_data.len());
-                    last_fallback_sync = now;
-                    if let Ok(height) = get_blockchain_tip(&client, &config.esplora_url).await {
-                        if height > last_block_height {
-                            info!("New block detected (fallback): {}", height);
-                            last_block_height = height;
-                        }
-                    }
-                    for (user_id, _) in active_user_data.iter() {
-                        sync_tx.try_send(user_id.clone()).map_err(|e| warn!("Failed to send fallback sync for {}: {}", user_id, e))?;
-                    }
-                }
-            }
-
-            _ = check_interval.tick() => {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                debug!("Running deposit check at time: {}", now);
-
-                for (user_id, deposit_address) in active_user_data {
-                    let deposit_addr = match Address::from_str(&deposit_address) {
-                        Ok(addr) => addr.assume_checked(),
-                        Err(e) => {
-                            warn!("Invalid address {} for user {}: {}", deposit_address, user_id, e);
-                            continue;
-                        }
-                    };
-
                     let mut wallets_lock = wallets.lock().await;
-                    if let Some((wallet, chain)) = wallets_lock.get_mut(&user_id) {
-                        let previous_balance = wallet.wallet.balance().confirmed.to_sat();
-                        let price_data = price_info.lock().await.clone();
-                        let unconfirmed_utxos = wallet.wallet.list_unspent()
-                            .into_iter()
-                            .filter(|u| u.confirmation_time.is_none() && u.txout.value > 0)
-                            .collect::<Vec<_>>();
-
-                        for utxo in unconfirmed_utxos {
-if let Ok(Some(_)) = blockchain.get_tx(&utxo.outpoint.txid.to_string()).await {
-    let price_data = price_info.lock().await.clone();
-    let deribit_price = price_feed.get_deribit_price().await.unwrap_or(price_data.0); // Fetch here
-    let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-    let new_utxos = sync_and_stabilize_utxos(
-        user_id,
-        &mut wallet.wallet,
-        &blockchain,
-        chain,
-        deribit_price, // Pass f64
-        &price_data,
-        &deposit_addr,
-        &change_addr,
-        &state_manager,
-        1,
-    ).await?;
-
-                                if !new_utxos.is_empty() {
-                                    info!("Stabilized {} UTXOs for user {} during check", new_utxos.len(), user_id);
-                                    let mut statuses = user_statuses.lock().await;
-                                    if let Some(status) = statuses.get_mut(user_id) {
-                                        status.utxo_count = chain.utxos.len() as u32;
-                                        status.total_value_usd = chain.stabilized_usd.0;
-                                        status.last_sync = now_timestamp();
-                                        status.sync_status = "confirmed".to_string();
-                                    }
-
-                                    // Generate new address
-                                    if let Ok(new_addr) = wallet.reveal_new_address().await {
-                                        statuses.get_mut(user_id).unwrap().current_deposit_address = new_addr.to_string();
-                                    }
-                                }
+                    let mut active_users_with_pending: Vec<(String, String)> = Vec::new();
+for (user_id, (wallet, chain)) in wallets_lock.iter_mut() {
+    let addr = Address::from_str(&chain.multisig_addr).expect("valid address").assume_checked();
+    let spk = addr.script_pubkey();
+    let request = SyncRequest::builder().spks(core::iter::once(spk)).build();
+    wallet.blockchain.sync(request, 5).await?;
+    if wallet.wallet.list_unspent().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }) && u.txout.value > Amount::from_sat(0)) {
+        debug!("Found unconfirmed UTXO for user {}: {:?}", user_id, wallet.wallet.list_unspent().collect::<Vec<_>>());
+        active_users_with_pending.push((user_id.clone(), chain.multisig_addr.clone()));
+    }
+}
+                    drop(wallets_lock);
+                    let active_count = service_status.lock().await.active_syncs;
+                    if active_count < config.max_concurrent_users as u32 {
+                        info!("Running fallback sync for {} users", active_users_with_pending.len());
+                        last_fallback_sync = now;
+                        if let Ok(height) = get_blockchain_tip(&client, &config.esplora_url).await {
+                            if height > last_block_height {
+                                info!("New block detected (fallback): {}", height);
+                                last_block_height = height;
                             }
                         }
-
-                        // Debounced secondary sync
-                        let now_instant = Instant::now();
-                        let last = last_sync.entry(user_id.clone()).or_insert(Instant::now());
-                        if now_instant.duration_since(*last) >= debounce_interval {
-                            sync_tx.try_send(user_id.clone()).map_err(|e| warn!("Failed to send sync for {}: {}", user_id, e))?;
-                            *last = now_instant;
-                            debug!("Queued secondary sync for user {}", user_id);
+                        for chunk in active_users_with_pending.chunks(config.batch_size) {
+                            for (user_id, _) in chunk {
+                                service_status.lock().await.active_syncs += 1;
+                                sync_tx.send(user_id.to_string()).await?;
+                                service_status.lock().await.active_syncs -= 1;
+                            }
                         }
                     }
-
-                    last_activity_check.lock().await.insert(user_id.clone(), now);
+                    let mut activity = last_activity_check.lock().await;
+                    prune_inactive_users(&mut activity, config.deposit_window_hours * 3600, &state_manager).await?;
                 }
-
-                let mut service_status_lock = service_status.lock().await;
-                let wallets_lock = wallets.lock().await;
-                service_status_lock.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
-                service_status_lock.total_value_btc = wallets_lock.values().map(|(w, _)| w.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0).sum();
-                service_status_lock.total_value_usd = wallets_lock.values().map(|(_, c)| c.stabilized_usd.0).sum();
-                service_status_lock.last_update = now;
-                service_status_lock.health = "healthy".to_string();
             }
         }
-    }
 
+        let now = now_timestamp();
+        let mut service_status_lock = service_status.lock().await;
+        service_status_lock.total_utxos = wallets.lock().await.values().map(|(_, c)| c.utxos.len() as u32).sum();
+        service_status_lock.total_value_btc = wallets.lock().await.values().map(|(w, _)| w.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0).sum();
+        service_status_lock.total_value_usd = wallets.lock().await.values().map(|(_, c)| c.stabilized_usd.0).sum();
+        service_status_lock.last_update = now;
+        service_status_lock.health = if service_status_lock.websocket_active { "healthy" } else { "degraded" }.to_string();
+    }
     info!("Monitor task shutdown complete");
     Ok(())
 }

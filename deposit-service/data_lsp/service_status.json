@@ -1,19 +1,14 @@
 {
-  "up_since": 1743194803,
-  "last_update": 0,
-  "version": "0.1.0",
+  "up_since": 1743380845,
+  "last_update": 1743416430,
+  "version": "unknown",
   "users_monitored": 3,
   "total_utxos": 0,
   "total_value_btc": 0.0,
   "total_value_usd": 0.0,
-  "health": "starting",
-  "api_status": {},
-  "last_price": 83951.56,
-  "price_update_count": 5,
+  "health": "healthy",
+  "last_price": 81475.5,
+  "price_update_count": 3,
   "active_syncs": 0,
-  "price_cache_staleness_secs": 0,
-  "silent_failures": 0,
-  "api_calls": 1,
-  "error_rate": 0.0,
-  "users": {}
+  "websocket_active": false
 }
