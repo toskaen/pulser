@@ -66,32 +66,27 @@ pub fn store_sensitive_data(data: &str, file_path: &str) -> Result<(), std::io::
 
 /// Returns the standardized path for a user's StableChain file
 pub fn get_stablechain_path(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/stable_chain_{}.json", data_dir, user_id, user_id))
+    PathBuf::from(format!("user_{}/stable_chain_{}.json", user_id, user_id))
 }
 
-/// Returns the standardized path for a user's status file
 pub fn get_user_status_path(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/status_{}.json", data_dir, user_id, user_id))
+    PathBuf::from(format!("user_{}/status_{}.json", user_id, user_id))
 }
 
-/// Returns the standardized path for a user's public wallet info
 pub fn get_user_public_path(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/user_{}_public.json", data_dir, user_id, user_id))
+    PathBuf::from(format!("user_{}/user_{}_public.json", user_id, user_id))
 }
 
-/// Returns the standardized path for a user's changeset file
 pub fn get_changeset_path(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/changeset.bin", data_dir, user_id))
+    PathBuf::from(format!("user_{}/changeset.bin", user_id))
 }
 
-/// Returns the standardized path for a user's activity log
 pub fn get_activity_path(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/activity_{}.json", data_dir, user_id, user_id))
+    PathBuf::from(format!("user_{}/activity_{}.json", user_id, user_id))
 }
 
-/// Returns the standardized path for a user's multisig directory
 pub fn get_multisig_dir(data_dir: &str, user_id: &str) -> PathBuf {
-    PathBuf::from(format!("{}/user_{}/multisig", data_dir, user_id))
+    PathBuf::from(format!("user_{}/multisig", user_id))
 }
 
 /// Validates a StableChain to ensure it's not corrupted

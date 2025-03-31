@@ -18,6 +18,8 @@ use bitcoin::address::FromScriptError; // Keep only if used
 use bitcoin::hashes::hex::HexToBytesError; // Keep only if used
 use warp;
 use bincode; // Add
+use tokio::sync::broadcast::error::{SendError, RecvError};
+use std::net::AddrParseError;
 
 impl warp::reject::Reject for PulserError {}
 
@@ -211,4 +213,28 @@ impl From<bincode::Error> for PulserError {
 
 impl From<std::num::ParseFloatError> for PulserError {
     fn from(err: std::num::ParseFloatError) -> Self { PulserError::ApiError(err.to_string()) }
+}
+
+impl From<tokio::time::error::Elapsed> for PulserError {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        PulserError::NetworkError("Operation timed out".to_string())
+    }
+}
+
+impl From<SendError<()>> for PulserError {
+    fn from(err: SendError<()>) -> Self {
+        PulserError::InternalError(format!("Broadcast send error: {:?}", err))
+    }
+}
+
+impl From<RecvError> for PulserError {
+    fn from(err: RecvError) -> Self {
+        PulserError::InternalError(format!("Broadcast receive error: {}", err))
+    }
+}
+
+impl From<AddrParseError> for PulserError {
+    fn from(err: AddrParseError) -> Self {
+        PulserError::ConfigError(format!("Invalid IP address: {}", err))
+    }
 }

@@ -201,18 +201,15 @@ if path_str.contains("stable_chain") {
         Ok(result)
     }
 
-    pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain) -> Result<(), PulserError> {
-    
-        if let Err(e) = utils::validate_stablechain(chain) {
+pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain) -> Result<(), PulserError> {
+    if let Err(e) = utils::validate_stablechain(stable_chain) {
         warn!("Validation warning before saving StableChain for user {}: {}", user_id, e);
-        // Optionally return the error instead of just warning
     }
-        let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
-        
-        info!("Saving StableChain for user {}: {} BTC (${:.2}), {} history entries", 
-            user_id, stable_chain.accumulated_btc.to_btc(), stable_chain.stabilized_usd.0, stable_chain.history.len());
-        self.save(&sc_path, stable_chain).await
-    }
+    let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
+    info!("Saving StableChain for user {}: {} BTC (${:.2}), {} history entries", 
+        user_id, stable_chain.accumulated_btc.to_btc(), stable_chain.stabilized_usd.0, stable_chain.history.len());
+    self.save(&sc_path, stable_chain).await
+}
 
     pub async fn load_stable_chain(&self, user_id: &str) -> Result<StableChain, PulserError> {
         let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
@@ -260,9 +257,12 @@ if path_str.contains("stable_chain") {
             short_reduction_amount: None,
             old_addresses: Vec::new(),
             history: Vec::new(),
+                change_log: Vec::new(), // Added this field
+                
         };
 
         debug!("Initialized new StableChain for user {}", user_id);
+        utils::validate_stablechain(&stable_chain)?;
         self.save(&sc_path, &stable_chain).await?;
         Ok(stable_chain)
     }
@@ -270,7 +270,7 @@ if path_str.contains("stable_chain") {
     pub async fn save_changeset(&self, user_id: &str, changeset: &ChangeSet) -> Result<(), PulserError> {
         let path = utils::get_changeset_path(self.data_dir.to_str().unwrap_or("data"), user_id);
         let full_path = self.data_dir.join(&path);
-        let path_str = full_path.to_str().unwrap_or("unknown");
+let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Invalid UTF-8 path".to_string()))?;
         let temp_path = full_path.with_extension("temp");
 
         trace!("Saving changeset to: {}", path_str);

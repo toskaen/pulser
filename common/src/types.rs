@@ -138,9 +138,9 @@ impl StableChain {
             short_reduction_amount: None,
             old_addresses: Vec::new(),
             history: Vec::new(),
-                        change_log: Vec::new(), // Initialize empty change log
-        });
-    
+            change_log: Vec::new(), // Initialize empty change log
+        })
+    }
     pub async fn update_with_transaction<F>(&mut self, 
                                            state_manager: &StateManager, 
                                            user_id: &str,
@@ -190,7 +190,7 @@ impl StableChain {
         }
     }
 }
-}
+
 
 impl UtxoInfo {
     pub fn from_utxo(utxo: &Utxo, address: &str, keychain: &str) -> Self {
