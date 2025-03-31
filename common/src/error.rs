@@ -16,6 +16,7 @@ use bitcoin::network::ParseNetworkError;
 use bitcoin::address::ParseError; // Keep only if used
 use bitcoin::address::FromScriptError; // Keep only if used
 use bitcoin::hashes::hex::HexToBytesError; // Keep only if used
+use bitcoin::consensus::encode::Error as ConsensusError; // Add to imports
 use warp;
 use bincode; // Add
 use tokio::sync::broadcast::error::{SendError, RecvError};
@@ -63,6 +64,9 @@ pub enum PulserError {
     InvalidInput(String),
     #[error("Bitcoin error: {0}")]
     BitcoinError(String),
+        #[error("Consensus encoding error: {0}")]
+            ConsensusError(#[from] ConsensusError), // Add this
+
 }
 
 impl ResponseError for PulserError {
@@ -87,6 +91,7 @@ impl ResponseError for PulserError {
             PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
             PulserError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             PulserError::BitcoinError(_) => StatusCode::BAD_REQUEST,
+                        PulserError::ConsensusError(_) => StatusCode::INTERNAL_SERVER_ERROR, // Add this
         }
     }
 }

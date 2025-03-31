@@ -270,6 +270,8 @@ pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain)
     pub async fn save_changeset(&self, user_id: &str, changeset: &ChangeSet) -> Result<(), PulserError> {
         let path = utils::get_changeset_path(self.data_dir.to_str().unwrap_or("data"), user_id);
         let full_path = self.data_dir.join(&path);
+            let temp_path = full_path.with_extension("temp");
+
 let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Invalid UTF-8 path".to_string()))?;
         let temp_path = full_path.with_extension("temp");
 

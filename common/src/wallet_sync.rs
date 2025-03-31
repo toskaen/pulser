@@ -144,7 +144,7 @@ pub async fn sync_and_stabilize_utxos(
     }
 
     chain.utxos = updated_utxos;
-    chain.accumulated_btc = Bitcoin::from_sats(wallet.balance().confirmed.to_sat());
+    chain.accumulated_btc = Bitcoin::from_sats(wallet.balance().total().to_sat());
     chain.stabilized_usd = USD(chain.utxos.iter().filter(|u| u.usd_value.is_some()).map(|u| u.usd_value.as_ref().unwrap().0).sum());
     chain.raw_btc_usd = stabilization_price;
 
