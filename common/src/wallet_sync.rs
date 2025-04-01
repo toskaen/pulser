@@ -1,22 +1,17 @@
 // common/src/wallet_sync.rs
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use bdk_wallet::{Wallet, KeychainKind, Balance};
 use bdk_esplora::EsploraAsyncExt;
 use bdk_esplora::esplora_client::AsyncClient;
-use bdk_chain::spk_client::FullScanResponse;
 use crate::{types::{StableChain, UtxoInfo, USD, Bitcoin, Utxo}, error::PulserError, StateManager, price_feed::PriceFeed};
 use crate::types::PriceInfo;
-use std::str::FromStr;
-use log::{info, warn, debug, error, trace};
-use bitcoin::Address;
-use bitcoin::Network;
+use log::{info, warn, debug, error};
+use bitcoin::{Address, Network};
 use tokio::time::timeout;
-use bdk_chain::spk_client::SyncRequest;
+use std::str::FromStr; // Added import
 
 const MAX_SCAN_RETRIES: u32 = 3;
-const SCAN_TIMEOUT_SECS: u64 = 60; // Increased from 30s to 60s for better reliability
+const SCAN_TIMEOUT_SECS: u64 = 60;
 
 pub async fn sync_and_stabilize_utxos(
     user_id: &str,
@@ -54,20 +49,11 @@ pub async fn sync_and_stabilize_utxos(
     let mut previous_utxos = chain.utxos.clone();
     let previous_balance = wallet.balance();
 
-    // Sync all addresses: current deposit, old deposits, and change
-    let mut spks = vec![deposit_addr.script_pubkey()];
-    for old_addr in &chain.old_addresses {
-        spks.push(Address::from_str(old_addr)?.assume_checked().script_pubkey());
-    }
-    let last_internal_index = wallet.derivation_index(KeychainKind::Internal).unwrap_or(0);
-    for i in 0..=last_internal_index {
-        let addr = wallet.peek_address(KeychainKind::Internal, i);
-        spks.push(addr.address.script_pubkey());
-    }
-    let request = SyncRequest::builder().spks(spks.into_iter()).build();
-    let sync_update = esplora.sync(request, 5).await?;
+    // Sync with revealed script pubkeys
+    let sync_request = wallet.start_sync_with_revealed_spks();
+    let sync_update = esplora.sync(sync_request, 5).await?;
     wallet.apply_update(sync_update)?;
-    debug!("Applied sync update for user {}, latest checkpoint: {:?}", user_id, wallet.latest_checkpoint());
+    debug!("Applied sync update for user {}, tip height: {}", user_id, wallet.local_chain().tip().height()); // Fixed
 
     let wallet_utxos = wallet.list_unspent();
     let mut new_utxos: Vec<UtxoInfo> = Vec::new();
@@ -108,7 +94,6 @@ pub async fn sync_and_stabilize_utxos(
         };
 
         if let Some(existing) = previous_utxos.iter_mut().find(|prev| prev.txid == chain_utxo.txid && prev.vout == chain_utxo.vout) {
-            // Preserve existing USD value for confirmed, unspent UTXOs
             chain_utxo.usd_value = existing.usd_value.clone();
             if !is_change && confirmations >= min_confirmations && chain_utxo.usd_value.is_none() {
                 let stable_value_usd = (chain_utxo.amount as f64 / 100_000_000.0) * stabilization_price;
@@ -121,7 +106,6 @@ pub async fn sync_and_stabilize_utxos(
             }
             updated_utxos.push(chain_utxo);
         } else if !is_change {
-            // New external UTXO: stabilize at 1-conf
             let stable_value_usd = if confirmations >= min_confirmations {
                 (chain_utxo.amount as f64 / 100_000_000.0) * stabilization_price
             } else {
@@ -136,7 +120,6 @@ pub async fn sync_and_stabilize_utxos(
                   user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount, stable_value_usd);
             updated_utxos.push(chain_utxo);
         } else {
-            // New change UTXO: track, don’t stabilize
             info!("Tracked change UTXO for user {}: {}:{} | {} sats (unstabilized)", 
                   user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount);
             updated_utxos.push(chain_utxo);
@@ -166,7 +149,7 @@ pub async fn sync_and_stabilize_utxos(
     debug!("Completed sync for user {} in {}ms: {} new UTXOs", user_id, start_time.elapsed().as_millis(), new_utxos.len());
     Ok(new_utxos)
 }
-    
+
 pub async fn resync_full_history(
     user_id: &str,
     wallet: &mut Wallet,
@@ -200,7 +183,6 @@ pub async fn resync_full_history(
         let request = wallet.start_full_scan();
         match timeout(Duration::from_secs(SCAN_TIMEOUT_SECS), esplora.full_scan(request, 10, 5)).await {
             Ok(Ok(full_update)) => {
-                debug!("Full scan successful for user {} in {} ms", user_id, start_time.elapsed().as_millis());
                 update = Some(full_update);
                 scan_success = true;
                 break;
@@ -221,6 +203,7 @@ pub async fn resync_full_history(
     }
 
     wallet.apply_update(update.unwrap())?;
+    debug!("Full scan completed for user {}, tip height: {}", user_id, wallet.local_chain().tip().height()); // Fixed
 
     let wallet_utxos = wallet.list_unspent();
     let mut new_utxos: Vec<UtxoInfo> = Vec::new();
@@ -265,7 +248,7 @@ pub async fn resync_full_history(
         if let Some(existing) = previous_utxos.iter_mut().find(|prev| prev.txid == chain_utxo.txid && prev.vout == chain_utxo.vout) {
             existing.confirmations = confirmations;
             existing.spent = u.is_spent;
-            chain_utxo.usd_value = existing.usd_value.clone(); // Preserve existing value
+            chain_utxo.usd_value = existing.usd_value.clone();
             if !is_change && confirmations >= min_confirmations && chain_utxo.usd_value.is_none() {
                 let stable_value_usd = (chain_utxo.amount as f64 / 100_000_000.0) * stabilization_price;
                 chain_utxo.usd_value = Some(USD(stable_value_usd));
@@ -277,7 +260,6 @@ pub async fn resync_full_history(
             }
             updated_utxos.push(chain_utxo);
         } else if !is_change {
-            // New external UTXO: stabilize if confirmed
             let stable_value_usd = if confirmations >= min_confirmations {
                 (chain_utxo.amount as f64 / 100_000_000.0) * stabilization_price
             } else {
@@ -292,7 +274,6 @@ pub async fn resync_full_history(
                   user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount, stable_value_usd);
             updated_utxos.push(chain_utxo);
         } else {
-            // New change UTXO: track, don’t stabilize
             info!("Recovered change UTXO for user {}: {}:{} | {} sats (unstabilized)", 
                   user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount);
             updated_utxos.push(chain_utxo);
@@ -300,7 +281,7 @@ pub async fn resync_full_history(
     }
 
     chain.utxos = updated_utxos;
-    chain.accumulated_btc = Bitcoin::from_sats(wallet.balance().confirmed.to_sat());
+    chain.accumulated_btc = Bitcoin::from_sats(wallet.balance().total().to_sat());
     chain.stabilized_usd = USD(chain.utxos.iter().filter(|u| u.usd_value.is_some()).map(|u| u.usd_value.as_ref().unwrap().0).sum());
     chain.raw_btc_usd = stabilization_price;
 
@@ -316,7 +297,6 @@ pub async fn resync_full_history(
         );
     }
 
-    // Only update multisig_addr if invalid or missing
     let current_addr = wallet.peek_address(KeychainKind::External, wallet.derivation_index(KeychainKind::External).unwrap_or(0)).address;
     if chain.multisig_addr.is_empty() || !wallet.is_mine(Address::from_str(&chain.multisig_addr)?.assume_checked().script_pubkey()) {
         chain.multisig_addr = current_addr.to_string();

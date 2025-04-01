@@ -243,3 +243,5 @@ impl From<AddrParseError> for PulserError {
         PulserError::ConfigError(format!("Invalid IP address: {}", err))
     }
 }
+
+
