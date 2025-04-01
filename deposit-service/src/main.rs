@@ -47,40 +47,40 @@ async fn preload_existing_users(
         if path.is_dir() {
             if let Some(user_id) = path.file_name().and_then(|f| f.to_str()).and_then(|s| s.strip_prefix("user_")) {
                 debug!("Preloading user: {}", user_id);
-                match DepositWallet::from_config(config, user_id, state_manager, price_feed.clone()).await {
-                    Ok((wallet, deposit_info, chain)) => {
-                        let status = UserStatus {
-                            user_id: user_id.to_string(),
-                            last_sync: 0,
-                            sync_status: "pending".to_string(),  // Mark as unsynced
-                            utxo_count: chain.utxos.len() as u32,
-                            total_value_btc: 0.0,  // Defer to monitor
-                            total_value_usd: chain.stabilized_usd.0,
-                            confirmations_pending: false,
-                            last_update_message: "Preloaded from disk, awaiting sync".to_string(),
-                            sync_duration_ms: 0,
-                            last_error: None,
-                            last_success: 0,
-                            pruned_utxo_count: 0,
-                            current_deposit_address: deposit_info.address,
-                            last_deposit_time: None,
-                        };
-                        {
-                            let mut wallets_lock = wallets.lock().await;
-                            wallets_lock.insert(user_id.to_string(), (wallet, chain));
-                        }
-                        {
-                            let mut statuses_lock = user_statuses.lock().await;
-                            statuses_lock.insert(user_id.to_string(), status);
-                        }
-                        sync_tx.send(user_id.to_string()).await?;  // Queue for monitor
-                        loaded_count += 1;
-                    }
-                    Err(e) => {
-                        error!("Failed to preload user {}: {}", user_id, e);
-                        error_count += 1;
-                    }
-                }
+match DepositWallet::from_config(config, user_id, state_manager, price_feed.clone()).await {
+    Ok((wallet, deposit_info, chain, _recovery_doc)) => {
+        let status = UserStatus {
+            user_id: user_id.to_string(),
+            last_sync: 0,
+            sync_status: "pending".to_string(),  // Mark as unsynced
+            utxo_count: chain.utxos.len() as u32,
+            total_value_btc: 0.0,  // Defer to monitor
+            total_value_usd: chain.stabilized_usd.0,
+            confirmations_pending: false,
+            last_update_message: "Preloaded from disk, awaiting sync".to_string(),
+            sync_duration_ms: 0,
+            last_error: None,
+            last_success: 0,
+            pruned_utxo_count: 0,
+            current_deposit_address: deposit_info.address,
+            last_deposit_time: None,
+        };
+        {
+            let mut wallets_lock = wallets.lock().await;
+            wallets_lock.insert(user_id.to_string(), (wallet, chain));
+        }
+        {
+            let mut statuses_lock = user_statuses.lock().await;
+            statuses_lock.insert(user_id.to_string(), status);
+        }
+        sync_tx.send(user_id.to_string()).await?;  // Queue for monitor
+        loaded_count += 1;
+    }
+    Err(e) => {
+        error!("Failed to preload user {}: {}", user_id, e);
+        error_count += 1;
+    }
+}
             }
         }
     }
@@ -263,7 +263,7 @@ if !price_ready {
 }
     
     
-    // Preload users (unchanged)
+
     match preload_existing_users(&data_lsp,&config, &state_manager, price_feed.clone(), &wallets, &user_statuses, sync_tx.clone(), ).await {
         Ok((loaded_count, error_count)) => {
             let mut status = service_status.lock().await;
@@ -502,12 +502,14 @@ match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
     Ok(wallets_lock) => {
         status.users_monitored = wallets_lock.len() as u32;
         status.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
-        status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
-            let btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
-debug!("User {} balance: {:.8} BTC", wallet.wallet.public_descriptor(KeychainKind::External).to_string(), btc);
-
-            btc
-        }).sum();
+status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
+    let btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
+    // Optional: only log non-zero balances
+    if btc > 0.0 {
+        debug!("User balance: {:.8} BTC", btc);
+    }
+    btc
+}).sum();
         status.total_value_usd = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();
     }
     Err(_) => {

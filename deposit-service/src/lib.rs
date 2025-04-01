@@ -4,7 +4,8 @@ pub mod keys;
 pub mod monitor;
 pub mod webhook;
 pub mod api;
-pub mod wallet_init;  // This appears to be separate based on imports
+pub mod init_pulser_wallet;
+pub mod apply_changeset;
 
 
 pub use config::Config;

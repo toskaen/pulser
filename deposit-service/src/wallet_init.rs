@@ -1,5 +1,4 @@
 use std::fs;
-use bdk_wallet::{Wallet, KeychainKind, ChangeSet};
 use bdk_wallet::bitcoin::{Network, Address};
 use bdk_wallet::bitcoin::secp256k1::Secp256k1;
 use bdk_wallet::bitcoin::bip32::{DerivationPath, Xpub, Fingerprint};
@@ -7,6 +6,7 @@ use bdk_wallet::keys::bip39::{Mnemonic, Language, WordCount};
 use bdk_wallet::keys::{DerivableKey, GeneratableKey, ExtendedKey, GeneratedKey};
 use bdk_wallet::miniscript::descriptor::{DescriptorXKey, Wildcard};
 use bdk_wallet::keys::DescriptorPublicKey;
+use bdk_wallet::{Update, Wallet, KeychainKind, ChangeSet}; // Single import line
 use common::error::PulserError;
 use common::types::DepositAddressInfo;
 use log::{info, debug};
@@ -14,6 +14,9 @@ use serde_json;
 use chrono::Utc;
 use std::str::FromStr;
 use crate::config::Config; // Import the main Config
+use bdk_chain::{TxUpdate, CheckPoint, BlockId, ConfirmationBlockTime};
+use std::collections::{BTreeMap, BTreeSet};
+
 
 pub struct WalletInitResult {
     pub external_descriptor: String,
@@ -23,7 +26,7 @@ pub struct WalletInitResult {
     pub public_data: serde_json::Value,
 }
 
-pub fn init_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, PulserError> {
+pub fn init_pulser_wallet(config: &Config, user_id: &str) -> Result<WalletInitResult, PulserError> {
     let network = Network::from_str(&config.network)?;
     let wallet_dir = format!("{}/user_{}", config.data_dir, user_id);
     let public_path = format!("{}/user_{}_public.json", wallet_dir, user_id);
@@ -204,13 +207,41 @@ fs::rename(&temp_path, &public_path)?;
     })
 }
 
-pub fn init_wallet_with_changeset(config: &Config, user_id: &str, _changeset: ChangeSet) -> Result<(Wallet, DepositAddressInfo), PulserError> {
+pub fn apply_changeset(config: &Config, user_id: &str, _changeset: Option<ChangeSet>) -> Result<(Wallet, DepositAddressInfo, Option<String>), PulserError> {
     let init_result = init_wallet(config, user_id)?;
     let network = Network::from_str(&config.network)?;
 
     let mut wallet = Wallet::create(init_result.external_descriptor.clone(), init_result.internal_descriptor.clone())
         .network(network)
         .create_wallet_no_persist()?;
+
+    // Apply the ChangeSet if provided
+    if let Some(changeset) = _changeset {
+        let latest_block = changeset.local_chain.blocks.iter().last().and_then(|(&height, block_hash)| {
+            block_hash.as_ref().map(|hash| {
+                let block_id = BlockId { height, hash: *hash };
+                CheckPoint::new(block_id)
+            })
+        });
+        debug!("User {}: latest block from changeset: {:?}", user_id, latest_block.as_ref().map(|cp| cp.height()));
+        
+        let update = Update {
+            last_active_indices: BTreeMap::new(),
+            chain: latest_block,
+            tx_update: TxUpdate {
+                txs: changeset.tx_graph.txs.clone().into_iter().collect(),
+                txouts: changeset.tx_graph.txouts.clone(),
+                anchors: changeset.tx_graph.anchors.clone(),
+                seen_ats: changeset.tx_graph.last_seen.clone().into_iter()
+                    .map(|(txid, seen)| (txid, BTreeSet::from([seen])))
+                    .collect(),
+            },
+        };
+        
+        debug!("Applying update for user {}", user_id);
+        wallet.apply_update(update)?;
+        debug!("User {} tip after update: {}", user_id, wallet.local_chain().tip().height());
+    }
 
     let initial_addr = wallet.reveal_next_address(KeychainKind::External).address;
     wallet.reveal_next_address(KeychainKind::Internal);
@@ -231,6 +262,12 @@ pub fn init_wallet_with_changeset(config: &Config, user_id: &str, _changeset: Ch
         trustee_pubkey: init_result.deposit_info.trustee_pubkey.clone(),
     };
 
+    let mnemonic = if init_result.recovery_doc.is_empty() {
+        None
+    } else {
+        Some(init_result.recovery_doc.clone())
+    };
+
     info!("Initialized wallet with changeset for user {}: {}", user_id, deposit_info.address);
-    Ok((wallet, deposit_info))
+    Ok((wallet, deposit_info, mnemonic))
 }

@@ -3,54 +3,24 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 5200
+    "sats": 1300
   },
-  "stabilized_usd": 4.289700999999999,
-  "timestamp": 1743450479,
-  "formatted_datetime": "2025-03-31T19:47:59.622759419+00:00",
+  "stabilized_usd": 1.1046555,
+  "timestamp": 1743534735,
+  "formatted_datetime": "2025-04-01T19:12:15.623476465+00:00",
   "sc_dir": "data_lsp/user_1",
-  "raw_btc_usd": 82733.5,
+  "raw_btc_usd": 85247.5,
   "prices": {},
-  "multisig_addr": "tb1pzf7q0w65zjj3gfsme3t7muscdces3ldq7w7qswszvukqjtlp4p8stxggvp",
+  "multisig_addr": "tb1pyasjd7s8aue93pw9n6g6l5nprt95rnmmh2t0k89ux5r9yr6vpchs64d9v8",
   "utxos": [
     {
-      "txid": "e97c6df24e78a392ba49b9f75ed120fcc4c04212e83e55410ebafe3fd9053ed5",
+      "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 3969,
-      "script_pubkey": "5120c1b969b2508a724f19987c61b4a929b1542f41cec43249e83e4c9900a527beec",
+      "confirmations": 41,
+      "script_pubkey": "512053908d6e2c119a6adcb573006d20f86933908bd336b2656c77128e42b1c9ba5b",
       "height": null,
-      "usd_value": 1.0713884999999999,
-      "spent": false
-    },
-    {
-      "txid": "a979816f5c58809fcf5567a3bbca9a2f6d8b5499d221e0791d113b8f765b92f6",
-      "vout": 0,
-      "amount": 1300,
-      "confirmations": 2361,
-      "script_pubkey": "5120c4ddd6d5057dea9eccce5cdd3c4effcbe066ec7faa994eb7e3475130c40810fd",
-      "height": null,
-      "usd_value": 1.0713884999999999,
-      "spent": false
-    },
-    {
-      "txid": "bdc6dde43e36861ffdd67d76536d4310ea90bd945ec0df30426112c0ba755093",
-      "vout": 0,
-      "amount": 1300,
-      "confirmations": 1179,
-      "script_pubkey": "5120ea30cc2a78ba5276d39af6aba2f2968f0dfbc126c0c161ba1b3b8830f88673f0",
-      "height": null,
-      "usd_value": 1.0713884999999999,
-      "spent": false
-    },
-    {
-      "txid": "2f4b0a61b94218b00b6d63c6b6c3353fec2db4c5d3e625cf1781d1d5c6754993",
-      "vout": 1,
-      "amount": 1300,
-      "confirmations": 8,
-      "script_pubkey": "51202e759be54d25c2f7cda5f1fbc2bb12c0cf1edcd0717a82e387d2eceaadf9b219",
-      "height": null,
-      "usd_value": 1.0755355,
+      "usd_value": 1.1046555,
       "spent": false
     }
   ],
@@ -65,153 +35,23 @@
   "last_hedge_time": 0,
   "short_reduction_amount": null,
   "old_addresses": [
-    "tb1pcxuknvjs3fey7xvc03smf2ffk92z7swwcseyn6p7fjvspff8hmkqcnhdgu",
-    "tb1pcnwad4g90h4fanxwtnwncnhle0sxdmrl42v5adlrgagnp3qgzr7sp9ufkf",
-    "tb1pagcvc2nchff8d5u676469u5k3uxlhsfxcrqkrwsm8wyrp7yxw0cqnjrcgl",
-    "tb1p9e6ehe2dyhp00nd978au9wcjcr83ahxsw9ag9cu86tkw4t0ekgvs8ugmc8",
-    "tb1p64dntslk7atxgvutp84aguppszk74zjpzl4kkk7tc8apckhrnlgsy6k4h0"
+    "tb1p2wgg6m3vzxdx4h94wvqx6g8cdyeepz7nx6ex2mrhz28y9vwfhfdsgk509r"
   ],
   "history": [
     {
-      "txid": "e97c6df24e78a392ba49b9f75ed120fcc4c04212e83e55410ebafe3fd9053ed5",
+      "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
       "vout": 1,
       "amount_sat": 1300,
-      "address": "tb1pcxuknvjs3fey7xvc03smf2ffk92z7swwcseyn6p7fjvspff8hmkqcnhdgu",
+      "address": "tb1p2wgg6m3vzxdx4h94wvqx6g8cdyeepz7nx6ex2mrhz28y9vwfhfdsgk509r",
       "keychain": "External",
-      "timestamp": 1743450481,
-      "confirmations": 0,
+      "timestamp": 1743535515,
+      "confirmations": 3,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 0.0,
-      "spendable": false,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "a979816f5c58809fcf5567a3bbca9a2f6d8b5499d221e0791d113b8f765b92f6",
-      "vout": 0,
-      "amount_sat": 1300,
-      "address": "tb1pcnwad4g90h4fanxwtnwncnhle0sxdmrl42v5adlrgagnp3qgzr7sp9ufkf",
-      "keychain": "External",
-      "timestamp": 1743450508,
-      "confirmations": 0,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 0.0,
-      "spendable": false,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "bdc6dde43e36861ffdd67d76536d4310ea90bd945ec0df30426112c0ba755093",
-      "vout": 0,
-      "amount_sat": 1300,
-      "address": "tb1pagcvc2nchff8d5u676469u5k3uxlhsfxcrqkrwsm8wyrp7yxw0cqnjrcgl",
-      "keychain": "External",
-      "timestamp": 1743450515,
-      "confirmations": 0,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 0.0,
-      "spendable": false,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "e97c6df24e78a392ba49b9f75ed120fcc4c04212e83e55410ebafe3fd9053ed5",
-      "vout": 1,
-      "amount_sat": 1300,
-      "address": "tb1pcxuknvjs3fey7xvc03smf2ffk92z7swwcseyn6p7fjvspff8hmkqcnhdgu",
-      "keychain": "External",
-      "timestamp": 1743451195,
-      "confirmations": 3953,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.0713884999999999,
-      "spendable": true,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "a979816f5c58809fcf5567a3bbca9a2f6d8b5499d221e0791d113b8f765b92f6",
-      "vout": 0,
-      "amount_sat": 1300,
-      "address": "tb1pcnwad4g90h4fanxwtnwncnhle0sxdmrl42v5adlrgagnp3qgzr7sp9ufkf",
-      "keychain": "External",
-      "timestamp": 1743451195,
-      "confirmations": 2345,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.0713884999999999,
-      "spendable": true,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "bdc6dde43e36861ffdd67d76536d4310ea90bd945ec0df30426112c0ba755093",
-      "vout": 0,
-      "amount_sat": 1300,
-      "address": "tb1pagcvc2nchff8d5u676469u5k3uxlhsfxcrqkrwsm8wyrp7yxw0cqnjrcgl",
-      "keychain": "External",
-      "timestamp": 1743451195,
-      "confirmations": 1163,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.0713884999999999,
-      "spendable": true,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "2f4b0a61b94218b00b6d63c6b6c3353fec2db4c5d3e625cf1781d1d5c6754993",
-      "vout": 1,
-      "amount_sat": 1300,
-      "address": "tb1p9e6ehe2dyhp00nd978au9wcjcr83ahxsw9ag9cu86tkw4t0ekgvs8ugmc8",
-      "keychain": "External",
-      "timestamp": 1743452728,
-      "confirmations": 0,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 0.0,
-      "spendable": false,
-      "derivation_path": "",
-      "spent": false
-    },
-    {
-      "txid": "2f4b0a61b94218b00b6d63c6b6c3353fec2db4c5d3e625cf1781d1d5c6754993",
-      "vout": 1,
-      "amount_sat": 1300,
-      "address": "tb1p9e6ehe2dyhp00nd978au9wcjcr83ahxsw9ag9cu86tkw4t0ekgvs8ugmc8",
-      "keychain": "External",
-      "timestamp": 1743453725,
-      "confirmations": 8,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 1.0755355,
+      "stable_value_usd": 1.1046555,
       "spendable": true,
       "derivation_path": "",
       "spent": false
@@ -219,50 +59,10 @@
   ],
   "change_log": [
     {
-      "timestamp": 1743450481,
+      "timestamp": 1743535515,
       "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
-    },
-    {
-      "timestamp": 1743450508,
-      "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
-    },
-    {
-      "timestamp": 1743450515,
-      "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
-    },
-    {
-      "timestamp": 1743451195,
-      "change_type": "recovery",
-      "btc_delta": 0.000039,
-      "usd_delta": 3.2141654999999996,
-      "service": "full-resync",
-      "details": "3 UTXOs recovered via full scan"
-    },
-    {
-      "timestamp": 1743452728,
-      "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
-    },
-    {
-      "timestamp": 1743453725,
-      "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 1.0755355,
+      "btc_delta": 0.000013,
+      "usd_delta": 1.1046555,
       "service": "deposit-service",
       "details": "1 UTXOs confirmed"
     }
