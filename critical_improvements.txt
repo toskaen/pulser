@@ -1,0 +1,84 @@
+# Code Review and Enhancement Opportunities for Pulser
+
+## Common Library Issues
+
+### error.rs
+1. Error conversions are numerous but lack structured context data, making debugging difficult
+2. No distinction between transient failures (retryable) and permanent errors
+3. Missing categorization of errors for analytics/monitoring purposes
+
+### price_feed.rs
+1. Price update throttling (1s) is too slow for volatile markets
+2. Inefficient WebSocket connection handling with blocking operations 
+3. Poor connection recovery during network interruptions
+
+### storage.rs
+1. File-based storage with mutex locks won't scale for production load
+2. Retry mechanism uses fixed attempts (3) regardless of operation criticality
+3. No database abstraction layer for future migration
+
+### task_manager.rs
+1. In-memory task locks won't work across multiple service instances
+2. Fixed 5-minute stale task threshold can lead to resource hoarding
+3. Uses blocking calls in async drop implementations
+
+### types.rs
+1. `StableChain` accumulates unlimited history entries without pruning
+2. Missing validation for important fields (addresses, paths)
+3. Financial calculations lack proper decimal precision handling
+
+## Deposit Service Issues
+
+### api.rs
+1. `ActivityGuard` mishandles async drops, potentially leaving resources locked
+2. Fixed timeouts for all operations regardless of complexity
+3. Webhook notification uses fire-and-forget pattern without confirmation
+
+### monitor.rs
+1. WebSocket connection lacks proper authentication and TLS verification
+2. No handling of blockchain reorganizations
+3. Fallback sync uses fixed intervals rather than adaptive retries
+
+### webhook.rs (Critical Performance Issues)
+1. Uses file-based persistence for retry queue with global mutex contention
+2. Fixed retry intervals create "thundering herd" problems during mass retries
+3. No batching of notifications to the same endpoint
+
+## Enhancement Recommendations
+
+### Storage Improvements
+1. Implement a proper database backend (PostgreSQL/SQLite) with appropriate schema
+2. Create a transaction abstraction layer for atomic operations
+3. Add data migration tools for future schema changes
+
+### Price Feed Enhancements
+1. Implement true redundant price feeds with voting mechanism
+2. Add configurable throttling based on market volatility
+3. Improve connection management with proper backoff and jitter
+
+### Webhook System Redesign
+1. Implement an event queue with proper persistence (Redis/RabbitMQ)
+2. Add recipient-aware rate limiting with exponential backoff
+3. Support batch notifications to reduce HTTP overhead
+
+### Security Enhancements
+1. Move secrets to environment variables or a vault service
+2. Add proper input validation on all API endpoints
+3. Implement rate limiting and authentication for all public endpoints
+
+## UX Evaluation
+
+### Current Pain Points
+1. **Registration Flow**: Complex with minimal guidance for users
+2. **Error Visibility**: Technical errors exposed without user-friendly explanations
+3. **Transaction Status**: Limited visibility into processing stages and confirmation times
+
+### Enhancement Opportunities
+1. **Status Dashboard**: Implement real-time status for deposits/withdrawals/hedging
+2. **Mobile Experience**: Add mobile-friendly API endpoints with push notification support
+3. **Guided Setup**: Create step-by-step wallet setup with clear recovery documentation
+
+### Critical Path to Production
+1. Fix webhook architecture to ensure reliable delivery
+2. Replace file-based storage with proper database
+3. Enhance error handling and monitoring before integrating with hedging service

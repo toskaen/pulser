@@ -1,0 +1,22 @@
+# hedging-service/config/service_config.toml
+deribit_id = "kYlR7m6s"
+deribit_secret = "i2ZQLPi6nlnwfQKCHVF0VqYEyC9jTxMBiPfWvSpk7t0"
+base_short_percent = 0.21       # Initial hedge, adjustable
+trigger_step_base = 0.03        # Base step for dynamic hedging
+max_hedge_cap_base = 3.0        # Base cap, scales with drawdowns
+harvest_pnl_threshold = 0.15    # PNL harvest trigger
+maintenance_margin_requirement = 1.2  # Collateral ratio
+target_volatility = 0.15        # Annualized volatility target
+options_strikes = [0.9, 0.8, 0.7, 0.6, 0.5]  # Dynamic laddering
+iv_high_threshold = 80.0        # IV for preemption and options
+drop_urgency_threshold = 0.3    # Urgent options buy override
+ma_drop_7d_threshold = 0.02     # 7-day MA drop trigger
+ma_drop_21d_threshold = 0.05    # 21-day MA drop trigger
+vol_adjust_lower = 0.9          # Volatility lower bound (90%)
+vol_adjust_upper = 1.1          # Volatility upper bound (110%)
+hedge_reduction_factor = 0.15   # Reduction percentage
+hedge_increase_factor = 0.20    # Increase percentage
+depth_threshold = 2.0           # Market depth trigger
+volume_increase_factor = 1.2    # Volume increase for momentum
+stop_loss_factor = 1.1          # Stop-loss price increase
+float_sweep_threshold = 0.03    # Float sweep in BTC
