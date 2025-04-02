@@ -3,7 +3,8 @@ pub mod wallet;
 pub mod keys;
 pub mod monitor;
 pub mod webhook;
-pub mod api;
+pub mod api; // Points to src/api/mod.rs
+pub use api::*; // Re-exports all public items from api/
 pub mod init_pulser_wallet;
 pub mod apply_changeset;
 

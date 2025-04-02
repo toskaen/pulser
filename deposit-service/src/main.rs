@@ -16,10 +16,9 @@ use deposit_service::api;
 use deposit_service::config::Config;
 use deposit_service::monitor::{monitor_deposits, MonitorConfig};
 use deposit_service::wallet::DepositWallet;
-use deposit_service::webhook::{start_retry_task, WebhookConfig};
 use futures::future::join_all;
 use bdk_wallet::KeychainKind;
-
+use common::webhook::{RetryQueue, WebhookConfig, WebhookManager;};
 
 // Constants
 const STATUS_UPDATE_INTERVAL_SECS: u64 = 60;
@@ -95,14 +94,8 @@ async fn main() -> Result<(), PulserError> {
 let data_lsp = config.data_dir.clone();
     fs::create_dir_all(&data_lsp)?;
     
-  let webhook_config = WebhookConfig {
-        max_retries: config.webhook_max_retries,
-        timeout_secs: config.webhook_timeout_secs,
-        max_retry_time_secs: config.webhook_max_retry_time_secs,
-        retry_max_attempts: config.webhook_retry_max_attempts,
-        base_backoff_ms: config.webhook_base_backoff_ms,
-        retry_interval_secs: config.webhook_retry_interval_secs,
-    };
+
+let webhook_config = WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?);
 
     // Initialize logging
     let log_level = match config.log_level.to_lowercase().as_str() {
@@ -126,7 +119,7 @@ let data_lsp = config.data_dir.clone();
     let service_status = Arc::new(Mutex::new(state_manager.load_service_status().await?));
     let wallets = Arc::new(Mutex::new(HashMap::<String, (DepositWallet, StableChain)>::new()));
     let user_statuses = Arc::new(Mutex::new(HashMap::<String, UserStatus>::new()));
-    let retry_queue = Arc::new(Mutex::new(VecDeque::<WebhookRetry>::new()));
+let retry_queue = Arc::new(Mutex::new(RetryQueue::new_memory(webhook_config.retry_max_attempts)));
     let price_feed = Arc::new(PriceFeed::new());
     let active_tasks_manager = Arc::new(UserTaskLock::new());
     let price_info = Arc::new(Mutex::new(PriceInfo {
@@ -231,13 +224,28 @@ let data_lsp = config.data_dir.clone();
 info!("Waiting for price data from any source...");
 let mut price_ready = false;
 for attempt in 0..30 {  // Wait up to 30 seconds
-    // Check global price info first (which includes all sources)
-    let global_price = price_info.lock().await.raw_btc_usd;
-    if global_price > 0.0 {
+    // Only check the global price cache, don't trigger fetches
+    let price_data = price_info.lock().await.clone();
+    if price_data.raw_btc_usd > 0.0 {
         price_ready = true;
-        info!("Price data ready from global cache: ${:.2}", global_price);
+        // For the first join:
+let sources = price_data.price_feeds.keys()
+    .map(|k| k.as_str())
+    .collect::<Vec<_>>()
+    .join(", ");
+
+// And for the second join:
+info!("Price data ready from fallback: ${:.2} ({})", 
+    price_data.raw_btc_usd,
+    price_data.price_feeds.keys()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", "));
         break;
     }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    debug!("Waiting for price data, attempt {}/30", attempt + 1);
+
     
     // Try to trigger fallback price fetching
     match fetch_btc_usd_price(&client, &price_feed).await {
@@ -335,26 +343,30 @@ if !price_ready {
         }
     });
 
-    let retry_handle = tokio::spawn({
-        let retry_queue = retry_queue.clone();
-        let state_manager = state_manager.clone();
-        let client = client.clone(); // Clone before move
-        let webhook_url = config.webhook_url.clone();
-        let webhook_config = WebhookConfig::from_toml(&toml::from_str(&fs::read_to_string("config/service_config.toml")?)?);
-        let shutdown_tx_clone = shutdown_tx.clone(); // Clone before move
-        async move {
-            start_retry_task(
-                client,
-                retry_queue,
-                webhook_url,
-                webhook_config,
-                shutdown_tx_clone.subscribe(),
-                state_manager,
-            ).await?;
-            info!("Retry handle completed");
-            Ok::<(), PulserError>(())
+let webhook_manager = WebhookManager::new(client.clone(), webhook_config.clone(), retry_queue.clone()).await;
+let retry_handle = tokio::spawn({
+    let retry_queue = retry_queue.clone();
+    let client = client.clone();
+    let webhook_config = webhook_config.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Retry task shutting down");
+                    webhook_manager.shutdown().await?;
+                    break;
+                }
+                _ = interval.tick() => {
+                    retry_queue.lock().await.retry_failed(&client, &webhook_config.secret, |a| webhook_config.calculate_backoff(a)).await?;
+                }
+            }
         }
-    });
+        info!("Retry handle completed");
+        Ok::<(), PulserError>(())
+    }
+});
     
     let monitor_handle = tokio::spawn({
         let config = config.clone();
@@ -455,7 +467,7 @@ let sync_handle = tokio::spawn({
                                 esplora_urls.clone(),
                                 &blockchain,
                                 state_manager.clone(),
-                                retry_queue.clone(),
+    webhook_manager.clone(),
                                 &webhook_url,
                                 &webhook_config,
                                 client.clone(),
@@ -544,7 +556,7 @@ status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
             esplora_urls.clone(),
             state_manager.clone(),
             sync_tx.clone(),
-            retry_queue.clone(),
+    webhook_manager.clone(), // Replace retry_queue
             config.webhook_url.clone(),
             webhook_config, // Pass constructed WebhookConfig
             client.clone(),

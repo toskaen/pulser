@@ -29,6 +29,7 @@ api_key = "test_api_key"
 request_timeout_secs = 30
 
 # Webhook configuration
+# Webhook configuration
 webhook_enabled = true
 webhook_url = "http://127.0.0.1:8085/webhook"
 webhook_secret = "your_webhook_secret"
@@ -37,6 +38,10 @@ webhook_timeout_secs = 5
 webhook_max_retry_time_secs = 120
 webhook_retry_max_attempts = 5
 webhook_base_backoff_ms = 500
+webhook_jitter_factor = 0.25        # New: Jitter for backoff
+webhook_batch_size = 10             # New: Max items per batch
+webhook_batch_interval_ms = 100     # New: Delay between batches
+webhook_max_backoff_secs = 3600     # New: Max backoff time
 
 # Monitor configuration
 fallback_sync_interval_secs = 60  # 15min, matches Fallback

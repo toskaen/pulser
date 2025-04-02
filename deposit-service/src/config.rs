@@ -44,31 +44,38 @@ pub struct Config {
     pub ldk_address: String,
     pub max_fee_percent: f64,
     
-    // Webhook settings
-    pub webhook_url: String,
-    pub webhook_max_retries: u32,
-    pub webhook_timeout_secs: u64,
-    
     // Monitoring settings
     pub max_concurrent_users: usize,
     
     // Price settings
     pub price_feed_url: String,        // NEW: For Deribit WebSocket
     pub price_cache_duration_secs: u64,
+    
 
+       // Updated Webhook settings
     #[serde(default = "default_webhook_enabled")]
     pub webhook_enabled: bool,
+    pub webhook_url: String,
     #[serde(default = "default_webhook_secret")]
     pub webhook_secret: String,
+    #[serde(default = "default_webhook_max_retries")]
+    pub webhook_max_retries: u32,
+    #[serde(default = "default_webhook_timeout_secs")]
+    pub webhook_timeout_secs: u64,
     #[serde(default = "default_webhook_max_retry_time_secs")]
     pub webhook_max_retry_time_secs: u64,
     #[serde(default = "default_webhook_retry_max_attempts")]
     pub webhook_retry_max_attempts: u32,
     #[serde(default = "default_webhook_base_backoff_ms")]
     pub webhook_base_backoff_ms: u64,
-    #[serde(default = "default_webhook_retry_interval_secs")]
-    pub webhook_retry_interval_secs: u64,
-    
+    #[serde(default = "default_webhook_jitter_factor")]
+    pub webhook_jitter_factor: f64,        // New
+    #[serde(default = "default_webhook_batch_size")]
+    pub webhook_batch_size: usize,         // New
+    #[serde(default = "default_webhook_batch_interval_ms")]
+    pub webhook_batch_interval_ms: u64,    // New
+    #[serde(default = "default_webhook_max_backoff_secs")]
+    pub webhook_max_backoff_secs: u64,     // New
         #[serde(default = "default_deposit_window_hours")]
     pub deposit_window_hours: u64,
     #[serde(default = "default_monitor_batch_size")]
@@ -108,10 +115,15 @@ impl Config {
 
 fn default_webhook_enabled() -> bool { true }
 fn default_webhook_secret() -> String { "your_webhook_secret".to_string() }
+fn default_webhook_max_retries() -> u32 { 3 }
+fn default_webhook_timeout_secs() -> u64 { 5 }
 fn default_webhook_max_retry_time_secs() -> u64 { 120 }
 fn default_webhook_retry_max_attempts() -> u32 { 5 }
 fn default_webhook_base_backoff_ms() -> u64 { 500 }
-fn default_webhook_retry_interval_secs() -> u64 { 5 }
+fn default_webhook_jitter_factor() -> f64 { 0.25 }
+fn default_webhook_batch_size() -> usize { 10 }
+fn default_webhook_batch_interval_ms() -> u64 { 100 }
+fn default_webhook_max_backoff_secs() -> u64 { 3600 }
 fn default_deposit_window_hours() -> u64 { 24 }
 fn default_monitor_batch_size() -> usize { 15 }
 fn default_websocket_url() -> String { "wss://mempool.space/testnet/api/v1/ws".to_string() }

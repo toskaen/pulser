@@ -5,11 +5,11 @@
   "accumulated_btc": {
     "sats": 1300
   },
-  "stabilized_usd": 1.1050324999999999,
+  "stabilized_usd": 1.1050325,
   "timestamp": 1743534757,
   "formatted_datetime": "2025-04-01T19:12:37.206671103+00:00",
   "sc_dir": "data_lsp/user_2",
-  "raw_btc_usd": 85247.5,
+  "raw_btc_usd": 86400.0,
   "prices": {},
   "multisig_addr": "tb1p79yx0hvqawkflgpmp2tu2dx2elxc5g9fqamwsz04llcze2jvyfpsd0qavy",
   "utxos": [
@@ -17,10 +17,10 @@
       "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 16,
+      "confirmations": 382,
       "script_pubkey": "51206035364a49fa4b57af87f8cd172a63c69c0b22d5d8b33366f508f71bd071ffec",
       "height": null,
-      "usd_value": 1.1050324999999999,
+      "usd_value": 1.1050325,
       "spent": false
     }
   ],
@@ -51,7 +51,7 @@
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 1.1050324999999999,
+      "stable_value_usd": 1.1050325,
       "spendable": true,
       "derivation_path": "",
       "spent": false
@@ -62,7 +62,7 @@
       "timestamp": 1743540777,
       "change_type": "deposit",
       "btc_delta": 0.000013,
-      "usd_delta": 1.1050324999999999,
+      "usd_delta": 1.1050325,
       "service": "deposit-service",
       "details": "1 UTXOs confirmed"
     }
