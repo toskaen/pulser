@@ -65,7 +65,9 @@ pub enum PulserError {
     #[error("Bitcoin error: {0}")]
     BitcoinError(String),
         #[error("Consensus encoding error: {0}")]
-            ConsensusError(#[from] ConsensusError), // Add this
+            ConsensusError(#[from] ConsensusError),
+            #[error("Webhook error: {0}")]
+    WebhookError(String),
 
 }
 
@@ -91,7 +93,9 @@ impl ResponseError for PulserError {
             PulserError::TaprootError(_) => StatusCode::BAD_REQUEST,
             PulserError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             PulserError::BitcoinError(_) => StatusCode::BAD_REQUEST,
-                        PulserError::ConsensusError(_) => StatusCode::INTERNAL_SERVER_ERROR, // Add this
+       PulserError::ConsensusError(_) => StatusCode::INTERNAL_SERVER_ERROR, 
+          PulserError::WebhookError(_) => StatusCode::BAD_GATEWAY,
+
         }
     }
 }

@@ -761,6 +761,54 @@ pub async fn get_deribit_price(&self) -> Result<f64, PulserError> {
             Err(_) => Err(PulserError::NetworkError("Deribit request timed out".to_string())),
         }
     }
+
+// In common/src/deribit.rs, add to PriceFeed impl
+pub async fn get_option_price(&self, strike: f64, option_type: &str) -> Result<f64, PulserError> {
+    let instrument = format!("BTC-{}-PUT", strike.round() as i64); // Adjust for Deribit format
+    let url = format!("https://test.deribit.com/api/v2/public/ticker?instrument_name={}", instrument);
+    
+    match timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS), self.client.get(&url).send()).await {
+        Ok(Ok(response)) => {
+            if !response.status().is_success() {
+                return Err(PulserError::ApiError(format!("Deribit API error: {}", response.status())));
+            }
+            match timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS), response.json::<Value>()).await {
+                Ok(Ok(json)) => {
+                    json["result"]["last_price"].as_f64()
+                        .filter(|&price| price > 0.0)
+                        .ok_or_else(|| PulserError::PriceFeedError("Missing or invalid option price".to_string()))
+                }
+                Ok(Err(e)) => Err(PulserError::ApiError(format!("Failed to parse Deribit option response: {}", e))),
+                Err(_) => Err(PulserError::ApiError("Timeout parsing Deribit option response".to_string())),
+            }
+        }
+        Ok(Err(e)) => Err(PulserError::NetworkError(format!("Deribit option request failed: {}", e))),
+        Err(_) => Err(PulserError::NetworkError("Deribit option request timed out".to_string())),
+    }
 }
 
+// Add to PriceFeed in common/src/deribit.rs
+pub async fn get_combo_price(&self, leg1: &str, leg2: &str) -> Result<f64, PulserError> {
+    let instrument = format!("{}_{}", leg1, leg2);
+    let url = format!("https://test.deribit.com/api/v2/public/ticker?instrument_name={}", instrument);
+   match timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS), self.client.get(&url).send()).await {
+        Ok(Ok(response)) => {
+            if !response.status().is_success() {
+                return Err(PulserError::ApiError(format!("Deribit API error: {}", response.status())));
+            }
+            match timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS), response.json::<Value>()).await {
+                Ok(Ok(json)) => {
+                    json["result"]["last_price"].as_f64()
+                        .filter(|&price| price > 0.0)
+                        .ok_or_else(|| PulserError::PriceFeedError("Missing or invalid option price".to_string()))
+                }
+                Ok(Err(e)) => Err(PulserError::ApiError(format!("Failed to parse Deribit option response: {}", e))),
+                Err(_) => Err(PulserError::ApiError("Timeout parsing Deribit option response".to_string())),
+            }
+        }
+        Ok(Err(e)) => Err(PulserError::NetworkError(format!("Deribit option request failed: {}", e))),
+        Err(_) => Err(PulserError::NetworkError("Deribit option request timed out".to_string())),
+    }
+}
 
+}
