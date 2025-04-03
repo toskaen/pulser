@@ -50,7 +50,7 @@ impl HealthCheck for RedisCheck {
         match timeout(Duration::from_secs(3), client.get_async_connection()).await {
             Ok(Ok(mut conn)) => {
                 // Ping Redis
-                match timeout(Duration::from_secs(2), redis::cmd("PING").query_async::<_, String>(&mut conn)).await {
+                match timeout(Duration::from_secs(2), conn.ping::<String>()).await {
                     Ok(Ok(response)) if response == "PONG" => {
                         Ok(HealthResult::Healthy)
                     },

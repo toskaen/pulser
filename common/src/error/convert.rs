@@ -1,4 +1,5 @@
 use std::fmt;
+use super::types::ErrorCategory;
 use super::types::PulserError;
 use super::context::ErrorContext;
 
@@ -72,8 +73,15 @@ impl FromError<bitcoin::address::ParseError> for PulserError {
     }
 }
 
-// Generic error handler for string errors
-impl<E: fmt::Display> FromError<E> for PulserError {
+// Generic error handler for string errors - but we need to limit this with trait bounds
+// to avoid conflicting with the more specific implementations
+impl<E: fmt::Display> FromError<E> for PulserError
+where
+    E: 'static, // Requiring 'static helps the compiler disambiguate this implementation
+    E: fmt::Display,
+    E: std::error::Error,
+    PulserError: From<E> + std::error::Error, // We require the Error trait to avoid conflicts
+{
     fn from_err(error: E, context: Option<ErrorContext>) -> PulserError {
         let err = PulserError::InternalError(error.to_string());
         if let Some(ctx) = context {
@@ -115,11 +123,9 @@ impl From<redis::RedisError> for PulserError {
     }
 }
 
-// Bitcoin errors - many of these can be moved here
+// Bitcoin errors
 impl From<bitcoin::consensus::encode::Error> for PulserError {
     fn from(err: bitcoin::consensus::encode::Error) -> Self {
         PulserError::from_err(err, None)
     }
 }
-
-// Add more conversions for common types here...

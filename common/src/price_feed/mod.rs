@@ -6,15 +6,17 @@ use serde::{Serialize, Deserialize};
 use crate::error::PulserError;
 use crate::types::PriceInfo;
 
-pub mod deribit;
+// Re-export content from other modules
+pub mod sources;
 pub mod http_sources;
 pub mod cache;
 pub mod aggregator;
-pub mod sources;
 pub mod websocket;
+// Instead of having separate deribit.rs, use the one in sources
+pub use self::sources::deribit;
 
-// Re-export main components
-pub use self::deribit::PriceFeed;
+// Re-export main components - using the PriceFeed from sources/deribit
+pub use self::sources::deribit::DeribitProvider as PriceFeed;
 pub use self::http_sources::{emergency_fetch_price, fetch_btc_usd_price};
 pub use self::cache::{get_cached_price, is_price_cache_stale, save_price_history, load_price_history};
 pub use self::aggregator::PriceAggregator;

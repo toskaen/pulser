@@ -37,6 +37,14 @@ impl BinanceProvider {
 
 #[async_trait]
 impl PriceProvider for BinanceProvider {
+    fn name(&self) -> &str {
+        "Binance"
+    }
+    
+    fn weight(&self) -> f64 {
+        self.weight
+    }
+    
     async fn fetch_price(&self, client: &Client) -> Result<PriceSource, PulserError> {
         let url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT";
         
@@ -83,13 +91,5 @@ impl PriceProvider for BinanceProvider {
             error_count: 0,
             last_success: now,
         })
-    }
-    
-    fn name(&self) -> &str {
-        "Binance"
-    }
-    
-    fn weight(&self) -> f64 {
-        self.weight
     }
 }

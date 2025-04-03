@@ -71,21 +71,3 @@ impl fmt::Display for ErrorContext {
         Ok(())
     }
 }
-
-#[macro_export]
-macro_rules! with_context {
-    ($err:expr, $code:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!()))
-    };
-    
-    ($err:expr, $code:expr, $user_id:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!())
-            .with_user_id($user_id))
-    };
-    
-    ($err:expr, $code:expr, $user_id:expr, $detail_key:expr, $detail_value:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!())
-            .with_user_id($user_id)
-            .with_detail($detail_key, $detail_value))
-    };
-}

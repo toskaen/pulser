@@ -40,9 +40,9 @@ impl HealthCheck for BlockchainCheck {
                 // Now check the block timestamp to ensure it's recent
                 match timeout(Duration::from_secs(5), self.client.get_block_hash(height)).await {
                     Ok(Ok(hash)) => {
-                        match timeout(Duration::from_secs(5), self.client.get_block_header(&hash)).await {
-                            Ok(Ok(header)) => {
-                                let block_time = header.time as u64;
+                        match timeout(Duration::from_secs(5), self.client.get_block_info(&hash)).await {
+                            Ok(Ok(block_info)) => {
+                                let block_time = block_info.time() as u64;
                                 let now = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_else(|_| Duration::from_secs(0))
@@ -60,12 +60,12 @@ impl HealthCheck for BlockchainCheck {
                             },
                             Ok(Err(e)) => {
                                 Ok(HealthResult::Degraded { 
-                                    reason: format!("Failed to get block header: {}", e)
+                                    reason: format!("Failed to get block info: {}", e)
                                 })
                             },
                             Err(_) => {
                                 Ok(HealthResult::Degraded { 
-                                    reason: "Timeout fetching block header".to_string()
+                                    reason: "Timeout fetching block info".to_string()
                                 })
                             }
                         }
