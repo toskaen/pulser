@@ -37,7 +37,8 @@ impl RedisCheck {
 #[async_trait]
 impl HealthCheck for RedisCheck {
     async fn check(&self) -> Result<HealthResult, PulserError> {
-        let client = match redis::Client::open(&self.redis_url) {
+let client = match redis::Client::open(self.redis_url.as_str()) {
+
             Ok(client) => client,
             Err(e) => {
                 return Ok(HealthResult::Unhealthy { 
@@ -47,10 +48,12 @@ impl HealthCheck for RedisCheck {
         };
         
         // Try to connect
-        match timeout(Duration::from_secs(3), client.get_async_connection()).await {
+match timeout(Duration::from_secs(3), client.get_multiplexed_async_connection()).await {
+
             Ok(Ok(mut conn)) => {
                 // Ping Redis
-match timeout(Duration::from_secs(2), redis::cmd("PING").query_async::<_, String>(&mut conn)).await {
+match timeout(Duration::from_secs(2), redis::cmd("PING").query_async::<String>(&mut conn)).await {
+
                     Ok(Ok(response)) if response == "PONG" => {
                         Ok(HealthResult::Healthy)
                     },

@@ -1,6 +1,6 @@
+// common/src/webhook/retry.rs
 use crate::error::PulserError;
 use log::{debug, info, warn};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -70,7 +70,7 @@ impl RetryQueue {
                 ..
             } => {
                 let mut conn = client
-                    .get_async_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| PulserError::StorageError(format!("Redis error: {}", e)))?;
 
@@ -78,8 +78,8 @@ impl RetryQueue {
                     .map_err(|e| PulserError::StorageError(format!("JSON error: {}", e)))?;
 
                 // Store in sorted set with score as next_attempt time
-                redis::cmd("ZADD")
-.arg(queue_key.clone()) // Use cloned value, not mutable reference
+                let _: () = redis::cmd("ZADD")
+                    .arg(queue_key.clone())
                     .arg(entry.next_attempt)
                     .arg(entry_json)
                     .query_async(&mut conn)
@@ -112,13 +112,13 @@ impl RetryQueue {
                 ..
             } => {
                 let mut conn = client
-                    .get_async_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| PulserError::StorageError(format!("Redis error: {}", e)))?;
 
                 // Get and remove first entry ready for retry (with score <= now)
                 let result: Vec<String> = redis::cmd("ZRANGEBYSCORE")
-                    .arg(queue_key)
+                    .arg(queue_key.clone())
                     .arg(0)
                     .arg(now)
                     .arg("LIMIT")
@@ -135,10 +135,10 @@ impl RetryQueue {
                 let entry_json = &result[0];
                 
                 // Remove from queue
-                redis::cmd("ZREM")
-                    .arg(queue_key)
+                let _: () = redis::cmd("ZREM")
+                    .arg(queue_key.clone())
                     .arg(entry_json)
-.query_async(&mut conn)
+                    .query_async(&mut conn)
                     .await
                     .map_err(|e| PulserError::StorageError(format!("Redis error: {}", e)))?;
 
@@ -167,7 +167,7 @@ impl RetryQueue {
                 ..
             } => {
                 let mut conn = client
-                    .get_async_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| PulserError::StorageError(format!("Redis error: {}", e)))?;
 
@@ -175,8 +175,8 @@ impl RetryQueue {
                     .map_err(|e| PulserError::StorageError(format!("JSON error: {}", e)))?;
 
                 // Add to deadletter queue
-                redis::cmd("ZADD")
-                    .arg(deadletter_key)
+                let _: () = redis::cmd("ZADD")
+                    .arg(deadletter_key.clone())
                     .arg(super::now()) // Current time as score
                     .arg(entry_json)
                     .query_async(&mut conn)
@@ -217,7 +217,7 @@ impl RetryQueue {
                     Ok(_) => {
                         info!("Successfully delivered retry webhook to {}, entry id: {}", entry.endpoint, entry.id);
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         entry.attempts += 1;
                         
                         if entry.attempts >= self.max_attempts {
@@ -255,11 +255,12 @@ impl RetryQueue {
             let before_count = match &self.strategy {
                 RetryStrategy::Memory(queue) => queue.len(),
                 RetryStrategy::Redis { client, queue_key, .. } => {
-                    let mut conn = client.get_async_connection().await?;
-let count: usize = redis::cmd("ZCARD")
-    .arg(queue_key.clone())
-    .query_async(&mut conn)
-    .await?;
+                    let mut conn = client.get_multiplexed_async_connection().await?;
+                    let count: usize = redis::cmd("ZCARD")
+                        .arg(queue_key.clone())
+                        .query_async(&mut conn)
+                        .await?;
+                    count
                 }
             };
             
@@ -268,11 +269,12 @@ let count: usize = redis::cmd("ZCARD")
             let after_count = match &self.strategy {
                 RetryStrategy::Memory(queue) => queue.len(),
                 RetryStrategy::Redis { client, queue_key, .. } => {
-                    let mut conn = client.get_async_connection().await?;
-let count: usize = redis::cmd("ZCARD")
-    .arg(queue_key.clone())
-    .query_async(&mut conn)
-    .await?;
+                    let mut conn = client.get_multiplexed_async_connection().await?;
+                    let count: usize = redis::cmd("ZCARD")
+                        .arg(queue_key.clone())
+                        .query_async(&mut conn)
+                        .await?;
+                    count
                 }
             };
             

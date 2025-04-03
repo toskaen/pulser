@@ -1,7 +1,7 @@
+// common/src/error/convert.rs
 use std::fmt;
-use super::types::ErrorCategory;
-use super::types::PulserError;
 use super::context::ErrorContext;
+use super::types::PulserError;
 
 // Trait for converting any error to PulserError
 pub trait FromError<E> {
@@ -45,6 +45,12 @@ impl_from_error!(FromJsonError, serde_json::Error, StorageError);
 impl_from_error!(FromReqwestError, reqwest::Error, NetworkError);
 impl_from_error!(FromTomlError, toml::de::Error, ConfigError);
 impl_from_error!(FromRedisError, redis::RedisError, StorageError);
+impl_from_error!(FromBincodeError, bincode::Error, StorageError);
+impl_from_error!(FromSystemTimeError, std::time::SystemTimeError, InternalError);
+impl_from_error!(FromEsploraError, Box<bdk_esplora::esplora_client::Error>, ApiError);
+impl_from_error!(FromCannotConnectError, bdk_chain::local_chain::CannotConnectError, WalletError);
+impl_from_error!(FromFromScriptError, bitcoin::address::FromScriptError, BitcoinError);
+impl_from_error!(FromParseIntError, std::num::ParseIntError, InvalidInput);
 
 // BDK errors
 impl_from_error!(FromBdkDescriptorError, bdk_wallet::descriptor::DescriptorError, WalletError);
@@ -53,7 +59,7 @@ impl_from_error!(FromBdkKeyError, bdk_wallet::keys::KeyError, WalletError);
 // Specific conversions that need custom handling
 impl FromError<bitcoin::consensus::encode::Error> for PulserError {
     fn from_err(error: bitcoin::consensus::encode::Error, context: Option<ErrorContext>) -> PulserError {
-        let err = PulserError::ConsensusError(error.to_string());
+        let err = PulserError::BitcoinError(format!("Consensus error: {}", error));
         if let Some(ctx) = context {
             err.add_context(ctx)
         } else {
@@ -73,27 +79,9 @@ impl FromError<bitcoin::address::ParseError> for PulserError {
     }
 }
 
-// Generic error handler for string errors - but we need to limit this with trait bounds
-// to avoid conflicting with the more specific implementations
-impl<E: fmt::Display> FromError<E> for PulserError
-where
-    E: 'static, // Requiring 'static helps the compiler disambiguate this implementation
-    E: fmt::Display,
-    E: std::error::Error,
-    PulserError: From<E> + std::error::Error, // We require the Error trait to avoid conflicts
-{
-    fn from_err(error: E, context: Option<ErrorContext>) -> PulserError {
-        let err = PulserError::InternalError(error.to_string());
-        if let Some(ctx) = context {
-            err.add_context(ctx)
-        } else {
-            err
-        }
-    }
-}
-
-// Implement From for common error types
-// This is where we centralize all the conversion logic
+// IMPORTANT: Remove the generic implementation completely
+// DO NOT include this implementation anymore:
+// impl<E: fmt::Display> FromError<E> for PulserError where ...
 
 // IO errors
 impl From<std::io::Error> for PulserError {
@@ -127,5 +115,53 @@ impl From<redis::RedisError> for PulserError {
 impl From<bitcoin::consensus::encode::Error> for PulserError {
     fn from(err: bitcoin::consensus::encode::Error) -> Self {
         PulserError::from_err(err, None)
+    }
+}
+
+// Bincode errors
+impl From<bincode::Error> for PulserError {
+    fn from(err: bincode::Error) -> Self {
+        PulserError::StorageError(format!("Bincode error: {}", err))
+    }
+}
+
+// SystemTime errors
+impl From<std::time::SystemTimeError> for PulserError {
+    fn from(err: std::time::SystemTimeError) -> Self {
+        PulserError::InternalError(format!("SystemTime error: {}", err))
+    }
+}
+
+// Esplora errors
+impl From<Box<bdk_esplora::esplora_client::Error>> for PulserError {
+    fn from(err: Box<bdk_esplora::esplora_client::Error>) -> Self {
+        PulserError::ApiError(format!("Esplora error: {}", err))
+    }
+}
+
+// CannotConnect errors
+impl From<bdk_chain::local_chain::CannotConnectError> for PulserError {
+    fn from(err: bdk_chain::local_chain::CannotConnectError) -> Self {
+        PulserError::WalletError(format!("Cannot connect: {}", err))
+    }
+}
+
+// FromScript errors
+impl From<bitcoin::address::FromScriptError> for PulserError {
+    fn from(err: bitcoin::address::FromScriptError) -> Self {
+        PulserError::BitcoinError(format!("FromScript error: {}", err))
+    }
+}
+
+// ParseInt errors
+impl From<std::num::ParseIntError> for PulserError {
+    fn from(err: std::num::ParseIntError) -> Self {
+        PulserError::InvalidInput(format!("ParseInt error: {}", err))
+    }
+}
+
+impl From<reqwest::Error> for PulserError {
+    fn from(err: reqwest::Error) -> Self {
+        PulserError::NetworkError(format!("HTTP request failed: {}", err))
     }
 }

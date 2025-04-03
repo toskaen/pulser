@@ -1,9 +1,11 @@
+// common/src/health/providers/price_feed.rs
 use crate::error::PulserError;
 use crate::health::{Component, ComponentType, HealthCheck, HealthResult};
-use crate::price_feed::PriceFeed;
+use crate::price_feed::{PriceFeed, PriceFeedExtensions};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::timeout;
 
 pub struct PriceFeedCheck {
     component: Component,
@@ -45,9 +47,10 @@ impl HealthCheck for PriceFeedCheck {
         let is_connected = self.price_feed.is_websocket_connected().await;
         
         // Get the latest price
-        match self.price_feed.get_deribit_price().await {
-            Ok(price) => {
+        match timeout(Duration::from_secs(5), self.price_feed.get_price()).await {
+            Ok(Ok(price_info)) => {
                 // Check if price is reasonable
+                let price = price_info.raw_btc_usd;
                 if price < self.min_price {
                     return Ok(HealthResult::Unhealthy { 
                         reason: format!("Price below minimum threshold: ${:.2}", price)
@@ -60,11 +63,7 @@ impl HealthCheck for PriceFeedCheck {
                     .unwrap_or_else(|_| Duration::from_secs(0))
                     .as_secs();
                     
-                let timestamp = {
-                    let last_update = self.price_feed.last_deribit_update.read().await;
-                    *last_update as u64
-                };
-                
+                let timestamp = price_info.timestamp as u64;
                 let staleness = now.saturating_sub(timestamp);
                 
                 if staleness > self.max_staleness_secs {
@@ -82,9 +81,29 @@ impl HealthCheck for PriceFeedCheck {
                 
                 Ok(HealthResult::Healthy)
             },
-            Err(e) => {
+            Ok(Err(e)) => {
+                // Try Deribit price as fallback
+                match timeout(Duration::from_secs(3), self.price_feed.get_deribit_price()).await {
+                    Ok(Ok(deribit_price)) => {
+                        if deribit_price < self.min_price {
+                            return Ok(HealthResult::Unhealthy { 
+                                reason: format!("Deribit price below minimum: ${:.2}", deribit_price)
+                            });
+                        }
+                        Ok(HealthResult::Degraded { 
+                            reason: format!("Using Deribit fallback price: ${:.2}", deribit_price)
+                        })
+                    },
+                    _ => {
+                        Ok(HealthResult::Unhealthy { 
+                            reason: format!("Failed to fetch price: {}", e)
+                        })
+                    }
+                }
+            },
+            Err(_) => {
                 Ok(HealthResult::Unhealthy { 
-                    reason: format!("Failed to fetch price: {}", e)
+                    reason: "Timeout fetching price".to_string()
                 })
             }
         }

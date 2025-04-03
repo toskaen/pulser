@@ -1,3 +1,4 @@
+// common/src/price_feed/mod.rs
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
 use tokio::sync::RwLock;
@@ -12,10 +13,9 @@ pub mod http_sources;
 pub mod cache;
 pub mod aggregator;
 pub mod websocket;
-// Instead of having separate deribit.rs, use the one in sources
-pub use self::sources::deribit;
+pub mod hedging;
 
-// Re-export main components - using the PriceFeed from sources/deribit
+// Re-export main components
 pub use self::sources::deribit::DeribitProvider as PriceFeed;
 pub use self::http_sources::{emergency_fetch_price, fetch_btc_usd_price};
 pub use self::cache::{get_cached_price, is_price_cache_stale, save_price_history, load_price_history};
@@ -40,13 +40,54 @@ pub struct PriceHistory {
     pub source: String,
 }
 
-// Static references (moved from deribit.rs)
+// Static references
 lazy_static::lazy_static! {
     pub(crate) static ref PRICE_CACHE: Arc<RwLock<(f64, i64)>> = Arc::new(RwLock::new((0.0, crate::utils::now_timestamp())));
     pub(crate) static ref HISTORY_LOCK: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
 }
 
-// Utility function - can be removed if you're using the one from utils module
+// Add the extension trait to handle the interface gap
+pub trait PriceFeedExtensions {
+    async fn get_price(&self) -> Result<crate::types::PriceInfo, PulserError>;
+    async fn get_deribit_price(&self) -> Result<f64, PulserError>;
+    async fn is_websocket_connected(&self) -> bool;
+}
+
+// Implement it for DeribitProvider
+impl PriceFeedExtensions for sources::deribit::DeribitProvider {
+    async fn get_price(&self) -> Result<crate::types::PriceInfo, PulserError> {
+        use crate::types::PriceInfo;
+        use std::collections::HashMap;
+        use sources::PriceProvider;
+        
+        let client = reqwest::Client::new();
+        let source = PriceProvider::fetch_price(self, &client).await?;
+        
+        let mut price_feeds = HashMap::new();
+        price_feeds.insert("Deribit".to_string(), source.price);
+        
+        Ok(PriceInfo {
+            raw_btc_usd: source.price,
+            timestamp: source.timestamp as i64,
+            price_feeds,
+        })
+    }
+    
+    async fn get_deribit_price(&self) -> Result<f64, PulserError> {
+        use sources::PriceProvider;
+        let client = reqwest::Client::new();
+        let source = self.fetch_price(&client).await?;
+        Ok(source.price)
+    }
+    
+    async fn is_websocket_connected(&self) -> bool {
+        // Implement based on existing status tracking
+        // For now, just return false as a placeholder
+        false
+    }
+}
+
+// Utility function
 pub fn now_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

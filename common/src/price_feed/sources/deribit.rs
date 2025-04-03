@@ -35,6 +35,8 @@ impl DeribitProvider {
 
 #[async_trait]
 impl PriceProvider for DeribitProvider {
+
+
     async fn fetch_price(&self, client: &Client) -> Result<PriceSource, PulserError> {
         // Get the perpetual price (BTC-PERPETUAL)
         let url = "https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL";
