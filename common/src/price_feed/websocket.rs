@@ -9,6 +9,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 // WebSocket handler for price feeds
+#[derive(Clone)]
 pub struct WebSocketHandler {
     url: String,
     connected: Arc<RwLock<bool>>,

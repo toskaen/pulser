@@ -79,7 +79,7 @@ impl RetryQueue {
 
                 // Store in sorted set with score as next_attempt time
                 redis::cmd("ZADD")
-                    .arg(queue_key)
+.arg(queue_key.clone()) // Use cloned value, not mutable reference
                     .arg(entry.next_attempt)
                     .arg(entry_json)
                     .query_async(&mut conn)
@@ -138,7 +138,7 @@ impl RetryQueue {
                 redis::cmd("ZREM")
                     .arg(queue_key)
                     .arg(entry_json)
-                    .query_async::<_, i32>(&mut conn)
+.query_async(&mut conn)
                     .await
                     .map_err(|e| PulserError::StorageError(format!("Redis error: {}", e)))?;
 
@@ -256,10 +256,10 @@ impl RetryQueue {
                 RetryStrategy::Memory(queue) => queue.len(),
                 RetryStrategy::Redis { client, queue_key, .. } => {
                     let mut conn = client.get_async_connection().await?;
-                    redis::cmd("ZCARD")
-                        .arg(queue_key)
-                        .query_async::<_, usize>(&mut conn)
-                        .await?
+let count: usize = redis::cmd("ZCARD")
+    .arg(queue_key.clone())
+    .query_async(&mut conn)
+    .await?;
                 }
             };
             
@@ -269,10 +269,10 @@ impl RetryQueue {
                 RetryStrategy::Memory(queue) => queue.len(),
                 RetryStrategy::Redis { client, queue_key, .. } => {
                     let mut conn = client.get_async_connection().await?;
-                    redis::cmd("ZCARD")
-                        .arg(queue_key)
-                        .query_async::<_, usize>(&mut conn)
-                        .await?
+let count: usize = redis::cmd("ZCARD")
+    .arg(queue_key.clone())
+    .query_async(&mut conn)
+    .await?;
                 }
             };
             

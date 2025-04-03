@@ -287,7 +287,7 @@ impl WebhookManager {
 }
 
 /// Generate HMAC signature for webhook payload
-fn generate_signature(payload: &Value, secret: &str) -> String {
+pub fn generate_signature(payload: &Value, secret: &str) -> String {
     let payload_bytes = serde_json::to_string(payload).unwrap_or_default().into_bytes();
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .expect("HMAC can take key of any size");
@@ -297,7 +297,7 @@ fn generate_signature(payload: &Value, secret: &str) -> String {
 }
 
 /// Deliver a webhook with timeout
-async fn deliver_single_webhook(
+pub async fn deliver_single_webhook(
     client: &Client,
     endpoint: &str,
     payload: &Value,

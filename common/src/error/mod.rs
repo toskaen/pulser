@@ -32,8 +32,9 @@ mod convert;
 
 // Re-exports from submodules for backward compatibility
 pub use types::{PulserError, ErrorCategory};
-pub use context::{ErrorContext, with_context};
+pub use context::with_context;
 pub use convert::FromError;
+pub use crate::with_context
 
 impl warp::reject::Reject for PulserError {}
 
@@ -317,21 +318,23 @@ impl From<AddrParseError> for PulserError {
     }
 }
 
-// Re-export macro
+impl From<redis::RedisError> for PulserError {
+    fn from(err: redis::RedisError) -> Self {
+        PulserError::StorageError(format!("Redis error: {}", err))
+    }
+}
+
+// In common/src/error/mod.rs - define with_context as a macro at crate level
 #[macro_export]
 macro_rules! with_context {
-    ($err:expr, $code:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!()))
-    };
-    
-    ($err:expr, $code:expr, $user_id:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!())
-            .with_user_id($user_id))
-    };
-    
-    ($err:expr, $code:expr, $user_id:expr, $detail_key:expr, $detail_value:expr) => {
-        $err.add_context(crate::error::ErrorContext::new($code, file!(), line!())
-            .with_user_id($user_id)
-            .with_detail($detail_key, $detail_value))
+    ($result:expr, $context:expr) => {
+        $result.map_err(|e| {
+            let ctx = $context();
+            let error = crate::error::PulserError::from(e);
+            error.add_context(ctx)
+        })
     };
 }
+
+// And then re-export it 
+pub use crate::with_context;
