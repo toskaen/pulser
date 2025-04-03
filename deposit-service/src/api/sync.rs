@@ -18,7 +18,7 @@ use bdk_esplora::EsploraAsyncExt;
 
 use common::wallet_sync::{resync_full_history, sync_and_stabilize_utxos};
 use common::error::PulserError;
-use common::types::{PriceInfo, StableChain, UserStatus, WebhookRetry, UtxoInfo};
+use common::types::{PriceInfo, StableChain, UserStatus, UtxoInfo};
 use common::price_feed::PriceFeed;
 use common::StateManager;
 use common::wallet_sync;
@@ -27,8 +27,7 @@ use crate::wallet::DepositWallet;
 use common::webhook::{WebhookManager, WebhookPayload};
 use crate::config::Config;
 use crate::monitor::check_mempool_for_address;
-
-use super::{update_user_status, update_user_status_full, update_user_status_with_error};
+use crate::api::status;
 
 // Sync endpoints
 pub fn sync_route(
@@ -157,7 +156,7 @@ async fn sync_user_handler(
     esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
     esplora: Arc<bdk_esplora::esplora_client::AsyncClient>,
     state_manager: Arc<StateManager>,
-        webhook_manager: WebhookManager,
+    webhook_manager: WebhookManager,
     webhook_url: String,
     client: Client,
     active_tasks_manager: Arc<common::task_manager::UserTaskLock>,
@@ -203,7 +202,7 @@ async fn sync_user_handler(
         esplora_urls.clone(),
         &esplora,
         state_manager.clone(),
-            webhook_manager.clone(), // Updated
+        webhook_manager.clone(), 
         &webhook_url,
         client.clone(),
         config.clone(),
@@ -250,18 +249,18 @@ pub async fn sync_user(
     let start_time = Instant::now();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
-    super::update_user_status(user_id, "syncing", "Starting sync", &user_statuses).await;
+    status::update_user_status_simple(user_id, "syncing", "Starting sync", &user_statuses).await;
 
     let price_info_data = match tokio::time::timeout(Duration::from_secs(5), price_info.lock()).await {
         Ok(guard) => guard.clone(),
         Err(_) => {
-            super::update_user_status(user_id, "error", "Price info timeout", &user_statuses).await;
+            status::update_user_status_simple(user_id, "error", "Price info timeout", &user_statuses).await;
             return Err(PulserError::InternalError("Price info timeout".to_string()));
         }
     };
 
     if price_info_data.raw_btc_usd <= 0.0 {
-        update_user_status(user_id, "error", "Invalid price data", &user_statuses).await;
+        status::update_user_status_simple(user_id, "error", "Invalid price data", &user_statuses).await;
         return Err(PulserError::PriceFeedError("Invalid price data".to_string()));
     }
 
@@ -269,7 +268,7 @@ pub async fn sync_user(
         let mut wallets_guard = match tokio::time::timeout(Duration::from_secs(10), wallets.lock()).await {
             Ok(guard) => guard,
             Err(_) => {
-                update_user_status(user_id, "error", "Wallet lock timeout", &user_statuses).await;
+                status::update_user_status_simple(user_id, "error", "Wallet lock timeout", &user_statuses).await;
                 return Err(PulserError::InternalError("Wallet lock timeout".to_string()));
             }
         };
@@ -338,7 +337,7 @@ pub async fn sync_user(
             let utxo_count = chain.utxos.len() as u32;
             let stabilized_usd = chain.stabilized_usd.0;
 
-                        Ok((new_funds_detected, new_utxos.clone(), chain.clone(), confirmed_btc, unconfirmed_btc, confirmations_pending, utxo_count, stabilized_usd))
+            Ok((new_funds_detected, new_utxos_clone, chain_clone, confirmed_btc, unconfirmed_btc, confirmations_pending, utxo_count, stabilized_usd))
         } else {
             Err(PulserError::UserNotFound(user_id.to_string()))
         }
@@ -347,9 +346,9 @@ pub async fn sync_user(
     match update_result {
         Ok((new_funds_detected, new_utxos, chain, confirmed_btc, unconfirmed_btc, confirmations_pending, utxo_count, stabilized_usd)) => {
             if new_funds_detected && !webhook_url.is_empty() {
-                spawn_webhook_notification(&client, user_id, &new_utxos, &chain, webhook_manager.clon(),webhook_url).await;
+                spawn_webhook_notification(user_id, &new_utxos, &chain, webhook_manager, webhook_url).await;
             }
-            super::update_user_status_full(
+            status::update_user_status_full(
                 user_id,
                 "completed",
                 utxo_count,
@@ -368,38 +367,66 @@ pub async fn sync_user(
             Ok(new_funds_detected)
         },
         Err(e) => {
-            super::update_user_status_with_error(user_id, "error", &format!("Wallet update failed: {}", e), &user_statuses).await;
+            status::update_user_status_with_error(user_id, "error", &format!("Wallet update failed: {}", e), &user_statuses).await;
             Err(e)
         }
     }
-} // End of function
+}
 
+/// Sends a webhook notification for new UTXOs with enhanced summary data
+///
+/// This function creates a rich payload with summary information about the new UTXOs
+/// and sends it asynchronously via the WebhookManager, properly handling retries
+/// and logging.
 async fn spawn_webhook_notification(
-    client: &Client,
     user_id: &str,
     new_utxos: &[UtxoInfo],
     chain: &StableChain,
-    webhook_url: &str,
     webhook_manager: WebhookManager,
+    webhook_url: &str,
 ) {
-    let client = client.clone(); // Unused but kept for consistency
-    let user_id = user_id.to_string();
-    let new_utxos = new_utxos.to_vec();
-    let chain = chain.clone();
+    // Only clone what's needed
+    let user_id_str = user_id.to_string();
+    let webhook_manager = webhook_manager.clone();
     let webhook_url = webhook_url.to_string();
-    let webhook_manager = webhook_manager.clone(); // Clone since it's moved into task
     
+    // Calculate summary information
+    let total_btc: f64 = new_utxos.iter()
+        .map(|u| u.amount_sat as f64 / 100_000_000.0)
+        .sum();
+    let total_stable_usd: f64 = new_utxos.iter()
+        .map(|u| u.stable_value_usd)
+        .sum();
+    
+    // Create payload with richer information
+    let payload = WebhookPayload {
+        event: "new_funds".to_string(),
+        user_id: user_id_str.clone(),
+        data: serde_json::json!({
+            "utxos": new_utxos,
+            "chain": chain,
+            "summary": {
+                "total_btc": total_btc,
+                "total_stable_usd": total_stable_usd,
+                "utxo_count": new_utxos.len(),
+                "current_price": chain.raw_btc_usd,
+                "timestamp": common::webhook::now(),
+            }
+        }),
+        timestamp: common::webhook::now(),
+    };
+    
+    // Launch notification as non-blocking task
     tokio::spawn(async move {
-        let payload = WebhookPayload {
-            event: "new_funds".to_string(),
-            user_id: user_id.clone(),
-            data: serde_json::json!({"utxos": new_utxos, "chain": chain}),
-            timestamp: common::webhook::now(),
-        };
-        if let Err(e) = webhook_manager.send(&webhook_url, payload).await {
-            warn!("Webhook failed for user {}: {}. Queued for retry.", user_id, e);
-        } else {
-            debug!("Webhook sent for user {}: {} new UTXOs", user_id, new_utxos.len());
+        match webhook_manager.send(&webhook_url, payload).await {
+            Ok(_) => {
+                debug!("Webhook sent for user {}: {} new UTXOs (${:.2})", 
+                      user_id_str, new_utxos.len(), total_stable_usd);
+            },
+            Err(e) => {
+                warn!("Webhook failed for user {}: {}. Queued for retry.", 
+                     user_id_str, e);
+            }
         }
     });
 }
