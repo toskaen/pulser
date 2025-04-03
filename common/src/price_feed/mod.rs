@@ -9,11 +9,15 @@ use crate::types::PriceInfo;
 pub mod deribit;
 pub mod http_sources;
 pub mod cache;
+pub mod aggregator;
+pub mod sources;
+pub mod websocket;
 
 // Re-export main components
 pub use self::deribit::PriceFeed;
 pub use self::http_sources::{emergency_fetch_price, fetch_btc_usd_price};
 pub use self::cache::{get_cached_price, is_price_cache_stale, save_price_history, load_price_history};
+pub use self::aggregator::PriceAggregator;
 
 // Constants
 pub const DEFAULT_CACHE_DURATION_SECS: u64 = 120; // 2 minutes
