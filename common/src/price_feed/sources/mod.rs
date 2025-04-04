@@ -14,7 +14,7 @@ pub mod kraken;
 pub use binance::BinanceProvider;
 pub use bitfinex::BitfinexProvider;
 pub use kraken::KrakenProvider;
-pub use deribit::DeribitProvider;
+pub use self::deribit::DeribitProvider;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceSource {

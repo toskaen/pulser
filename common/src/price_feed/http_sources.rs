@@ -149,7 +149,7 @@ async fn fetch_binance_price(client: &Client) -> Result<f64, PulserError> {
 }
 
 // Helper function to fetch price from Kraken
-async fn fetch_kraken_price(client: &Client) -> Result<f64, PulserError> {
+pub async fn fetch_kraken_price(client: &Client) -> Result<f64, PulserError> {
     match timeout(
         Duration::from_secs(DEFAULT_TIMEOUT_SECS), 
         client.get("https://api.kraken.com/0/public/Ticker?pair=XBTUSD").send()

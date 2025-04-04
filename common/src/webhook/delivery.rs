@@ -23,6 +23,7 @@ pub struct WebhookPayload {
     pub timestamp: u64,
 }
 
+#[derive(Clone)]
 pub struct WebhookManager {
     client: Client,
     config: WebhookConfig,

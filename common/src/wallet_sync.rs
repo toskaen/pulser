@@ -1,22 +1,24 @@
-// common/src/wallet_sync.rs - Just the beginning with key changes
+// common/src/wallet_sync.rs
 use std::time::{Duration, Instant};
 use bdk_wallet::{Wallet, KeychainKind};
 use bdk_esplora::EsploraAsyncExt;
 use bdk_esplora::esplora_client::AsyncClient;
-use crate::{types::{StableChain, UtxoInfo, USD, Bitcoin, Utxo}, error::PulserError, StateManager};
-use crate::price_feed::{PriceFeed, PriceFeedExtensions}; // Note the PriceFeedExtensions import
-use crate::types::PriceInfo;
+use crate::types::{StableChain, UtxoInfo, USD, Bitcoin, Utxo, PriceInfo};
+use crate::error::PulserError;
+use crate::StateManager;
+use crate::price_feed::{PriceFeed, PriceFeedExtensions}; // Extension trait for price feed
 use log::{info, warn, debug, error, trace};
 use bitcoin::{Address, Network};
 use tokio::time::timeout;
 use std::str::FromStr;
 use std::sync::Arc;
-use reqwest::Client;
+use bdk_chain::spk_client::SyncRequest;
 
 const MAX_SCAN_RETRIES: u32 = 3;
 const SCAN_TIMEOUT_SECS: u64 = 60;
 
-// Analyze market conditions to determine optimal stabilization price
+/// Analyzes market conditions to determine the optimal stabilization price.
+/// This function implements Pulser's market-aware policy for USD stabilization.
 async fn determine_stabilization_price(
     price_feed: &Arc<PriceFeed>,
     user_id: &str,
@@ -65,6 +67,8 @@ async fn determine_stabilization_price(
     }
 }
 
+/// Syncs wallet with blockchain and stabilizes any new UTXOs.
+/// This is the core function for Pulser's USD stabilization feature.
 pub async fn sync_and_stabilize_utxos(
     user_id: &str,
     wallet: &mut Wallet,
@@ -162,9 +166,10 @@ pub async fn sync_and_stabilize_utxos(
                       user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount, stable_value_usd, source);
                 
                 let futures_price = match price_feed.get_deribit_price().await {
-    Ok(price) => price,
-    Err(_) => stab_price, // Fall back to the stabilization price
-};
+                    Ok(price) => price,
+                    Err(_) => stab_price, // Fall back to the stabilization price
+                };
+                
                 // Record market conditions for analytics
                 if market_basis < -0.25 {
                     // Calculate the benefit gained from backwardation
@@ -199,9 +204,10 @@ pub async fn sync_and_stabilize_utxos(
                 let value = (chain_utxo.amount as f64 / 100_000_000.0) * stab_price;
                 
                 let futures_price = match price_feed.get_deribit_price().await {
-    Ok(price) => price,
-    Err(_) => stab_price, // Fall back to the stabilization price
-};
+                    Ok(price) => price,
+                    Err(_) => stab_price, // Fall back to the stabilization price
+                };
+                
                 // Record market conditions for analytics
                 if market_basis < -0.25 {
                     // Calculate the benefit gained from backwardation
@@ -287,4 +293,107 @@ pub async fn sync_and_stabilize_utxos(
 
     debug!("Completed sync for user {} in {}ms: {} new UTXOs", user_id, start_time.elapsed().as_millis(), new_utxos.len());
     Ok(new_utxos)
+}
+
+/// Performs a full history resync for a wallet
+pub async fn resync_full_history(
+    user_id: &str,
+    wallet: &mut Wallet,
+    esplora: &AsyncClient,
+    chain: &mut StableChain,
+    price_feed: Arc<PriceFeed>,
+    price_info: &PriceInfo,
+    state_manager: &StateManager,
+    min_confirmations: u32,
+) -> Result<Vec<UtxoInfo>, PulserError> {
+    debug!("Starting full history resync for user {}", user_id);
+    
+    // Get all used addresses
+    let mut addresses = vec![Address::from_str(&chain.multisig_addr)?.assume_checked()];
+    for old_addr in &chain.old_addresses {
+        if let Ok(addr) = Address::from_str(old_addr) {
+            addresses.push(addr.assume_checked());
+        }
+    }
+    
+    // Collect all script pubkeys to watch
+    let mut spks = vec![];
+    for addr in &addresses {
+        spks.push(addr.script_pubkey());
+    }
+    
+    // Also include all potential derivation paths
+    for i in 0..=wallet.derivation_index(KeychainKind::External).unwrap_or(10) {
+        spks.push(wallet.peek_address(KeychainKind::External, i).address.script_pubkey());
+    }
+    for i in 0..=wallet.derivation_index(KeychainKind::Internal).unwrap_or(10) {
+        spks.push(wallet.peek_address(KeychainKind::Internal, i).address.script_pubkey());
+    }
+    
+    // Create and execute sync request
+    let request = SyncRequest::builder().spks(spks.into_iter()).build();
+    let update = esplora.sync(request, 5).await?;
+    wallet.apply_update(update)?;
+    
+    let change_addr = wallet.reveal_next_address(KeychainKind::Internal).address;
+    let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
+    
+    // Now stabilize any found UTXOs
+    let new_utxos = sync_and_stabilize_utxos(
+        user_id,
+        wallet,
+        esplora,
+        chain,
+        price_feed,
+        price_info,
+        &deposit_addr,
+        &change_addr,
+        state_manager,
+        min_confirmations,
+    ).await?;
+    
+    debug!("Full resync completed for user {}: {} new UTXOs", user_id, new_utxos.len());
+    
+    Ok(new_utxos)
+}
+
+// Helper function to check if an address has any transactions in mempool
+pub async fn check_address_mempool(
+    client: &reqwest::Client,
+    esplora_url: &str,
+    address: &str
+) -> Result<bool, PulserError> {
+    let url = format!("{}/address/{}/mempool", esplora_url, address);
+    match tokio::time::timeout(Duration::from_secs(10), client.get(&url).send()).await {
+        Ok(Ok(response)) => {
+            if response.status().is_success() {
+                let txs: Vec<serde_json::Value> = response.json().await?;
+                Ok(!txs.is_empty())
+            } else {
+                Ok(false)
+            }
+        },
+        _ => Ok(false) // Default to false on any error
+    }
+}
+
+// Helper function to validate a wallet is properly initialized
+pub async fn validate_wallet_state(
+    wallet: &Wallet,
+    chain: &StableChain
+) -> Result<bool, PulserError> {
+    // Check if wallet has derivation indices
+    let external_index = wallet.derivation_index(KeychainKind::External).unwrap_or(0);
+    let internal_index = wallet.derivation_index(KeychainKind::Internal).unwrap_or(0);
+    
+    // Check if wallet has a valid tip height
+    let tip_height = wallet.latest_checkpoint().height();
+    
+    // Check if chain has a valid multisig address
+    let has_valid_address = Address::from_str(&chain.multisig_addr).is_ok();
+    
+    // Consider wallet valid if we have basic requirements met
+    let is_valid = external_index > 0 || internal_index > 0 || tip_height > 0 || has_valid_address;
+    
+    Ok(is_valid)
 }

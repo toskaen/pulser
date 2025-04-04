@@ -51,7 +51,10 @@ impl_from_error!(FromEsploraError, Box<bdk_esplora::esplora_client::Error>, ApiE
 impl_from_error!(FromCannotConnectError, bdk_chain::local_chain::CannotConnectError, WalletError);
 impl_from_error!(FromFromScriptError, bitcoin::address::FromScriptError, BitcoinError);
 impl_from_error!(FromParseIntError, std::num::ParseIntError, InvalidInput);
-
+impl_from_error!(FromMpscSendError, tokio::sync::mpsc::error::SendError<String>, ChannelError);
+impl_from_error!(FromBroadcastSendError, tokio::sync::broadcast::error::SendError<()>, ChannelError);
+impl_from_error!(FromBroadcastRecvError, tokio::sync::broadcast::error::RecvError, ChannelError);
+impl_from_error!(FromAddrParseError, std::net::AddrParseError, ConfigError);
 // BDK errors
 impl_from_error!(FromBdkDescriptorError, bdk_wallet::descriptor::DescriptorError, WalletError);
 impl_from_error!(FromBdkKeyError, bdk_wallet::keys::KeyError, WalletError);
@@ -163,5 +166,77 @@ impl From<std::num::ParseIntError> for PulserError {
 impl From<reqwest::Error> for PulserError {
     fn from(err: reqwest::Error) -> Self {
         PulserError::NetworkError(format!("HTTP request failed: {}", err))
+    }
+}
+
+impl From<bitcoin::network::ParseNetworkError> for PulserError {
+    fn from(err: bitcoin::network::ParseNetworkError) -> Self {
+        PulserError::BitcoinError(format!("Network parse error: {}", err))
+    }
+}
+
+impl From<bitcoin::address::ParseError> for PulserError {
+    fn from(err: bitcoin::address::ParseError) -> Self {
+        PulserError::BitcoinError(format!("Address parse error: {}", err))
+    }
+}
+
+impl From<bdk_esplora::esplora_client::Error> for PulserError {
+    fn from(err: bdk_esplora::esplora_client::Error) -> Self {
+        PulserError::ApiError(format!("Esplora client error: {}", err))
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for PulserError {
+    fn from(err: tokio::time::error::Elapsed) -> Self {
+        PulserError::NetworkError(format!("Operation timed out: {}", err))
+    }
+}
+
+impl From<bitcoin::bip32::Error> for PulserError {
+    fn from(err: bitcoin::bip32::Error) -> Self {
+        PulserError::BitcoinError(format!("BIP32 error: {}", err))
+    }
+}
+
+impl From<bdk_wallet::miniscript::descriptor::DescriptorKeyParseError> for PulserError {
+    fn from(err: bdk_wallet::miniscript::descriptor::DescriptorKeyParseError) -> Self {
+        PulserError::WalletError(format!("Descriptor key parse error: {}", err))
+    }
+}
+
+impl From<bdk_wallet::descriptor::DescriptorError> for PulserError {
+    fn from(err: bdk_wallet::descriptor::DescriptorError) -> Self {
+        PulserError::WalletError(format!("Descriptor error: {}", err))
+    }
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for PulserError {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        PulserError::NetworkError(format!("WebSocket error: {}", err))
+    }
+}
+
+impl From<tokio::sync::mpsc::error::SendError<String>> for PulserError {
+    fn from(err: tokio::sync::mpsc::error::SendError<String>) -> Self {
+        PulserError::ChannelError(format!("MPSC send error: {}", err))
+    }
+}
+
+impl From<tokio::sync::broadcast::error::SendError<()>> for PulserError {
+    fn from(err: tokio::sync::broadcast::error::SendError<()>) -> Self {
+        PulserError::ChannelError(format!("Broadcast send error: {}", err))
+    }
+}
+
+impl From<tokio::sync::broadcast::error::RecvError> for PulserError {
+    fn from(err: tokio::sync::broadcast::error::RecvError) -> Self {
+        PulserError::ChannelError(format!("Broadcast receive error: {}", err))
+    }
+}
+
+impl From<std::net::AddrParseError> for PulserError {
+    fn from(err: std::net::AddrParseError) -> Self {
+        PulserError::ConfigError(format!("Address parsing error: {}", err))
     }
 }

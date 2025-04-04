@@ -1,11 +1,12 @@
 // common/src/price_feed/mod.rs
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use crate::error::PulserError;
 use crate::types::PriceInfo;
+
 
 // Re-export content from other modules
 pub mod sources;
@@ -14,12 +15,6 @@ pub mod cache;
 pub mod aggregator;
 pub mod websocket;
 pub mod hedging;
-
-// Re-export main components
-pub use self::sources::deribit::DeribitProvider as PriceFeed;
-pub use self::http_sources::{emergency_fetch_price, fetch_btc_usd_price};
-pub use self::cache::{get_cached_price, is_price_cache_stale, save_price_history, load_price_history};
-pub use self::aggregator::PriceAggregator;
 
 // Constants
 pub const DEFAULT_CACHE_DURATION_SECS: u64 = 120; // 2 minutes
@@ -46,22 +41,39 @@ lazy_static::lazy_static! {
     pub(crate) static ref HISTORY_LOCK: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
 }
 
-// Add the extension trait to handle the interface gap
+// In common/src/price_feed/mod.rs
+pub trait PriceFeedTrait: Send + Sync {
+    async fn get_price(&self) -> Result<PriceInfo, PulserError>;
+    async fn get_spot_price(&self) -> Result<f64, PulserError>;
+    async fn get_futures_price(&self) -> Result<f64, PulserError>;
+    async fn is_connected(&self) -> bool;
+    async fn connect(&self) -> Result<(), PulserError>;
+    async fn disconnect(&self) -> Result<(), PulserError>;
+}
+// Important: Define the extension trait for price feed providers
 pub trait PriceFeedExtensions {
-    async fn get_price(&self) -> Result<crate::types::PriceInfo, PulserError>;
+    async fn get_price(&self) -> Result<PriceInfo, PulserError>;
     async fn get_deribit_price(&self) -> Result<f64, PulserError>;
     async fn is_websocket_connected(&self) -> bool;
+    async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError>;
+    async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>>;
+    fn get_spot_price(&self) -> impl std::future::Future<Output = Result<f64, PulserError>> + Send;
+fn get_futures_price(&self) -> impl std::future::Future<Output = Result<f64, PulserError>> + Send;
+
 }
 
-// Implement it for DeribitProvider
+// Re-export the actual price feed to use
+pub use self::sources::deribit::DeribitProvider as PriceFeed;
+
+// Implement the extension trait for DeribitProvider
 impl PriceFeedExtensions for sources::deribit::DeribitProvider {
-    async fn get_price(&self) -> Result<crate::types::PriceInfo, PulserError> {
+    async fn get_price(&self) -> Result<PriceInfo, PulserError> {
         use crate::types::PriceInfo;
         use std::collections::HashMap;
         use sources::PriceProvider;
         
         let client = reqwest::Client::new();
-        let source = PriceProvider::fetch_price(self, &client).await?;
+        let source = self.fetch_price(&client).await?;
         
         let mut price_feeds = HashMap::new();
         price_feeds.insert("Deribit".to_string(), source.price);
@@ -81,9 +93,74 @@ impl PriceFeedExtensions for sources::deribit::DeribitProvider {
     }
     
     async fn is_websocket_connected(&self) -> bool {
-        // Implement based on existing status tracking
-        // For now, just return false as a placeholder
-        false
+        *self.connected.read().await
+    }
+    
+    async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
+        // Implementation based on code from price_feed.rs
+        // Simplified version shown here
+        let client = reqwest::Client::new();
+        let url = "https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL";
+        
+        let mut attempts = 0;
+        let max_attempts = 3;
+        
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                return Ok(());
+            }
+            _ = async {
+                loop {
+                    match tokio::time::timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS), client.get(url).send()).await {
+                        Ok(Ok(resp)) => {
+                            if resp.status().is_success() {
+                                // Success - update connected state
+                                let mut connected = self.connected.write().await;
+                                *connected = true;
+                                let mut last_activity = self.last_ws_activity.write().await;
+                                *last_activity = Instant::now();
+                                break;
+                            }
+                        },
+                        _ => {}
+                    }
+                    
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        return Err(PulserError::NetworkError("Failed to connect to Deribit".to_string()));
+                    }
+                    
+                    tokio::time::sleep(Duration::from_secs(1 << attempts)).await;
+                }
+                
+                Ok(())
+            } => {}
+        }
+        
+        Ok(())
+    }
+    
+    async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>> {
+        let mut connected = self.connected.write().await;
+        *connected = false;
+        Some(Ok(()))
+    }
+    
+    fn get_spot_price(&self) -> impl std::future::Future<Output = Result<f64, PulserError>> + Send {
+        async move {
+            // Query spot price from reliable sources
+            let client = reqwest::Client::new();
+            // Try to get from a spot exchange like Kraken or Coinbase
+crate::price_feed::http_sources::fetch_kraken_price(&client).await
+
+        }
+    }
+    
+    fn get_futures_price(&self) -> impl std::future::Future<Output = Result<f64, PulserError>> + Send {
+        async move {
+            // Use the Deribit perpetual futures price
+            self.get_deribit_price().await
+        }
     }
 }
 

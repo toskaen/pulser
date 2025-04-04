@@ -1,16 +1,35 @@
+// common/src/price_feed/sources/deribit.rs
 use crate::error::PulserError;
 use super::{PriceProvider, PriceSource};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Instant, Duration};
 use tokio::time::timeout;
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct DeribitProvider {
-    weight: f64,
-    timeout_secs: u64,
-    futures_only: bool,
+    pub weight: f64,
+    pub timeout_secs: u64,
+    pub futures_only: bool,
+    // Add these fields to support WebSocket functionality
+    pub last_ws_activity: Arc<RwLock<Instant>>,
+    pub connected: Arc<RwLock<bool>>,
+    pub active_ws: Arc<tokio::sync::Mutex<Option<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>>>,
+    pub is_connecting: Arc<RwLock<bool>>,
+    pub last_price_update: Arc<RwLock<Instant>>,
+}
+
+// Add to common/src/price_feed/sources/deribit.rs
+impl std::fmt::Debug for DeribitProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeribitProvider")
+            .field("weight", &self.weight)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("futures_only", &self.futures_only)
+            .finish_non_exhaustive() // Use this to skip fields that don't implement Debug
+    }
 }
 
 impl DeribitProvider {
@@ -19,6 +38,12 @@ impl DeribitProvider {
             weight: 0.8, // Lower weight as this is futures, not spot
             timeout_secs: 5,
             futures_only: true,
+            // Initialize the WebSocket state fields
+            last_ws_activity: Arc::new(RwLock::new(Instant::now())),
+            connected: Arc::new(RwLock::new(false)),
+            active_ws: Arc::new(tokio::sync::Mutex::new(None)),
+            is_connecting: Arc::new(RwLock::new(false)),
+            last_price_update: Arc::new(RwLock::new(Instant::now())),
         }
     }
     
@@ -31,12 +56,25 @@ impl DeribitProvider {
         self.futures_only = futures_only;
         self
     }
+
+    // Add a helper method for connecting to Deribit WebSocket
+    pub async fn connect_deribit(&self, api_key: &str, secret: &str) -> Result<(), PulserError> {
+        // Implementation would connect to Deribit WebSocket API
+        // This is a placeholder that would be replaced with actual implementation
+        tokio::time::sleep(Duration::from_millis(100)).await; // Simulate connection
+        
+        // Update connected state
+        let mut connected = self.connected.write().await;
+        *connected = true;
+        let mut last_activity = self.last_ws_activity.write().await;
+        *last_activity = Instant::now();
+        
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl PriceProvider for DeribitProvider {
-
-
     async fn fetch_price(&self, client: &Client) -> Result<PriceSource, PulserError> {
         // Get the perpetual price (BTC-PERPETUAL)
         let url = "https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL";
@@ -75,8 +113,12 @@ impl PriceProvider for DeribitProvider {
             
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            .unwrap_or_else(|_| Duration::from_secs(0))
             .as_secs();
+
+        // Update last activity timestamp
+        let mut last_activity = self.last_ws_activity.write().await;
+        *last_activity = Instant::now();
             
         Ok(PriceSource {
             name: "Deribit".to_string(),

@@ -1,5 +1,4 @@
 // common/src/utils.rs
-use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 use sha2::{Sha256, Digest};
 use std::path::{Path, PathBuf};
@@ -8,6 +7,10 @@ use crate::StableChain;
 use crate::error::PulserError;
 use crate::types::Amount;
 use std::fs;
+use crate::types::PriceInfo;
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+// Remove the first import
 
 
 /// Get current timestamp in seconds
@@ -160,4 +163,21 @@ pub fn write_file_atomically(path: &str, content: &str) -> Result<(), std::io::E
     }
     
     Ok(())
+}
+
+// Convert from simple f64 price to PriceInfo struct
+pub fn price_to_price_info(price: f64, source: &str) -> PriceInfo {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs() as i64;
+    
+    let mut price_feeds = HashMap::new();
+    price_feeds.insert(source.to_string(), price);
+    
+    PriceInfo {
+        raw_btc_usd: price,
+        timestamp: now,
+        price_feeds,
+    }
 }
