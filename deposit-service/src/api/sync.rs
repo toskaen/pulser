@@ -136,6 +136,7 @@ async fn force_sync_handler(
         &mut wallet.wallet,
         &esplora,
         chain,
+        price_feed.clone(),  // Add price_feed here
         &price_info,
         &state_manager,
         config.min_confirmations,
@@ -310,18 +311,18 @@ pub async fn sync_user(
 
             let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
             let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-            let new_utxos = sync_and_stabilize_utxos(
-                user_id,
-                &mut wallet.wallet,
-                &wallet.blockchain,
-                chain,
-                price_info_data.raw_btc_usd,
-                &price_info_data,
-                &deposit_addr,
-                &change_addr,
-                &state_manager,
-                config.min_confirmations,
-            ).await?;
+let new_utxos = sync_and_stabilize_utxos(
+    user_id,
+    &mut wallet.wallet,
+    &wallet.blockchain,
+    chain,
+    price_feed.clone(),  // Use this instead of price_info_data.raw_btc_usd
+    &price_info_data,    // Pass a reference to PriceInfo
+    &deposit_addr,
+    &change_addr,
+    &state_manager,
+    config.min_confirmations,
+).await?;
 
             if let Some(changeset) = wallet.wallet.take_staged() {
                 state_manager.save_changeset(user_id, &changeset).await?;
@@ -385,10 +386,12 @@ async fn spawn_webhook_notification(
     webhook_manager: WebhookManager,
     webhook_url: &str,
 ) {
-    // Only clone what's needed
+    // Clone what we need
     let user_id_str = user_id.to_string();
     let webhook_manager = webhook_manager.clone();
     let webhook_url = webhook_url.to_string();
+    let new_utxos_cloned = new_utxos.to_vec(); // Clone the utxos
+    let chain_clone = chain.clone();
     
     // Calculate summary information
     let total_btc: f64 = new_utxos.iter()
@@ -403,17 +406,17 @@ async fn spawn_webhook_notification(
         event: "new_funds".to_string(),
         user_id: user_id_str.clone(),
         data: serde_json::json!({
-            "utxos": new_utxos,
-            "chain": chain,
+            "utxos": new_utxos_cloned, // Use the cloned data
+            "chain": chain_clone,      // Use the cloned chain
             "summary": {
                 "total_btc": total_btc,
                 "total_stable_usd": total_stable_usd,
                 "utxo_count": new_utxos.len(),
                 "current_price": chain.raw_btc_usd,
-                "timestamp": common::webhook::now(),
+                "timestamp": common::utils::now_timestamp(), // Use utils version
             }
         }),
-        timestamp: common::webhook::now(),
+        timestamp: common::utils::now_timestamp() as u64, // Use utils version
     };
     
     // Launch notification as non-blocking task
@@ -421,7 +424,7 @@ async fn spawn_webhook_notification(
         match webhook_manager.send(&webhook_url, payload).await {
             Ok(_) => {
                 debug!("Webhook sent for user {}: {} new UTXOs (${:.2})", 
-                      user_id_str, new_utxos.len(), total_stable_usd);
+                      user_id_str, new_utxos_cloned.len(), total_stable_usd);
             },
             Err(e) => {
                 warn!("Webhook failed for user {}: {}. Queued for retry.", 

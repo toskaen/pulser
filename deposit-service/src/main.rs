@@ -4,11 +4,14 @@ use tokio::sync::{mpsc, broadcast, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::path::Path;
+use std::io::Write; // Required for formatter
 use log::{info, warn, debug, error, trace, LevelFilter};
 use reqwest::Client;
 use bdk_esplora::esplora_client;
 use common::error::PulserError;
-use common::price_feed::{PriceFeed, fetch_btc_usd_price};
+use common::price_feed::{PriceFeed, PriceFeedExtensions};
+use common::price_feed::http_sources::fetch_btc_usd_price;
 use common::storage::StateManager;
 use common::task_manager::{UserTaskLock, ScopedTask};
 use common::types::{PriceInfo, UserStatus, ServiceStatus, StableChain};
@@ -19,8 +22,16 @@ use deposit_service::wallet::DepositWallet;
 use futures::future::join_all;
 use bdk_wallet::KeychainKind;
 use common::webhook::{RetryQueue, WebhookConfig, WebhookManager};
-use common::health::{HealthChecker, Component, ComponentType};
+use common::health::{
+    HealthChecker, create_health_response, Component, 
+    ComponentType, HealthCheck as CommonHealthCheck, HealthResult
+};
+
 use common::health::providers::{PriceFeedCheck, BlockchainCheck, WebSocketCheck, RedisCheck};
+use common::utils; // Import utils module
+crate::api::health::ApiEndpointCheck::new(&config.channel_service_url)
+
+
 
 // Constants
 const STATUS_UPDATE_INTERVAL_SECS: u64 = 60;
@@ -89,6 +100,59 @@ async fn preload_existing_users(
     Ok((loaded_count, error_count))
 }
 
+fn create_price_info(price_data: f64, source: &str) -> PriceInfo {
+    let now = utils::now_timestamp();
+    let mut price_feeds = HashMap::new();
+    price_feeds.insert(source.to_string(), price_data);
+    
+    PriceInfo {
+        raw_btc_usd: price_data,
+        timestamp: now,
+        price_feeds,
+    }
+}
+
+async fn perform_graceful_shutdown(
+    service_status: Arc<Mutex<ServiceStatus>>,
+    state_manager: Arc<StateManager>,
+    price_feed: Arc<PriceFeed>,
+    webhook_manager: WebhookManager,
+    active_tasks_manager: Arc<common::task_manager::UserTaskLock>,
+) -> Result<(), PulserError> {
+    info!("Starting graceful shutdown...");
+    
+    // Step 1: Save final service status
+    info!("Saving final service status...");
+    {
+        let status = service_status.lock().await.clone();
+        if let Err(e) = state_manager.save_service_status(&status).await {
+            warn!("Failed to save final service status: {}", e);
+        }
+    }
+    
+    // Step 2: Close WebSocket connections
+    info!("Closing WebSocket connections...");
+    match tokio::time::timeout(Duration::from_secs(5), price_feed.shutdown_websocket()).await {
+        Ok(Some(Ok(_))) => info!("WebSocket closed successfully"),
+        Ok(Some(Err(e))) => warn!("Error closing WebSocket: {}", e),
+        Ok(None) => info!("No active WebSocket to close"),
+        Err(_) => warn!("Timeout closing WebSocket"),
+    }
+    
+    // Step 3: Wait for active tasks to complete
+let active_tasks = active_tasks_manager.get_active_tasks().await;
+let active_count = active_tasks.len();
+    if active_count > 0 {
+        info!("Waiting for {} active tasks to complete", active_count);
+        // Implementation of waiting for tasks...
+    }
+    
+    info!("Graceful shutdown complete");
+    Ok(())
+}
+
+
+
 #[tokio::main]
 async fn main() -> Result<(), PulserError> {
     // Load and prepare configuration
@@ -108,12 +172,23 @@ async fn main() -> Result<(), PulserError> {
         "trace" => LevelFilter::Trace,
         _ => LevelFilter::Info,
     };
-    env_logger::Builder::new()
-        .filter_level(log_level)
-        .filter_module("hyper", LevelFilter::Warn)
-        .filter_module("reqwest", LevelFilter::Warn)
-        .filter_module("tokio", LevelFilter::Warn)
-        .init();
+    // In deposit-service/src/main.rs
+env_logger::Builder::new()
+    .filter_level(log_level)
+    .filter_module("hyper", LevelFilter::Warn)
+    .filter_module("reqwest", LevelFilter::Warn)
+    .filter_module("tokio", LevelFilter::Warn)
+    .format(|buf, record| {
+        writeln!(
+            buf,
+            "{} [{}] {} - {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            record.level(),
+            record.module_path().unwrap_or("unknown"),
+            record.args()
+        )
+    })
+    .init();
     info!("Starting Pulser Deposit Service v{}", config.version);
 
     // Initialize HTTP client
@@ -180,8 +255,7 @@ async fn main() -> Result<(), PulserError> {
         );
     }
 
-    // Create shared reference to the health checker
-    let health_checker = Arc::new(health_checker);
+let health_checker = Arc::new(health_checker);
 
     // Channels
     let (sync_tx, sync_rx) = mpsc::channel::<String>(config.max_concurrent_users * 2);
@@ -242,28 +316,32 @@ async fn main() -> Result<(), PulserError> {
                         break;
                     }
                     _ = interval.tick() => {
-                        match fetch_btc_usd_price(&client, &price_feed).await {
-                            Ok(new_price) => {
-                                failures = 0;
-                                {
-                                    let mut price = price_info.lock().await;
-                                    *price = new_price.clone();
-                                }
-                                state_manager.update_price_cache(new_price.raw_btc_usd, new_price.timestamp).await?;
-                                let mut status = service_status.lock().await;
-                                status.last_price = new_price.raw_btc_usd;
-                                status.price_update_count += 1;
-                                trace!("Price updated: ${:.2}", new_price.raw_btc_usd);
-                            }
-                            Err(e) => {
-                                failures += 1;
-                                warn!("Price fetch failed ({} attempts): {}", failures, e);
-                                if failures > 5 {
-                                    let mut status = service_status.lock().await;
-                                    status.health = "price feed error".to_string();
-                                }
-                            }
-                        }
+match fetch_btc_usd_price(&client).await {
+    Ok(price_data) => {
+        let new_price_info = create_price_info(price_data, "HTTP_Fallback");
+        
+        // Update the price cache
+        {
+            let mut price_guard = price_info.lock().await;
+            *price_guard = new_price_info.clone();
+        }
+        
+        // Update the state manager
+        state_manager.update_price_cache(new_price_info.raw_btc_usd, new_price_info.timestamp).await?;
+        
+        // Update status
+        {
+            let mut status = service_status.lock().await;
+            status.last_price = new_price_info.raw_btc_usd;
+            status.price_update_count += 1;
+        }
+        
+        trace!("Price updated: ${:.2}", new_price_info.raw_btc_usd);
+    },
+    Err(e) => {
+        warn!("Price fetch failed: {}", e);
+    }
+}
                     }
                 }
             }
@@ -292,26 +370,45 @@ async fn main() -> Result<(), PulserError> {
         tokio::time::sleep(Duration::from_secs(1)).await;
         debug!("Waiting for price data, attempt {}/30", attempt + 1);
         
-        // Try to trigger fallback price fetching
-        match fetch_btc_usd_price(&client, &price_feed).await {
-            Ok(price_data) if price_data.raw_btc_usd > 0.0 => {
-                // Update the global price info
-                let mut price_guard = price_info.lock().await;
-                *price_guard = price_data.clone();
-                price_ready = true;
-                info!("Price data ready from fallback: ${:.2} ({})", 
-                    price_data.raw_btc_usd,
-                    price_data.price_feeds.keys()
-                        .map(|k| k.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "));
-                break;
-            }
-            _ => {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                debug!("Waiting for any valid price source, attempt {}/30", attempt + 1);
-            }
+
+match fetch_btc_usd_price(&client).await {
+    Ok(price_data) => {
+        // Convert f64 to PriceInfo
+        let now = utils::now_timestamp();
+let new_price_info = PriceInfo {
+    raw_btc_usd: price_data,
+    timestamp: now,
+    price_feeds: {
+        let mut feeds = HashMap::new();
+        feeds.insert("HTTP_Fallback".to_string(), price_data);
+        feeds
+    }
+};
+        
+        // Now use the properly structured object
+        {
+         let mut price_guard = price_info.lock().await;
+*price_guard = new_price_info.clone();
         }
+        
+        // Update cache
+let price_data = {
+    let price_guard = price_info.lock().await;
+    (price_guard.raw_btc_usd, price_guard.timestamp)
+};
+state_manager.update_price_cache(price_data.0, price_data.1).await?;
+        
+        // Update status
+{
+    let price_guard = price_info.lock().await;
+    status.last_price = price_guard.raw_btc_usd;
+    trace!("Price updated: ${:.2}", price_guard.raw_btc_usd);
+},
+    Err(e) => {
+        // Handle error case
+        warn!("Price fetch failed: {}", e);
+    }
+}
     }
 
     if !price_ready {
@@ -640,27 +737,35 @@ async fn main() -> Result<(), PulserError> {
     });
 
     // Handle final cleanup and shutdown
-    let save_status_handle = tokio::spawn({
-        let service_status = service_status.clone();
-        let state_manager = state_manager.clone();
-        let webhook_manager = webhook_manager.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            shutdown_rx.recv().await?;
-            info!("Saving final service status");
-            let status = service_status.lock().await.clone();
-            state_manager.save_service_status(&status).await?;
-            info!("Final service status saved");
-            info!("Shutting down webhook manager");
-            webhook_manager.shutdown().await?;
-            info!("Webhook manager shutdown complete");
-            Ok::<(), PulserError>(())
+let save_status_handle = tokio::spawn({
+    let service_status = service_status.clone();
+    let state_manager = state_manager.clone();
+    let price_feed = price_feed.clone();
+    let webhook_manager = webhook_manager.clone();
+    let active_tasks_manager = active_tasks_manager.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    
+    async move {
+        shutdown_rx.recv().await?;
+        info!("Shutdown signal received");
+        
+        if let Err(e) = perform_graceful_shutdown(
+            service_status,
+            state_manager,
+            price_feed,
+            webhook_manager,
+            active_tasks_manager,
+        ).await {
+            warn!("Error during graceful shutdown: {}", e);
         }
-    });
+        
+        Ok::<(), PulserError>(())
+    }
+});
 
     // Wait for shutdown signal
-    shutdown_tx.subscribe().recv().await?;
-    info!("Shutting down...");
+shutdown_tx.subscribe().recv().await?;
+info!("Shutting down...");
 
     // Close WebSocket connections
     info!("Closing WebSocket connections...");

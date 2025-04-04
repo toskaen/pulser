@@ -23,6 +23,7 @@ use common::wallet_sync;
 use crate::config::Config;
 use bdk_wallet::chain::local_chain::ChangeSet as LocalChainChangeSet;
 use std::collections::BTreeMap;
+use common::price_feed::PriceFeedExtensions;
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -212,31 +213,31 @@ let recovery_doc = mnemonic.map(|m| {
         Ok(addr_info.address)
     }
 
-    pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Vec<UtxoInfo>, PulserError> {
-        let logged = LOGGED_ADDRESSES.lock().await;
-        let current_addr = logged
-            .get(&self.stable_chain.user_id.to_string())
-            .ok_or_else(|| {
-                warn!("No logged address for user {}", self.stable_chain.user_id);
-                PulserError::WalletError("No logged address".into())
-            })?
-            .clone();
+pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Vec<UtxoInfo>, PulserError> {
+    let logged = LOGGED_ADDRESSES.lock().await;
+    let current_addr = logged
+        .get(&self.stable_chain.user_id.to_string())
+        .ok_or_else(|| {
+            warn!("No logged address for user {}", self.stable_chain.user_id);
+            PulserError::WalletError("No logged address".into())
+        })?
+        .clone();
 
-        let change_addr = self.get_change_address().await?;
-        let price_btc_usd = self.price_feed.get_deribit_price().await.unwrap_or(0.0);
-        let new_utxos = wallet_sync::sync_and_stabilize_utxos(
-            &self.stable_chain.user_id.to_string(),
-            &mut self.wallet,
-            &self.blockchain,
-            &mut self.stable_chain,
-            price_btc_usd,
-            price_info,
-            &current_addr, // Fixed typo from `¤t_addr`
-            &change_addr,
-            &self.state_manager,
-            self.config.min_confirmations,
-        )
-        .await?;
+    let change_addr = self.get_change_address().await?;
+
+    let new_utxos = wallet_sync::sync_and_stabilize_utxos(
+        &self.stable_chain.user_id.to_string(),
+        &mut self.wallet,
+        &self.blockchain,
+        &mut self.stable_chain,
+        self.price_feed.clone(), // Pass the price_feed directly
+        price_info,              // Pass the price_info
+        &current_addr,
+        &change_addr,
+        &self.state_manager,
+        self.config.min_confirmations,
+    )
+    .await?;
 
         self.stable_chain.timestamp = chrono::Utc::now().timestamp();
         self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();

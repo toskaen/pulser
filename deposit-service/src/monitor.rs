@@ -214,6 +214,7 @@ pub async fn monitor_deposits(
                     &mut wallet.wallet,
                     &wallet.blockchain,
                     chain,
+                    price_feed.clone(),  // Add price_feed here
                     &*price_info.lock().await,
                     &state_manager,
                     config.min_confirmations
@@ -231,6 +232,7 @@ pub async fn monitor_deposits(
                     &mut wallet.wallet,
                     &wallet.blockchain,
                     chain,
+                    price_feed.clone(),  // Add price_feed here
                     &*price_info.lock().await,
                     &state_manager,
                     config.min_confirmations
@@ -291,8 +293,8 @@ tokio::select! {
                                 &mut wallet.wallet,
                                 &wallet.blockchain,
                                 chain,
-                                price_info_guard.raw_btc_usd,
-                                &*price_info_guard,
+ price_feed.clone(),  // Use this instead of price_info_guard.raw_btc_usd
+    &*price_info_guard,  
                                 &deposit_addr,
                                 &change_addr,
                                 &state_manager,
@@ -316,8 +318,8 @@ sync_and_stabilize_utxos(
     &mut wallet.wallet,
     &wallet.blockchain,
     chain,
-    price_info_guard.raw_btc_usd,
-    &*price_info_guard,  // Dereference here
+ price_feed.clone(),  // Use this instead of price_info_guard.raw_btc_usd
+    &*price_info_guard,  
     &deposit_addr,
     &change_addr,
     &state_manager,

@@ -20,6 +20,7 @@ use common::webhook::WebhookManager;
 use crate::config::Config;
 use reqwest::Client;
 use std::time::Duration;
+use common::health::HealthChecker;
 
 // Re-export the sync_user function for use by other modules
 pub use sync::sync_user;

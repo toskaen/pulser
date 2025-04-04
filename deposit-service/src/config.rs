@@ -37,6 +37,12 @@ pub struct Config {
     pub api_key: String,
     pub request_timeout_secs: u64,
     
+    // Redis settings - Added these fields
+    #[serde(default = "default_redis_enabled")]
+    pub redis_enabled: bool,
+    #[serde(default = "default_redis_url")]
+    pub redis_url: String,
+    
     pub role: String,           // Service role (user, lsp, trustee)
     pub lsp_endpoint: String,
     pub trustee_endpoint: String,
@@ -113,6 +119,8 @@ impl Config {
     }
 }
 
+fn default_redis_enabled() -> bool { false }
+fn default_redis_url() -> String { "redis://127.0.0.1:6379".to_string() }
 fn default_webhook_enabled() -> bool { true }
 fn default_webhook_secret() -> String { "your_webhook_secret".to_string() }
 fn default_webhook_max_retries() -> u32 { 3 }
