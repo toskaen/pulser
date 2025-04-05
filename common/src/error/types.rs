@@ -94,6 +94,8 @@ pub enum PulserError {
     WebhookError(String),
     #[error("{0}")]
     WithContext(Box<ContextualError>),  
+    #[error("Sync error: {0}")]
+    SyncError(String),
 }
 
 impl PulserError {
@@ -136,7 +138,8 @@ impl PulserError {
             Self::BitcoinError(_) => ErrorCategory::Bitcoin,
             Self::ConsensusError(_) => ErrorCategory::Bitcoin,
             Self::WebhookError(_) => ErrorCategory::External,
-            
+            Self::SyncError(_) => ErrorCategory::Bitcoin, // Or Internal, depending on intent
+
         }
     }
 
@@ -174,7 +177,9 @@ impl ResponseError for PulserError {
             PulserError::BitcoinError(_) => StatusCode::BAD_REQUEST,
             PulserError::ConsensusError(_) => StatusCode::INTERNAL_SERVER_ERROR, 
             PulserError::WebhookError(_) => StatusCode::BAD_GATEWAY,
-                PulserError::ChannelError(_) => StatusCode::SERVICE_UNAVAILABLE, // Use appropriate status code
+                PulserError::ChannelError(_) => StatusCode::SERVICE_UNAVAILABLE,
+                            PulserError::SyncError(_) => StatusCode::SERVICE_UNAVAILABLE,
+
 
         }
     }

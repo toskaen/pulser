@@ -240,3 +240,9 @@ impl From<std::net::AddrParseError> for PulserError {
         PulserError::ConfigError(format!("Address parsing error: {}", err))
     }
 }
+
+impl From<tokio::sync::AcquireError> for PulserError {
+    fn from(_: tokio::sync::AcquireError) -> Self {
+        PulserError::ApiError("Semaphore acquire failed".to_string())
+    }
+}
