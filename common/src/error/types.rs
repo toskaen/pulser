@@ -141,7 +141,7 @@ impl PulserError {
             Self::ConsensusError(_) => ErrorCategory::Bitcoin,
             Self::WebhookError(_) => ErrorCategory::External,
             Self::SyncError(_) => ErrorCategory::Bitcoin, // Or Internal, depending on intent
-		Self::NotFoundError(_) => ErrorCategory::NotFound,
+        Self::NotFound(_) => ErrorCategory::NotFound,
         }
     }
 
@@ -181,6 +181,7 @@ impl ResponseError for PulserError {
             PulserError::WebhookError(_) => StatusCode::BAD_GATEWAY,
                 PulserError::ChannelError(_) => StatusCode::SERVICE_UNAVAILABLE,
                             PulserError::SyncError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            PulserError::NotFound(_) => StatusCode::NOT_FOUND,
 
 
         }

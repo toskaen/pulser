@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 use futures::SinkExt;
 use futures::StreamExt;
+use tokio::time::sleep;
+use std::fmt;
+
 
 use super::{PriceHistory, DEFAULT_CACHE_DURATION_SECS, PRICE_CACHE, WS_PING_INTERVAL_SECS, PRICE_UPDATE_INTERVAL_MS};
 use super::sources::{SourceManager, BinanceProvider, BitfinexProvider, KrakenProvider, DeribitProvider};
@@ -28,6 +31,17 @@ pub struct PriceFeed {
     last_deribit_update: Arc<RwLock<i64>>,
     client: Client,
     ws_manager: Arc<WebSocketManager>, // Added for WebSocket management
+}
+
+impl fmt::Debug for PriceFeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PriceFeed")
+            .field("latest_deribit_price", &self.latest_deribit_price)
+            .field("latest_kraken_futures_price", &self.latest_kraken_futures_price)
+            .field("last_deribit_update", &self.last_deribit_update)
+            // Skip fields that don't implement Debug
+            .finish_non_exhaustive()
+    }
 }
 
 impl PriceFeed {
@@ -61,6 +75,10 @@ impl PriceFeed {
             client,
             ws_manager,
         }
+    }
+    
+    pub fn get_websocket_manager(&self) -> Arc<WebSocketManager> {
+        self.ws_manager.clone()
     }
 
     pub async fn get_price(&self) -> Result<PriceInfo, PulserError> {
@@ -120,71 +138,144 @@ impl PriceFeed {
         Ok(price_info)
     }
 
-    pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
-        let ws_manager = self.ws_manager.clone();
-        let price_clone = self.latest_deribit_price.clone();
-        let update_clone = self.last_deribit_update.clone();
-        let price_buffer = Arc::new(Mutex::new(Vec::<PriceHistory>::new()));
-        let price_buffer_clone = price_buffer.clone();
+pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
+    // Connect to Deribit via the WebSocket manager
+    let max_reconnect_attempts = 5;
+    let base_delay_secs = 2;
+    let mut attempt = 0;
 
-        let subscription = json!({"method": "public/subscribe", "params": {"channels": ["ticker.BTC-PERPETUAL.raw"]}}).to_string();
-        ws_manager.subscribe("wss://test.deribit.com/ws/api/v2", &subscription, PRICE_UPDATE_INTERVAL_MS).await?;
-ws_manager.process_messages("wss://test.deribit.com/ws/api/v2", move |json| async move {
-
-            if let Some(price) = json.get("params").and_then(|p| p.get("data")).and_then(|d| d.get("last_price")).and_then(|p| p.as_f64()) {
-                let mut price_guard = price_clone.blocking_write();
+    // Create the subscription message
+    let subscription = json!({
+        "method": "public/subscribe",
+        "params": {
+            "channels": ["ticker.BTC-PERPETUAL.raw"]
+        },
+        "id": 1
+    }).to_string();
+    
+    // Get the endpoint URL
+    let endpoint = "wss://test.deribit.com/ws/api/v2";
+    
+    // Try to connect with backoff
+    loop {
+        match self.ws_manager.subscribe(endpoint, &subscription, PRICE_UPDATE_INTERVAL_MS).await {
+            Ok(_) => {
+                info!("Successfully connected to Deribit WebSocket");
+                break;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= max_reconnect_attempts {
+                    return Err(PulserError::NetworkError(
+                        format!("Failed to connect to Deribit after {} attempts: {}", 
+                        max_reconnect_attempts, e)
+                    ));
+                }
+                
+                // Exponential backoff
+                let delay = base_delay_secs * (1 << attempt);
+                warn!("Deribit connection failed (attempt {}/{}): {}. Retrying in {}s", 
+                     attempt, max_reconnect_attempts, e, delay);
+                sleep(Duration::from_secs(delay)).await;
+            }
+        }
+    }
+    
+    // Set up price handling
+    let price_clone = self.latest_deribit_price.clone();
+    let update_clone = self.last_deribit_update.clone();
+    let price_buffer = Arc::new(Mutex::new(Vec::<PriceHistory>::new()));
+    let price_buffer_clone = price_buffer.clone();
+    
+    self.ws_manager.process_messages(endpoint, move |json| {
+        let price_clone = price_clone.clone();
+        let update_clone = update_clone.clone();
+        let price_buffer = price_buffer.clone();
+        
+        async move {
+            if let Some(price) = json.get("params")
+                .and_then(|p| p.get("data"))
+                .and_then(|d| d.get("last_price"))
+                .and_then(|p| p.as_f64())
+            {
+                let mut price_guard = price_clone.write().await;
                 *price_guard = price;
-                let mut time_guard = update_clone.blocking_write();
+                
+                let mut time_guard = update_clone.write().await;
                 *time_guard = utils::now_timestamp();
-    let mut buffer = price_buffer.lock().await;
+                
+                let mut buffer = price_buffer.lock().await;
                 buffer.push(PriceHistory {
                     timestamp: utils::now_timestamp() as u64,
                     btc_usd: price,
                     source: "Deribit".to_string(),
                 });
+                
                 trace!("Deribit BTC/USD: ${:.2}", price);
             }
             Ok(())
-        }).await?;
-
-        // Kraken Futures
-        let kraken_price = self.latest_kraken_futures_price.clone();
-        let kraken_sub = json!({"event": "subscribe", "feed": "ticker", "product_ids": ["PI_XBTUSD"]}).to_string();
-        ws_manager.subscribe("wss://futures.kraken.com/ws/v1", &kraken_sub, PRICE_UPDATE_INTERVAL_MS).await?;
-        ws_manager.process_messages("wss://futures.kraken.com/ws/v1", move |json| {
-            if let Some(price) = json.get("last").and_then(|p| p.as_f64()) {
-                let mut price_guard = kraken_price.blocking_write();
-                *price_guard = price;
-                trace!("Kraken futures: ${:.2}", price);
-            }
-            Ok(())
-        }).await?;
-
-        // Buffer flush task (kept from original)
-        tokio::spawn({
-            let buffer = price_buffer_clone;
-            let mut flush_interval = tokio::time::interval(Duration::from_secs(30));
-            async move {
-                loop {
-                    flush_interval.tick().await;
-                    let entries = {
-let mut buf = buffer.lock().await;           // Line 168
-                        if buf.is_empty() { continue; }
-                        std::mem::take(&mut *buf)
-                    };
-                    trace!("Saved {} batched Deribit prices", entries.len());
-                    if let Err(e) = save_price_history(entries).await {
-                        warn!("Failed to save batched price history: {}", e);
-                    }
+        }
+    }).await?;
+    
+    // Buffer flush task
+    tokio::spawn({
+        let buffer = price_buffer_clone;
+        let mut flush_interval = tokio::time::interval(Duration::from_secs(30));
+        async move {
+            loop {
+                flush_interval.tick().await;
+                let entries = {
+                    let mut buf = buffer.lock().await;
+                    if buf.is_empty() { continue; }
+                    std::mem::take(&mut *buf)
+                };
+                trace!("Saved {} batched Deribit prices", entries.len());
+                if let Err(e) = save_price_history(entries).await {
+                    warn!("Failed to save batched price history: {}", e);
                 }
             }
-        });
-
-        tokio::spawn(async move {
-ws_manager.start_monitoring(shutdown_rx.resubscribe()).await
-        });
-        Ok(())
+        }
+    });
+    
+    // Clone the WS manager to avoid the 'self' lifetime issue
+    let ws_manager_clone = self.ws_manager.clone();
+    
+    // Start monitoring WebSocket connection
+    let shutdown_clone = shutdown_rx.resubscribe();
+    tokio::spawn(async move {
+        ws_manager_clone.start_monitoring(shutdown_clone).await
+    });
+    
+    // Add Kraken Futures connection
+    let kraken_endpoint = "wss://futures.kraken.com/ws/v1";
+    let kraken_price = self.latest_kraken_futures_price.clone();
+    let kraken_sub = json!({"event": "subscribe", "feed": "ticker", "product_ids": ["PI_XBTUSD"]}).to_string();
+    
+    match self.ws_manager.subscribe(kraken_endpoint, &kraken_sub, PRICE_UPDATE_INTERVAL_MS).await {
+        Ok(_) => {
+            info!("Successfully connected to Kraken Futures WebSocket");
+            
+            self.ws_manager.process_messages(kraken_endpoint, move |json| {
+                let kraken_price = kraken_price.clone();
+                
+                async move {
+                    if let Some(price) = json.get("last").and_then(|p| p.as_f64()) {
+                        let mut price_guard = kraken_price.write().await;
+                        *price_guard = price;
+                        trace!("Kraken futures: ${:.2}", price);
+                    }
+                    Ok(())
+                }
+            }).await?;
+        },
+        Err(e) => {
+            warn!("Failed to connect to Kraken Futures: {}", e);
+            // Continue anyway, as Deribit is our primary source
+        }
     }
+    
+    Ok(())
+}
 
     pub async fn get_best_futures_price(&self) -> Result<(String, f64), PulserError> {
         let deribit_price = *self.latest_deribit_price.read().await;

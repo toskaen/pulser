@@ -95,7 +95,6 @@ async fn get_blockchain_tip(client: &Client, esplora_url: &str) -> Result<u64, P
 }
 
 // Check mempool for 0-conf
-// In deposit-service/src/monitor.rs
 pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, address: &str) 
     -> Result<Vec<bitcoin::Transaction>, PulserError> {
     
@@ -119,12 +118,15 @@ pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, addre
             return Err(PulserError::ApiError(format!("API error: {} - {}", status, body)));
         }
         
+        // Clone the response bytes to allow both text and json parsing if needed
+        let bytes = response.bytes().await?;
+        
         // Parse JSON with detailed error information
-        match response.json::<Vec<bitcoin::Transaction>>().await {
+        match serde_json::from_slice::<Vec<bitcoin::Transaction>>(&bytes) {
             Ok(txs) => Ok(txs),
             Err(e) => {
-                // Try to get the raw response for debugging
-                let raw_body = response.text().await.unwrap_or_else(|_| "Cannot read body".to_string());
+                // If JSON parsing fails, convert the bytes to a string for debugging
+                let raw_body = String::from_utf8_lossy(&bytes);
                 warn!("Failed to parse JSON response: {} - Response: {}", e, raw_body);
                 Err(PulserError::ApiError(format!("Failed to parse response: {}", e)))
             }

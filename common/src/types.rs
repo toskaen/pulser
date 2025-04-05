@@ -7,7 +7,6 @@ use crate::PulserError;
 use crate::StateManager;
 use tokio::sync::{RwLock, Mutex, MutexGuard};
 use std::sync::Arc;
-use deposit_service::wallet::DepositWallet;
 
 
 pub trait Amount {
@@ -243,12 +242,45 @@ pub struct DepositAddressInfo {
     pub trustee_pubkey: String,
 }
 
-#[derive(Debug)] // Remove Clone derivation
-pub struct WalletManager {
-    wallets: RwLock<HashMap<String, Arc<Mutex<(wallet::DepositWalletType, StableChain)>>>>,
+// Add definition for DepositWallet directly in common
+pub mod wallet {
+    use serde::{Serialize, Deserialize};
+    use bitcoin::Network;
+
+    #[derive(Debug)]
+    pub struct DepositWallet {
+        pub wallet_id: String,
+        pub user_id: String,
+        pub network: Network,
+        pub descriptor: String,
+    }
+
+    impl DepositWallet {
+        pub fn new(wallet_id: &str, user_id: &str, network: Network, descriptor: &str) -> Self {
+            Self {
+                wallet_id: wallet_id.to_string(),
+                user_id: user_id.to_string(),
+                network,
+                descriptor: descriptor.to_string(),
+            }
+        }
+    }
+
+    // Define DepositWalletType for backward compatibility
+    #[derive(Debug)]
+    pub struct DepositWalletType {
+        pub wallet_id: String,
+    }
 }
 
-// Add manual Clone implementation
+// Update the WalletManager implementation to use our local DepositWallet type
+#[derive(Debug)]
+pub struct WalletManager {
+    // Using self::wallet namespace instead of deposit_service
+    wallets: RwLock<HashMap<String, Arc<Mutex<(self::wallet::DepositWalletType, StableChain)>>>>,
+}
+
+// Keep the manual Clone implementation
 impl Clone for WalletManager {
     fn clone(&self) -> Self {
         Self {
@@ -262,16 +294,16 @@ impl WalletManager {
         Self { wallets: RwLock::new(HashMap::new()) }
     }
 
-    // Get a wallet with exclusive access
-pub async fn get_wallet(wallets: Arc<HashMap<String, Arc<Mutex<DepositWallet>>>>, user_id: &str) -> Result<Arc<Mutex<DepositWallet>>, PulserError> {
-    match wallets.get(user_id) {
-        Some(wallet_mutex) => Ok(wallet_mutex.clone()), // Clone the Arc, not the DepositWallet
-        None => Err(PulserError::NotFound("Wallet not found".to_string())),
+    // Update the function to use our local DepositWallet type  
+    pub async fn get_wallet(wallets: Arc<HashMap<String, Arc<Mutex<self::wallet::DepositWallet>>>>, user_id: &str) -> Result<Arc<Mutex<self::wallet::DepositWallet>>, PulserError> {
+        match wallets.get(user_id) {
+            Some(wallet_mutex) => Ok(wallet_mutex.clone()), // Clone the Arc, not the DepositWallet
+            None => Err(PulserError::NotFound("Wallet not found".to_string())),
+        }
     }
-}
 
-    // Add/update a wallet
-    pub async fn store_wallet(&self, user_id: &str, wallet: wallet::DepositWalletType, chain: StableChain) -> Result<(), PulserError> {
+    // Store wallet method remains the same with local wallet type
+    pub async fn store_wallet(&self, user_id: &str, wallet: self::wallet::DepositWalletType, chain: StableChain) -> Result<(), PulserError> {
         let mut wallets = self.wallets.write().await;
         if let Some(wallet_mutex) = wallets.get(user_id) {
             // Update existing wallet
@@ -282,14 +314,6 @@ pub async fn get_wallet(wallets: Arc<HashMap<String, Arc<Mutex<DepositWallet>>>>
             wallets.insert(user_id.to_string(), Arc::new(Mutex::new((wallet, chain))));
         }
         Ok(())
-    }
-}
-
-// Add a simple DepositWalletType definition to avoid circular dependencies
-pub mod wallet {
-    #[derive(Debug)] // Add Debug derivation
-    pub struct DepositWalletType {
-        pub wallet_id: String,
     }
 }
 

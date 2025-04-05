@@ -29,6 +29,7 @@ use common::health::{
 use common::health::providers::{PriceFeedCheck, BlockchainCheck, WebSocketCheck, RedisCheck};
 use common::utils; // Import utils module
 use deposit_service::monitor::monitor_deposits;
+use common::websocket::WebSocketManager;
 
 
 
@@ -308,14 +309,14 @@ env_logger::Builder::new()
             .with_max_tip_age(3600) // 1 hour
     );
 
-    health_checker.register(
-        WebSocketCheck::new(
-            price_feed.last_ws_activity.clone(),
-            price_feed.connected.clone()
-        )
-        .with_name("deribit_websocket")
-        .with_max_inactivity(60) // 1 minute
-    );
+health_checker.register(
+    WebSocketCheck::new_with_manager(
+        price_feed.get_websocket_manager(),
+        WebSocketManager::get_exchange_url("deribit").to_string()
+    )
+    .with_name("deribit_websocket")
+    .with_max_inactivity(60)
+);
 
     // Add Redis check if Redis is configured
     if config.redis_enabled {
