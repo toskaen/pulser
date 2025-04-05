@@ -95,9 +95,44 @@ async fn get_blockchain_tip(client: &Client, esplora_url: &str) -> Result<u64, P
 }
 
 // Check mempool for 0-conf
-pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, address: &str) -> Result<Vec<bitcoin::Transaction>, PulserError> {
+// In deposit-service/src/monitor.rs
+pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, address: &str) 
+    -> Result<Vec<bitcoin::Transaction>, PulserError> {
+    
     let url = format!("{}/address/{}/mempool/txs", esplora_url, address);
-    with_backoff(|| async { client.get(&url).send().await?.json().await.map_err(PulserError::from) }, "Check mempool").await
+    
+    // Function to attempt the API call with detailed error handling
+    let fetch_mempool = || async {
+        let response = client.get(&url).send().await?;
+        
+        // Check if response is successful
+        if !response.status().is_success() {
+            // Include status code and response body in error
+            let status = response.status();
+            let body = response.text().await.unwrap_or_else(|_| "No response body".to_string());
+            
+            // Handle common error scenarios
+            if status.as_u16() == 429 {
+                return Err(PulserError::ApiError(format!("Rate limited by API: {}", status)));
+            }
+            
+            return Err(PulserError::ApiError(format!("API error: {} - {}", status, body)));
+        }
+        
+        // Parse JSON with detailed error information
+        match response.json::<Vec<bitcoin::Transaction>>().await {
+            Ok(txs) => Ok(txs),
+            Err(e) => {
+                // Try to get the raw response for debugging
+                let raw_body = response.text().await.unwrap_or_else(|_| "Cannot read body".to_string());
+                warn!("Failed to parse JSON response: {} - Response: {}", e, raw_body);
+                Err(PulserError::ApiError(format!("Failed to parse response: {}", e)))
+            }
+        }
+    };
+    
+    // Use with_backoff to retry with exponential backoff
+    with_backoff(fetch_mempool, "Check mempool").await
 }
 
 // Prune inactive users

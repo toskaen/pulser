@@ -9,7 +9,7 @@
   "timestamp": 1743534735,
   "formatted_datetime": "2025-04-01T19:12:15.623476465+00:00",
   "sc_dir": "data_lsp/user_1",
-  "raw_btc_usd": 86400.0,
+  "raw_btc_usd": 83663.5,
   "prices": {},
   "multisig_addr": "tb1pyasjd7s8aue93pw9n6g6l5nprt95rnmmh2t0k89ux5r9yr6vpchs64d9v8",
   "utxos": [
@@ -17,7 +17,7 @@
       "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 407,
+      "confirmations": 1222,
       "script_pubkey": "512053908d6e2c119a6adcb573006d20f86933908bd336b2656c77128e42b1c9ba5b",
       "height": null,
       "usd_value": 1.1046555,
