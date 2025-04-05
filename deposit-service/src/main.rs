@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tokio::sync::{mpsc, broadcast, Mutex};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::path::Path;
@@ -17,7 +17,6 @@ use common::task_manager::{UserTaskLock, ScopedTask};
 use common::types::{PriceInfo, UserStatus, ServiceStatus, StableChain};
 use deposit_service::api;
 use deposit_service::config::Config;
-use deposit_service::monitor::{monitor_deposits};
 use deposit_service::wallet::DepositWallet;
 use futures::future::join_all;
 use bdk_wallet::KeychainKind;
@@ -29,7 +28,7 @@ use common::health::{
 
 use common::health::providers::{PriceFeedCheck, BlockchainCheck, WebSocketCheck, RedisCheck};
 use common::utils; // Import utils module
-crate::api::health::ApiEndpointCheck::new(&config.channel_service_url)
+use deposit_service::monitor::monitor_deposits;
 
 
 
@@ -117,17 +116,21 @@ async fn perform_graceful_shutdown(
     state_manager: Arc<StateManager>,
     price_feed: Arc<PriceFeed>,
     webhook_manager: WebhookManager,
-    active_tasks_manager: Arc<common::task_manager::UserTaskLock>,
+    active_tasks_manager: Arc<UserTaskLock>,
+    wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
 ) -> Result<(), PulserError> {
     info!("Starting graceful shutdown...");
     
     // Step 1: Save final service status
     info!("Saving final service status...");
-    {
-        let status = service_status.lock().await.clone();
-        if let Err(e) = state_manager.save_service_status(&status).await {
-            warn!("Failed to save final service status: {}", e);
-        }
+    match tokio::time::timeout(Duration::from_secs(5), service_status.lock()).await {
+        Ok(status_guard) => {
+            let status = status_guard.clone();
+            if let Err(e) = state_manager.save_service_status(&status).await {
+                warn!("Failed to save final service status: {}", e);
+            }
+        },
+        Err(_) => warn!("Timeout acquiring service status for final save"),
     }
     
     // Step 2: Close WebSocket connections
@@ -139,12 +142,79 @@ async fn perform_graceful_shutdown(
         Err(_) => warn!("Timeout closing WebSocket"),
     }
     
-    // Step 3: Wait for active tasks to complete
-let active_tasks = active_tasks_manager.get_active_tasks().await;
-let active_count = active_tasks.len();
+    // Step 3: Save wallet state for all users
+    info!("Saving wallet state for all users...");
+    match tokio::time::timeout(Duration::from_secs(10), wallets.lock()).await {
+        Ok(wallets_guard) => {
+            let user_count = wallets_guard.len();
+            info!("Saving state for {} users", user_count);
+            
+            let mut saved = 0;
+            let mut failed = 0;
+            
+            for (user_id, (wallet, chain)) in wallets_guard.iter() {
+                if let Some(changeset) = wallet.wallet.staged() {
+                    if let Err(e) = state_manager.save_changeset(user_id, changeset).await {
+                        warn!("Failed to save changeset for user {}: {}", user_id, e);
+                        failed += 1;
+                    } else {
+                        saved += 1;
+                    }
+                }
+                
+                if let Err(e) = state_manager.save_stable_chain(user_id, chain).await {
+                    warn!("Failed to save StableChain for user {}: {}", user_id, e);
+                    failed += 1;
+                } else {
+                    saved += 1;
+                }
+            }
+            
+            info!("Saved state for {} operations, {} failed", saved, failed);
+        },
+        Err(_) => warn!("Timeout acquiring wallets lock for final save"),
+    }
+    
+    // Step 4: Wait for active tasks to complete
+    let active_tasks = active_tasks_manager.get_active_tasks().await;
+    let active_count = active_tasks.len();
     if active_count > 0 {
         info!("Waiting for {} active tasks to complete", active_count);
-        // Implementation of waiting for tasks...
+        
+        // Give tasks a chance to complete with timeout
+        for i in 0..10 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let new_count = active_tasks_manager.get_active_tasks().await.len();
+            if new_count < active_count {
+                info!("Progress: {} of {} tasks completed", active_count - new_count, active_count);
+                if new_count == 0 {
+                    info!("All tasks completed successfully");
+                    break;
+                }
+            }
+            
+            // After 5 seconds, clean up stale tasks
+            if i == 5 {
+                let cleaned = active_tasks_manager.clean_stale_tasks().await;
+                if cleaned > 0 {
+                    info!("Cleaned {} stale tasks", cleaned);
+                }
+            }
+        }
+        
+        // Final check
+        let remaining = active_tasks_manager.get_active_tasks().await.len();
+        if remaining > 0 {
+            warn!("{} tasks did not complete gracefully", remaining);
+        }
+    }
+    
+    // Step 5: Flush webhook queue
+    info!("Finalizing webhook delivery...");
+    match tokio::time::timeout(Duration::from_secs(5), webhook_manager.shutdown()).await {
+        Ok(Ok(_)) => info!("Webhook manager shut down successfully"),
+        Ok(Err(e)) => warn!("Error shutting down webhook manager: {}", e),
+        Err(_) => warn!("Timeout shutting down webhook manager"),
     }
     
     info!("Graceful shutdown complete");
@@ -229,7 +299,7 @@ env_logger::Builder::new()
     // Register health checks for critical components
     health_checker.register(
         PriceFeedCheck::new(price_feed.clone())
-            .with_min_price(1000.0)
+            .with_min_price(2121.0)
             .with_max_staleness(120) // 2 minutes
     );
 
@@ -254,6 +324,12 @@ env_logger::Builder::new()
                 .with_critical(false)
         );
     }
+
+    health_checker.register(
+        crate::api::health::ApiEndpointCheck::new(&config.channel_service_url)
+            .with_name("channel_service_api")
+            .with_critical(false)
+    );
 
 let health_checker = Arc::new(health_checker);
 
@@ -298,27 +374,90 @@ let health_checker = Arc::new(health_checker);
         }
     });
     
-    // Start the price update handler
-    let price_handle = tokio::spawn({
-        let price_info = price_info.clone();
-        let service_status = service_status.clone();
-        let client = client.clone();
-        let price_feed = price_feed.clone();
-        let state_manager = state_manager.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(PRICE_UPDATE_INTERVAL_SECS));
-            let mut failures = 0;
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        info!("Price handle shutting down");
-                        break;
+// Structured price update function
+async fn update_price_info(
+    client: &Client,
+    price_info: &Arc<Mutex<PriceInfo>>,
+    service_status: &Arc<Mutex<ServiceStatus>>,
+    state_manager: &Arc<StateManager>
+) -> Result<PriceInfo, PulserError> {
+    match fetch_btc_usd_price(client).await {
+        Ok(price_data) => {
+            // Create the price info object
+            let now = utils::now_timestamp();
+            let new_price_info = PriceInfo {
+                raw_btc_usd: price_data,
+                timestamp: now,
+                price_feeds: {
+                    let mut feeds = HashMap::new();
+                    feeds.insert("HTTP_Fallback".to_string(), price_data);
+                    feeds
+                },
+            };
+            
+            // Update the price cache atomically
+            {
+                let mut price_guard = match tokio::time::timeout(
+                    Duration::from_secs(3), 
+                    price_info.lock()
+                ).await {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        warn!("Timeout acquiring price_info lock");
+                        return Ok(new_price_info);
                     }
-                    _ = interval.tick() => {
+                };
+                *price_guard = new_price_info.clone();
+            }
+            
+            // Update the state manager
+            if let Err(e) = state_manager.update_price_cache(
+                new_price_info.raw_btc_usd, 
+                new_price_info.timestamp
+            ).await {
+                warn!("Failed to update price cache: {}", e);
+            }
+            
+            // Update service status
+            {
+                let mut status = match tokio::time::timeout(
+                    Duration::from_secs(3),
+                    service_status.lock()
+                ).await {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        warn!("Timeout acquiring service_status lock");
+                        return Ok(new_price_info);
+                    }
+                };
+                status.last_price = new_price_info.raw_btc_usd;
+                status.price_update_count += 1;
+            }
+            
+            trace!("Price updated: ${:.2}", new_price_info.raw_btc_usd);
+            Ok(new_price_info)
+        },
+        Err(e) => {
+            warn!("Price fetch failed: {}", e);
+            Err(PulserError::PriceFeedError(format!("Price fetch failed: {}", e)))
+        }
+    }
+}
+
+// Fix for the main.rs price update section
 match fetch_btc_usd_price(&client).await {
     Ok(price_data) => {
-        let new_price_info = create_price_info(price_data, "HTTP_Fallback");
+        // Convert f64 to PriceInfo
+        let now = utils::now_timestamp();
+        let new_price_info = PriceInfo {
+            raw_btc_usd: price_data,
+            timestamp: now,
+            price_feeds: {
+                let mut feeds = HashMap::new();
+                feeds.insert("HTTP_Fallback".to_string(), price_data);
+                feeds
+            }
+        };
         
         // Update the price cache
         {
@@ -326,94 +465,25 @@ match fetch_btc_usd_price(&client).await {
             *price_guard = new_price_info.clone();
         }
         
-        // Update the state manager
-        state_manager.update_price_cache(new_price_info.raw_btc_usd, new_price_info.timestamp).await?;
+        // Update cache in state manager
+        let price_data = {
+            let price_guard = price_info.lock().await;
+            (price_guard.raw_btc_usd, price_guard.timestamp)
+        };
+        state_manager.update_price_cache(price_data.0, price_data.1).await?;
         
-        // Update status
+        // Update service status
         {
             let mut status = service_status.lock().await;
-            status.last_price = new_price_info.raw_btc_usd;
-            status.price_update_count += 1;
+            status.last_price = price_data.0;
+            trace!("Price updated: ${:.2}", price_data.0);
         }
-        
-        trace!("Price updated: ${:.2}", new_price_info.raw_btc_usd);
     },
-    Err(e) => {
-        warn!("Price fetch failed: {}", e);
-    }
-}
-                    }
-                }
-            }
-            info!("Price handle completed");
-            Ok::<(), PulserError>(())
-        }
-    });
-    
-    // Wait for initial price data
-    info!("Waiting for price data from any source...");
-    let mut price_ready = false;
-    for attempt in 0..30 {  // Wait up to 30 seconds
-        // Only check the global price cache, don't trigger fetches
-        let price_data = price_info.lock().await.clone();
-        if price_data.raw_btc_usd > 0.0 {
-            price_ready = true;
-            info!("Price data ready from cache: ${:.2} ({})", 
-                price_data.raw_btc_usd,
-                price_data.price_feeds.keys()
-                    .map(|k| k.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "));
-            break;
-        }
-        
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        debug!("Waiting for price data, attempt {}/30", attempt + 1);
-        
-
-match fetch_btc_usd_price(&client).await {
-    Ok(price_data) => {
-        // Convert f64 to PriceInfo
-        let now = utils::now_timestamp();
-let new_price_info = PriceInfo {
-    raw_btc_usd: price_data,
-    timestamp: now,
-    price_feeds: {
-        let mut feeds = HashMap::new();
-        feeds.insert("HTTP_Fallback".to_string(), price_data);
-        feeds
-    }
-};
-        
-        // Now use the properly structured object
-        {
-         let mut price_guard = price_info.lock().await;
-*price_guard = new_price_info.clone();
-        }
-        
-        // Update cache
-let price_data = {
-    let price_guard = price_info.lock().await;
-    (price_guard.raw_btc_usd, price_guard.timestamp)
-};
-state_manager.update_price_cache(price_data.0, price_data.1).await?;
-        
-        // Update status
-{
-    let price_guard = price_info.lock().await;
-    status.last_price = price_guard.raw_btc_usd;
-    trace!("Price updated: ${:.2}", price_guard.raw_btc_usd);
-},
     Err(e) => {
         // Handle error case
         warn!("Price fetch failed: {}", e);
     }
 }
-    }
-
-    if !price_ready {
-        warn!("Proceeding without confirmed price data after 30 attempts; some operations may be delayed");
-    }
     
     // Preload existing users
     match preload_existing_users(
@@ -743,6 +813,7 @@ let save_status_handle = tokio::spawn({
     let price_feed = price_feed.clone();
     let webhook_manager = webhook_manager.clone();
     let active_tasks_manager = active_tasks_manager.clone();
+        let wallets = wallets.clone(); // Add this
     let mut shutdown_rx = shutdown_tx.subscribe();
     
     async move {
@@ -755,6 +826,7 @@ let save_status_handle = tokio::spawn({
             price_feed,
             webhook_manager,
             active_tasks_manager,
+            wallets,
         ).await {
             warn!("Error during graceful shutdown: {}", e);
         }
@@ -786,7 +858,6 @@ info!("Shutting down...");
 
     // Wait for all tasks to complete
     let handles = vec![
-        price_handle,
         deribit_feed_handle,
         ws_health_handle,
         retry_handle,

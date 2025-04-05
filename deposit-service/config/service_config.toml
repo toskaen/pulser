@@ -1,34 +1,35 @@
 # Service identification
 service_name = "Pulser Deposit Service"
 version = "0.1.0"
+
 # Network settings
 network = "testnet"
 esplora_url = "https://mempool.space/testnet/api"
 fallback_esplora_url = "https://blockstream.info/testnet/api"
-websocket_url = "wss://mempool.space/testnet/api/v1/ws"
 
 # HTTP server settings
 listening_address = "127.0.0.1"
 listening_port = 8081
+
 # File storage
 data_dir = "data_lsp"
+
 # Logging
 log_level = "debug"
-# Bitcoin settings
 
+# Bitcoin settings
 lsp_pubkey = "tpubDG38QmNE5cgz7TdsxHd2riidQs8oFb1BVNCQxjyXbTygaLds5ecQQfiJZVpWkQLonaKxhiGCV1GJrHwV944SNF89dNoZftwH882L1u6Axcy"
 trustee_pubkey = "tpubDHMq987D4wpxPPDjNgzygAHENiTbQeFHgKeZ1Sy2SNCkTzMTRFMR71zNTCD38tuZpg1D8BHMHUYg8TF3C86K3CEpnmeYLA43S63oPn3swPa"
 min_confirmations = 1
 channel_threshold_usd = 420.0
 fee_percentage = 0.21
-# Service integration
 
+# Service integration
 channel_service_url = "http://127.0.0.1:8084"
 hedge_service_url = "http://127.0.0.1:8082"
 api_key = "test_api_key"
 request_timeout_secs = 30
 
-# Webhook configuration
 # Webhook configuration
 webhook_enabled = true
 webhook_url = "http://127.0.0.1:8085/webhook"
@@ -38,28 +39,26 @@ webhook_timeout_secs = 5
 webhook_max_retry_time_secs = 120
 webhook_retry_max_attempts = 5
 webhook_base_backoff_ms = 500
-webhook_jitter_factor = 0.25        # New: Jitter for backoff
-webhook_batch_size = 10             # New: Max items per batch
-webhook_batch_interval_ms = 100     # New: Delay between batches
-webhook_max_backoff_secs = 3600     # New: Max backoff time
-
-# Monitor configuration
-fallback_sync_interval_secs = 60  # 15min, matches Fallback
-monitor_batch_size = 12           # Matches chunks in WebSocket/Fallback
-max_concurrent_users = 25         # Matches Fallback cap, increased from 12
+webhook_jitter_factor = 0.25
+webhook_batch_size = 10
+webhook_batch_interval_ms = 100
+webhook_max_backoff_secs = 3600
 
 # Role and node settings
 role = "lsp"
 ldk_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
-lsp_endpoint = "http://127.0.0.1:8086/lsp"  # Example endpoint, adjust as needed
+lsp_endpoint = "http://127.0.0.1:8086/lsp"
 trustee_endpoint = "http://127.0.0.1:8087/trustee"
 
 # Fee settings
 max_fee_percent = 2.1
 
+# Monitoring settings
+max_concurrent_users = 25  # Moved to top level
+
 # Price settings
 price_feed_url = "wss://test.deribit.com/ws/api/v2"
-price_cache_duration_secs = 120  # Match DEFAULT_CACHE_DURATION_SECS
+price_cache_duration_secs = 120
 
 # Deribit auth
 deribit_id = "kYlR7m6s"
@@ -70,7 +69,23 @@ deribit_testnet_address = "tb1q_deribit_testnet_dummy"
 kraken = "tb1q_deribit_testnet_dummy"
 threshold_btc_address = "tb1q_threshold_dummy"
 
-#Hedging
+# Hedging
 hedge_update_interval_secs = 30
 stagger_delay_secs = 5
 max_sync_retries = 3
+
+# Monitor configuration
+[monitor]
+deposit_window_hours = 24
+batch_size = 12
+esplora_url = "https://mempool.space/testnet/api"  # Matches top-level, can be removed if top-level is preferred
+websocket_url = "wss://mempool.space/testnet/api/v1/ws"
+fallback_sync_interval_secs = 60
+websocket_ping_interval_secs = 30
+websocket_reconnect_max_attempts = 5
+websocket_reconnect_base_delay_secs = 2
+max_concurrent_syncs = 5
+sync_batch_timeout_secs = 60
+min_confirmations = 1
+
+

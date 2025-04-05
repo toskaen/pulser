@@ -42,7 +42,7 @@ pub fn with_statuses(statuses: Arc<Mutex<HashMap<String, UserStatus>>>) -> impl 
     warp::any().map(move || statuses.clone())
 }
 
-pub fn with_esplora_urls(urls: Arc<Mutex<Vec<(String, u32)>>>) -> impl Filter<Extract = (Arc<Mutex<Vec<(String, u32)>>>,), Error = std::convert::Infallible> + Clone {
+pub fn with_esplora_urls(urls: Arc<Mutex<Vec<(String, u64)>>>) -> impl Filter<Extract = (Arc<Mutex<Vec<(String, u64)>>>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || urls.clone())
 }
 
@@ -87,7 +87,7 @@ pub fn routes(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     price_info: Arc<Mutex<PriceInfo>>,
-    esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
+    esplora_urls: Arc<Mutex<Vec<(String, u64)>>>,
     state_manager: Arc<StateManager>,
     sync_tx: mpsc::Sender<String>,
     webhook_manager: WebhookManager,

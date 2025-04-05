@@ -15,6 +15,7 @@ use reqwest::Client;
 use async_trait::async_trait;
 
 
+
 pub fn health(
     health_checker: Arc<HealthChecker>
 ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {
@@ -79,30 +80,30 @@ pub trait HealthCheck {
 }
 
 #[async_trait]
-impl HealthCheck for ApiEndpointCheck {
+impl CommonHealthCheck for ApiEndpointCheck {
     async fn check(&self) -> Result<HealthResult, PulserError> {
         match timeout(
-            Duration::from_secs(self.timeout_secs), 
+            Duration::from_secs(self.timeout_secs),
             self.client.get(&self.url).send()
         ).await {
             Ok(Ok(response)) => {
                 if response.status().is_success() {
                     Ok(HealthResult::Healthy)
                 } else {
-                    Ok(HealthResult::Degraded { 
-                        reason: format!("API returned status: {}", response.status()) 
+                    Ok(HealthResult::Degraded {
+                        reason: format!("API returned status: {}", response.status())
                     })
                 }
             },
-            Ok(Err(e)) => Ok(HealthResult::Unhealthy { 
+            Ok(Err(e)) => Ok(HealthResult::Unhealthy {
                 reason: format!("API request failed: {}", e)
             }),
-            Err(_) => Ok(HealthResult::Unhealthy { 
+            Err(_) => Ok(HealthResult::Unhealthy {
                 reason: "API request timed out".to_string()
             }),
         }
     }
-    
+
     fn component(&self) -> &Component {
         &self.component
     }

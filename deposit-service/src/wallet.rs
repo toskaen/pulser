@@ -225,19 +225,18 @@ pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Ve
 
     let change_addr = self.get_change_address().await?;
 
-    let new_utxos = wallet_sync::sync_and_stabilize_utxos(
-        &self.stable_chain.user_id.to_string(),
-        &mut self.wallet,
-        &self.blockchain,
-        &mut self.stable_chain,
-        self.price_feed.clone(), // Pass the price_feed directly
-        price_info,              // Pass the price_info
-        &current_addr,
-        &change_addr,
-        &self.state_manager,
-        self.config.min_confirmations,
-    )
-    .await?;
+let new_utxos = wallet_sync::sync_and_stabilize_utxos(
+    &self.stable_chain.user_id.to_string(),
+    &mut self.wallet,
+    &self.blockchain,
+    &mut self.stable_chain,
+    self.price_feed.clone(), // Pass the price_feed directly
+    price_info,              // Pass the price_info
+    &current_addr,
+    &change_addr,
+    &self.state_manager,
+    self.config.min_confirmations,
+).await?;
 
         self.stable_chain.timestamp = chrono::Utc::now().timestamp();
         self.stable_chain.formatted_datetime = chrono::Utc::now().to_rfc3339();

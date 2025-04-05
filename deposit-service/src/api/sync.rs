@@ -1,27 +1,34 @@
 use warp::{Filter, Rejection, Reply};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
+use tokio::time::timeout;
+
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
-use log::{info, warn, debug};
+use log::{info, warn, debug, error, trace};
 use serde_json::json;
 use reqwest::Client;
 use futures_util::FutureExt;
 use std::pin::Pin;
 use bitcoin::Address;
 use std::str::FromStr;
+use futures::future::join_all;
+
 
 use bdk_wallet::KeychainKind;
 use bdk_chain::spk_client::SyncRequest;
 use bdk_chain::ChainPosition;
 use bdk_esplora::EsploraAsyncExt;
+use bdk_esplora::esplora_client::AsyncClient;
+
 
 use common::wallet_sync::{resync_full_history, sync_and_stabilize_utxos};
 use common::error::PulserError;
-use common::types::{PriceInfo, StableChain, UserStatus, UtxoInfo};
+use common::types::{PriceInfo, StableChain, UserStatus, UtxoInfo, ServiceStatus};
 use common::price_feed::PriceFeed;
 use common::StateManager;
 use common::wallet_sync;
+use common::task_manager::{UserTaskLock, ScopedTask};
 
 use crate::wallet::DepositWallet;
 use common::webhook::{WebhookManager, WebhookPayload};
@@ -29,12 +36,199 @@ use crate::config::Config;
 use crate::monitor::check_mempool_for_address;
 use crate::api::status;
 
+
+
+// Constants for timeouts and concurrency control
+const DEFAULT_LOCK_TIMEOUT_MS: u64 = 1000;
+const SYNC_OPERATION_TIMEOUT_SECS: u64 = 120;
+const SYNC_LOCK_TIMEOUT_SECS: u64 = 5;
+const WEBHOOK_TIMEOUT_SECS: u64 = 10;
+const MAX_RETRY_ATTEMPTS: usize = 3;
+const RETRY_DELAY_BASE_MS: u64 = 250;
+
+// ActivityGuard: Ensures user is marked as inactive when the guard is dropped
+struct ActivityGuard<'a> {
+    user_id: &'a str,
+    manager: &'a Arc<UserTaskLock>,
+    task_type: &'a str,
+    completed: bool,
+}
+
+impl<'a> ActivityGuard<'a> {
+    fn new(user_id: &'a str, manager: &'a Arc<UserTaskLock>, task_type: &'a str) -> Self {
+        Self {
+            user_id,
+            manager,
+            task_type,
+            completed: false,
+        }
+    }
+    
+    fn mark_completed(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl<'a> Drop for ActivityGuard<'a> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let user_id = self.user_id.to_string();
+            let manager = self.manager.clone();
+            let task_type = self.task_type.to_string();
+            tokio::spawn(async move {
+                manager.mark_user_inactive(&user_id).await;
+                warn!(
+                    "Failed to mark user {} as inactive for {}: task cleanup",
+                    user_id, task_type
+                );
+            });
+        }
+    }
+}
+
+// SyncResult: Typed result of a sync operation
+#[derive(Debug)]
+enum SyncResult {
+    Success(bool), // bool indicates if new funds were found
+    Error(PulserError),
+    Timeout,
+}
+
+// Helper function to acquire a lock with timeout and backoff
+async fn acquire_lock_with_retry<'a, T>(
+    mutex: &'a Arc<Mutex<T>>,
+    user_id: &str,
+    operation: &str,
+    timeout_ms: u64,
+    max_retries: usize,
+) -> Result<tokio::sync::MutexGuard<'a, T>, PulserError> {
+    let mut attempts = 0;
+    
+    loop {
+        debug!("Attempting to acquire lock for {} operation on user {}, attempt {}/{}", operation, user_id, attempts + 1, max_retries + 1);
+        
+        match timeout(Duration::from_millis(timeout_ms), mutex.lock()).await {
+            Ok(guard) => return Ok(guard),
+            Err(_) => {
+                attempts += 1;
+                if attempts > max_retries {
+                    return Err(PulserError::InternalError(format!("Timeout acquiring {} lock after {} attempts", operation, attempts)));
+                }
+                
+                // Exponential backoff
+                let delay = RETRY_DELAY_BASE_MS * (1 << attempts);
+                warn!("Timeout acquiring {} lock for user {}, retrying in {}ms (attempt {}/{})", 
+                      operation, user_id, delay, attempts, max_retries + 1);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
+}
+
+// Update user status with the sync result
+async fn update_user_status(
+    user_id: &str,
+    user_statuses: &Arc<Mutex<HashMap<String, UserStatus>>>,
+    result: &SyncResult,
+    duration_ms: u64,
+) -> Result<(), PulserError> {
+    // Try to acquire the lock with retry
+    let mut statuses = acquire_lock_with_retry(
+        user_statuses,
+        user_id,
+        "user_statuses",
+        DEFAULT_LOCK_TIMEOUT_MS,
+        MAX_RETRY_ATTEMPTS
+    ).await?;
+    
+    if let Some(status) = statuses.get_mut(user_id) {
+        match result {
+            SyncResult::Success(new_funds) => {
+                status.sync_status = "success".to_string();
+                status.last_success = now_timestamp();
+                status.last_error = None;
+                status.sync_duration_ms = duration_ms;
+                status.last_update_message = if *new_funds {
+                    "Sync completed with new funds".to_string()
+                } else {
+                    "Sync completed successfully".to_string()
+                };
+            },
+            SyncResult::Error(err) => {
+                status.sync_status = "error".to_string();
+                status.last_error = Some(format!("{}", err));
+                status.sync_duration_ms = duration_ms;
+                status.last_update_message = format!("Sync failed: {}", err);
+            },
+            SyncResult::Timeout => {
+                status.sync_status = "error".to_string();
+                status.last_error = Some("Sync operation timed out".to_string());
+                status.sync_duration_ms = duration_ms;
+                status.last_update_message = "Sync timed out".to_string();
+            }
+        }
+    } else {
+        warn!("User status not found for user {} during status update", user_id);
+    }
+    
+    Ok(())
+}
+
+// Update service statistics after sync
+async fn update_service_stats(
+    user_id: &str,
+    service_status: &Arc<Mutex<ServiceStatus>>,
+    wallets: &Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
+) -> Result<(), PulserError> {
+    // Update service stats with minimal lock times
+    let mut stats = acquire_lock_with_retry(
+        service_status,
+        user_id,
+        "service_status",
+        DEFAULT_LOCK_TIMEOUT_MS,
+        MAX_RETRY_ATTEMPTS
+    ).await?;
+    
+    // Decrement active syncs safely
+    stats.active_syncs = stats.active_syncs.saturating_sub(1);
+    
+    // Update total stats from wallets if we can acquire the lock quickly
+    match timeout(Duration::from_secs(2), wallets.lock()).await {
+        Ok(wallets_lock) => {
+            stats.total_utxos = wallets_lock.values()
+                .map(|(_, chain)| chain.utxos.len() as u32)
+                .sum();
+            
+            stats.total_value_btc = wallets_lock.values()
+                .map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0)
+                .sum();
+                
+            stats.total_value_usd = wallets_lock.values()
+                .map(|(_, chain)| chain.stabilized_usd.0)
+                .sum();
+        },
+        Err(_) => {
+            warn!("Timeout acquiring wallets lock during service stats update for user {}", user_id);
+        }
+    }
+    
+    Ok(())
+}
+
+// Helper function to get current Unix timestamp in seconds
+fn now_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(Duration::from_secs(0))
+        .as_secs()
+}
+
 // Sync endpoints
 pub fn sync_route(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     price_info: Arc<Mutex<PriceInfo>>,
-    esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
+    esplora_urls: Arc<Mutex<Vec<(String, u64)>>>, // Match monitor.rs
     esplora: Arc<bdk_esplora::esplora_client::AsyncClient>,
     state_manager: Arc<StateManager>,
     webhook_url: String,
@@ -149,52 +343,94 @@ async fn force_sync_handler(
     }
 }
 
-async fn sync_user_handler(
+// Improved sync_user_handler with better concurrency and error handling
+pub async fn sync_user_handler(
     user_id: String,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     price: Arc<Mutex<PriceInfo>>,
-    esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
-    esplora: Arc<bdk_esplora::esplora_client::AsyncClient>,
+    esplora_urls: Arc<Mutex<Vec<(String, u64)>>>,
+    esplora: Arc<AsyncClient>,
     state_manager: Arc<StateManager>,
     webhook_manager: WebhookManager,
     webhook_url: String,
     client: Client,
-    active_tasks_manager: Arc<common::task_manager::UserTaskLock>,
+    active_tasks_manager: Arc<UserTaskLock>,
     price_feed: Arc<PriceFeed>,
-    service_status: Arc<Mutex<common::types::ServiceStatus>>,
+    service_status: Arc<Mutex<ServiceStatus>>,
     config: Arc<Config>,
-) -> Result<impl Reply, Rejection> {
+) -> Result<impl warp::Reply, warp::Rejection> {
     debug!("Received sync request for user {}", user_id);
-
-    let is_active = match tokio::time::timeout(Duration::from_secs(5), active_tasks_manager.is_user_active(&user_id)).await {
+    let start_time = Instant::now();
+    
+    // Check if user is already being synced with timeout
+    let is_active = match timeout(
+        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS), 
+        active_tasks_manager.is_user_active(&user_id,)
+    ).await {
         Ok(active) => active,
-        Err(_) => return Err(PulserError::InternalError("Timeout checking user status".to_string()))?,
+        Err(_) => {
+            warn!("Timeout checking active status for user {}", user_id);
+            return Ok(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "Service busy, try again later"
+            })));
+        }
     };
 
     if is_active {
         debug!("User {} is already being synced", user_id);
-        return Ok(warp::reply::json(&json!({"status": "error", "message": "User already syncing"})));
+        return Ok(warp::reply::json(&json!({
+            "status": "error", 
+            "message": "User already syncing"
+        })));
     }
 
-    match tokio::time::timeout(Duration::from_secs(5), active_tasks_manager.mark_user_active(&user_id, "sync")).await {
-        Ok(result) => if !result {
-            debug!("Failed to mark user {} as active", user_id);
-            return Ok(warp::reply::json(&json!({"status": "error", "message": "User already syncing"})));
+    // Try to mark user as active with timeout
+    let task_result = match timeout(
+        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
+        ScopedTask::new(&active_tasks_manager, &user_id, "sync")
+    ).await {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            debug!("Failed to mark user {} as active, likely already syncing", user_id);
+            return Ok(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "User already syncing or unable to begin sync"
+            })));
         },
-        Err(_) => return Err(PulserError::InternalError("Timeout acquiring lock".to_string()))?,
+        Err(_) => {
+            warn!("Timeout attempting to mark user {} as active", user_id);
+            return Ok(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "Service busy, try again later"
+            })));
+        }
     };
 
-    let _guard = super::ActivityGuard { user_id: &user_id, manager: &active_tasks_manager };
+    // Create guard to ensure user is marked inactive if something fails
+    let mut guard = ActivityGuard::new(&user_id, &active_tasks_manager, "sync");
+    
+// Update service status to increment active syncs
+match timeout(
+    Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
+    acquire_lock_with_retry(
+        &service_status,
+        &user_id,
+        "service_status",
+        DEFAULT_LOCK_TIMEOUT_MS,
+        MAX_RETRY_ATTEMPTS
+    )
+).await {
+    Ok(Ok(mut status)) => status.active_syncs += 1,
+    Ok(Err(e)) => warn!("Error acquiring service status lock for user {}: {}", user_id, e),
+    Err(_) => warn!("Timeout acquiring service status lock for user {}", user_id),
+}
 
-    {
-        match tokio::time::timeout(Duration::from_secs(5), service_status.lock()).await {
-            Ok(mut status) => status.active_syncs += 1,
-            Err(_) => warn!("Timeout updating service status for user {}", user_id),
-        }
-    }
-
-    let result = tokio::time::timeout(Duration::from_secs(120), sync_user(
+// Execute sync operation with timeout
+let sync_result = match timeout(
+    Duration::from_secs(SYNC_OPERATION_TIMEOUT_SECS),
+    sync_user(
         &user_id,
         wallets.clone(),
         user_statuses.clone(),
@@ -203,44 +439,61 @@ async fn sync_user_handler(
         esplora_urls.clone(),
         &esplora,
         state_manager.clone(),
-        webhook_manager.clone(), 
+        webhook_manager.clone(),
         &webhook_url,
         client.clone(),
         config.clone(),
-    )).await;
+    )
+).await {
+    Ok(Ok(new_funds)) => SyncResult::Success(new_funds),
+    Ok(Err(e)) => SyncResult::Error(e),
+    Err(_) => SyncResult::Timeout,
+};
 
-    {
-        match tokio::time::timeout(Duration::from_secs(5), service_status.lock()).await {
-            Ok(mut status) => {
-                status.active_syncs = status.active_syncs.saturating_sub(1);
-                if let Ok(wallets_lock) = tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
-                    status.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
-                    status.total_value_btc = wallets_lock.values().map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0).sum();
-                    status.total_value_usd = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();
-                }
-            },
-            Err(_) => warn!("Timeout updating service status after sync for user {}", user_id),
-        }
-    }
+let duration_ms = start_time.elapsed().as_millis() as u64;
 
-    match result {
-        Ok(Ok(new_funds)) => {
+// Update user status with sync result
+if let Err(e) = update_user_status(&user_id, &user_statuses, &sync_result, duration_ms).await {
+    warn!("Failed to update user status for {}: {}", user_id, e);
+}
+
+// Update service statistics
+if let Err(e) = update_service_stats(&user_id, &service_status, &wallets).await {
+    warn!("Failed to update service stats for {}: {}", user_id, e);
+}
+
+// No need for task_result.complete(); Drop handles it
+guard.mark_completed();
+    
+    // Return appropriate response based on sync result
+    match sync_result {
+        SyncResult::Success(new_funds) => {
             let message = if new_funds { "Sync completed with new funds" } else { "Sync completed" };
-            Ok(warp::reply::json(&json!({"status": "ok", "message": message})))
+            Ok(warp::reply::json(&json!({
+                "status": "ok", 
+                "message": message
+            })))
         },
-        Ok(Err(e)) => Err(e)?,
-        Err(_) => Err(PulserError::InternalError("Sync timed out".to_string()))?,
+        SyncResult::Error(e) => {
+            error!("Sync for user {} failed: {}", user_id, e);
+            Err(warp::reject::custom(e))
+        },
+        SyncResult::Timeout => {
+            error!("Sync for user {} timed out after {}s", user_id, SYNC_OPERATION_TIMEOUT_SECS);
+            Err(warp::reject::custom(PulserError::InternalError("Sync operation timed out".to_string())))
+        }
     }
 }
 
+// Improved sync_user implementation with better error handling and performance
 pub async fn sync_user(
     user_id: &str,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_statuses: Arc<Mutex<HashMap<String, UserStatus>>>,
     price_info: Arc<Mutex<PriceInfo>>,
     price_feed: Arc<PriceFeed>,
-    esplora_urls: Arc<Mutex<Vec<(String, u32)>>>,
-    esplora: &bdk_esplora::esplora_client::AsyncClient,
+    esplora_urls: Arc<Mutex<Vec<(String, u64)>>>,
+    esplora: &Arc<AsyncClient>,
     state_manager: Arc<StateManager>,
     webhook_manager: WebhookManager,
     webhook_url: &str,
@@ -248,130 +501,239 @@ pub async fn sync_user(
     config: Arc<Config>,
 ) -> Result<bool, PulserError> {
     let start_time = Instant::now();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    debug!("Starting sync for user {}", user_id);
 
-    status::update_user_status_simple(user_id, "syncing", "Starting sync", &user_statuses).await;
+    // Update user status to indicate sync is in progress
+    {
+        let mut statuses = acquire_lock_with_retry(
+            &user_statuses,
+            user_id,
+            "user_statuses",
+            DEFAULT_LOCK_TIMEOUT_MS,
+            MAX_RETRY_ATTEMPTS,
+        )
+        .await?;
 
-    let price_info_data = match tokio::time::timeout(Duration::from_secs(5), price_info.lock()).await {
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            status::update_user_status_simple(user_id, "error", "Price info timeout", &user_statuses).await;
-            return Err(PulserError::InternalError("Price info timeout".to_string()));
+        if let Some(status) = statuses.get_mut(user_id) {
+            status.sync_status = "syncing".to_string();
+            status.last_sync = now_timestamp();
+            status.last_update_message = "Sync in progress".to_string();
+        } else {
+            warn!("User status not found for {} during sync start", user_id);
+        }
+    }
+
+    // Extract wallet and chain with minimal lock time
+    let (mut wallet, mut chain) = {
+        let mut wallets_lock = acquire_lock_with_retry(
+            &wallets,
+            user_id,
+            "wallets",
+            DEFAULT_LOCK_TIMEOUT_MS,
+            MAX_RETRY_ATTEMPTS,
+        )
+        .await?;
+
+        match wallets_lock.remove(user_id) {
+            Some((w, c)) => (w, c),
+            None => {
+                return Err(PulserError::UserNotFound(format!(
+                    "Wallet not found for user {}",
+                    user_id
+                )))
+            }
         }
     };
 
-    if price_info_data.raw_btc_usd <= 0.0 {
-        status::update_user_status_simple(user_id, "error", "Invalid price data", &user_statuses).await;
-        return Err(PulserError::PriceFeedError("Invalid price data".to_string()));
-    }
+    // Track if new funds are discovered
+    let mut new_funds_found = false;
+    let mut error_occurred = false;
 
-    let update_result = {
-        let mut wallets_guard = match tokio::time::timeout(Duration::from_secs(10), wallets.lock()).await {
-            Ok(guard) => guard,
-            Err(_) => {
-                status::update_user_status_simple(user_id, "error", "Wallet lock timeout", &user_statuses).await;
-                return Err(PulserError::InternalError("Wallet lock timeout".to_string()));
-            }
-        };
+    // Get current price data
+    let current_price = {
+        let price_guard = acquire_lock_with_retry(
+            &price_info,
+            user_id,
+            "price_info",
+            DEFAULT_LOCK_TIMEOUT_MS,
+            MAX_RETRY_ATTEMPTS,
+        )
+        .await?;
 
-        if !wallets_guard.contains_key(user_id) {
-            debug!("Initializing wallet for user {}", user_id);
-            let (wallet, deposit_info, chain, _recovery_doc) = DepositWallet::from_config(&config, user_id, &state_manager, price_feed.clone()).await?;
-            match tokio::time::timeout(Duration::from_secs(5), user_statuses.lock()).await {
-                Ok(mut statuses) => {
-                    let status_obj = statuses.entry(user_id.to_string()).or_insert_with(|| UserStatus::new(user_id));
-                    status_obj.sync_status = "initializing".to_string();
-                    status_obj.current_deposit_address = deposit_info.address.clone();
-                },
-                Err(_) => warn!("Timeout updating status with address for user {}", user_id),
-            };
-            wallets_guard.insert(user_id.to_string(), (wallet, chain));
-            debug!("Wallet initialized for user {}", user_id);
+        price_guard.clone()
+    };
+
+    // Try to perform the sync operation with multiple error recovery attempts
+    for attempt in 0..3 {
+        if attempt > 0 {
+            debug!("Retry attempt {}/3 for user {} sync", attempt, user_id);
         }
+        
+let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
+let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
 
-        if let Some((wallet, chain)) = wallets_guard.get_mut(user_id) {
-            let mut spks = vec![Address::from_str(&chain.multisig_addr)?.assume_checked().script_pubkey()];
-            for i in 0..=wallet.wallet.derivation_index(KeychainKind::External).unwrap_or(0) {
-                spks.push(wallet.wallet.peek_address(KeychainKind::External, i).address.script_pubkey());
-            }
-            let request = SyncRequest::builder().spks(spks.into_iter()).build();
-            wallet.blockchain.sync(request, 5).await?;
-
-            match check_mempool_for_address(&client, &config.esplora_url, &chain.multisig_addr).await {
-                Ok(mempool_txs) if !mempool_txs.is_empty() => {
-                    wallet.wallet.apply_unconfirmed_txs(mempool_txs.iter().map(|tx| (Arc::new(tx.clone()), now as u64)));
-                    debug!("Applied {} mempool transactions for user {}", mempool_txs.len(), user_id);
-                },
-                Ok(_) => {},
-                Err(e) => warn!("Mempool check failed for user {}: {}", user_id, e),
-            }
-
-            let utxos = wallet.wallet.list_unspent().collect::<Vec<_>>();
-            let has_unconfirmed = utxos.iter().any(|u| matches!(u.chain_position, ChainPosition::Unconfirmed { .. }));
-
-            let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
-            let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-let new_utxos = sync_and_stabilize_utxos(
+match wallet_sync::sync_and_stabilize_utxos(
     user_id,
     &mut wallet.wallet,
-    &wallet.blockchain,
-    chain,
-    price_feed.clone(),  // Use this instead of price_info_data.raw_btc_usd
-    &price_info_data,    // Pass a reference to PriceInfo
-    &deposit_addr,
+    esplora,
+    &mut chain,
+    price_feed.clone(),
+    &current_price, // Fixed
+    &deposit_addr, // Use pre-computed value
     &change_addr,
     &state_manager,
     config.min_confirmations,
-).await?;
+).await
+        {
+            Ok(_) => {
+                // Check for new deposits
+                let prev_balance = chain.stabilized_usd.0;
+                let prev_utxo_count = chain.utxos.len();
 
-            if let Some(changeset) = wallet.wallet.take_staged() {
-                state_manager.save_changeset(user_id, &changeset).await?;
+                // Save the updated chain state
+                if let Err(e) = state_manager.save_stable_chain(user_id, &chain).await {
+                    warn!("Error saving StableChain for user {}: {}", user_id, e);
+                    if attempt < 2 {
+                        continue; // Try again
+                    } else {
+                        error_occurred = true;
+                        break;
+                    }
+                }
+
+                // Save wallet checkpoint
+                if let Some(changeset) = wallet.wallet.take_staged() {
+                    if let Err(e) = state_manager.save_changeset(user_id, &changeset).await {
+                        warn!("Error saving wallet changeset for user {}: {}", user_id, e);
+                    }
+                }
+
+                // Check if new funds were found
+                let new_balance = chain.stabilized_usd.0;
+                let new_utxo_count = chain.utxos.len();
+
+if new_balance > prev_balance || new_utxo_count > prev_utxo_count {
+    new_funds_found = true;
+    debug!(
+        "New funds for user {}: ${:.2} -> ${:.2}, UTXOs: {} -> {}",
+        user_id, prev_balance, new_balance, prev_utxo_count, new_utxo_count
+    );
+
+    if !webhook_url.is_empty() && new_funds_found {
+        let webhook_data = json!({
+            "event": "deposit",
+            "user_id": user_id,
+            "amount_usd": new_balance - prev_balance,
+            "amount_btc": wallet.wallet.balance().total().to_sat() as f64 / 100_000_000.0,
+            "utxo_count": new_utxo_count,
+            "timestamp": now_timestamp()
+        });
+
+        let user_id_owned = user_id.to_string();
+        let webhook_url_owned = webhook_url.to_string();
+        tokio::spawn(async move {
+            let payload = WebhookPayload {
+                event: "deposit".to_string(),
+                user_id: user_id_owned.clone(), // Clone for logging if needed
+                data: webhook_data.clone(),
+                timestamp: common::utils::now_timestamp() as u64,
+            };
+            match timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECS), webhook_manager.send(&webhook_url_owned, payload)).await {
+                Ok(Ok(_)) => debug!(
+                    "Webhook sent successfully for new deposit for user {}",
+                    user_id_owned // Use owned String
+                ),
+                Ok(Err(e)) => warn!(
+                    "Failed to send webhook for user {}: {}",
+                    user_id_owned, e // Use owned String
+                ),
+                Err(_) => warn!(
+                    "Webhook send timed out for user {}",
+                    user_id_owned // Use owned String
+                ),
             }
+        }); // Single closing brace for if block
+    }
 
-            let new_funds_detected = !new_utxos.is_empty();
-            let new_utxos_clone = new_utxos.clone();
-            let chain_clone = chain.clone();
-            let balance = wallet.wallet.balance();
-            let confirmed_btc = balance.confirmed.to_sat() as f64 / 100_000_000.0;
-            let unconfirmed_btc = balance.untrusted_pending.to_sat() as f64 / 100_000_000.0;
-            let confirmations_pending = balance.untrusted_pending.to_sat() > 0;
-            let utxo_count = chain.utxos.len() as u32;
-            let stabilized_usd = chain.stabilized_usd.0;
-
-            Ok((new_funds_detected, new_utxos_clone, chain_clone, confirmed_btc, unconfirmed_btc, confirmations_pending, utxo_count, stabilized_usd))
-        } else {
-            Err(PulserError::UserNotFound(user_id.to_string()))
-        }
-    };
-
-    match update_result {
-        Ok((new_funds_detected, new_utxos, chain, confirmed_btc, unconfirmed_btc, confirmations_pending, utxo_count, stabilized_usd)) => {
-            if new_funds_detected && !webhook_url.is_empty() {
-                spawn_webhook_notification(user_id, &new_utxos, &chain, webhook_manager, webhook_url).await;
+    // Sync was successful, break out of retry loop
+    break;
+}
             }
-            status::update_user_status_full(
-                user_id,
-                "completed",
-                utxo_count,
-                confirmed_btc,
-                stabilized_usd,
-                confirmations_pending,
-                if new_funds_detected { "Sync completed with new funds" } else { "Sync completed" },
-                start_time.elapsed().as_millis() as u64,
-                None,
-                now,
-                &user_statuses,
-            ).await;
-            if utxo_count > 0 {
-                info!("User {} sync complete: {} UTXOs, {} BTC (${:.2})", user_id, utxo_count, confirmed_btc, stabilized_usd);
+            Err(e) => {
+                warn!(
+                    "Error syncing wallet for user {} (attempt {}/3): {}",
+                    user_id,
+                    attempt + 1,
+                    e
+                );
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    continue;
+                } else {
+                    error_occurred = true;
+                    break;
+                }
             }
-            Ok(new_funds_detected)
-        },
-        Err(e) => {
-            status::update_user_status_with_error(user_id, "error", &format!("Wallet update failed: {}", e), &user_statuses).await;
-            Err(e)
         }
     }
+
+    // Always put the wallet back, even if there was an error
+    {
+        let mut wallets_lock = acquire_lock_with_retry(
+            &wallets,
+            user_id,
+            "wallets",
+            DEFAULT_LOCK_TIMEOUT_MS,
+            MAX_RETRY_ATTEMPTS,
+        )
+        .await?;
+
+        wallets_lock.insert(user_id.to_string(), (wallet, chain));
+    }
+
+    // Update user status with final state
+    {
+        let mut statuses = acquire_lock_with_retry(
+            &user_statuses,
+            user_id,
+            "user_statuses",
+            DEFAULT_LOCK_TIMEOUT_MS,
+            MAX_RETRY_ATTEMPTS,
+        )
+        .await?;
+
+        if let Some(status) = statuses.get_mut(user_id) {
+            if error_occurred {
+                status.sync_status = "error".to_string();
+                status.last_error = Some("Sync operation failed after multiple attempts".to_string());
+            } else {
+                status.sync_status = "success".to_string();
+                status.last_success = now_timestamp();
+                status.last_error = None;
+
+                if new_funds_found {
+                    status.last_deposit_time = Some(now_timestamp());
+                }
+            }
+
+            status.sync_duration_ms = start_time.elapsed().as_millis() as u64;
+        }
+    }
+
+    // Report error if one occurred
+    if error_occurred {
+        return Err(PulserError::SyncError(format!(
+            "Sync failed for user {} after multiple attempts",
+            user_id
+        )));
+    }
+
+    debug!(
+        "Sync completed for user {} in {}ms",
+        user_id,
+        start_time.elapsed().as_millis()
+    );
+    Ok(new_funds_found)
 }
 
 /// Sends a webhook notification for new UTXOs with enhanced summary data
