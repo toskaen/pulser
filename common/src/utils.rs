@@ -10,7 +10,10 @@ use std::fs;
 use crate::types::PriceInfo;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
-// Remove the first import
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, AtomicI64, AtomicBool, Ordering};
+use reqwest::Client;
+use std::time::Instant;
 
 
 /// Get current timestamp in seconds
@@ -179,5 +182,131 @@ pub fn price_to_price_info(price: f64, source: &str) -> PriceInfo {
         raw_btc_usd: price,
         timestamp: now,
         price_feeds,
+    }
+}
+
+// In common/src/utils.rs
+
+pub struct CircuitBreaker {
+    failures: AtomicUsize,
+    last_success: AtomicI64,
+    tripped: AtomicBool,
+    failure_threshold: usize,
+    reset_timeout_secs: u64,
+}
+
+impl CircuitBreaker {
+    pub fn new(failure_threshold: usize, reset_timeout_secs: u64) -> Self {
+        Self {
+            failures: AtomicUsize::new(0),
+            last_success: AtomicI64::new(0),
+            tripped: AtomicBool::new(false),
+            failure_threshold,
+            reset_timeout_secs,
+        }
+    }
+    
+    pub fn record_success(&self) {
+        self.failures.store(0, Ordering::SeqCst);
+        self.last_success.store(now_timestamp(), Ordering::SeqCst);
+        self.tripped.store(false, Ordering::SeqCst);
+    }
+    
+    pub fn record_failure(&self) -> bool {
+        let failures = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
+        if failures >= self.failure_threshold {
+            self.tripped.store(true, Ordering::SeqCst);
+            true // Circuit is tripped
+        } else {
+            false
+        }
+    }
+    
+    pub fn is_open(&self) -> bool {
+        if !self.tripped.load(Ordering::SeqCst) {
+            return false;
+        }
+        
+        // Check if reset timeout has elapsed since last success
+        let last_success = self.last_success.load(Ordering::SeqCst);
+        let now = now_timestamp();
+        
+        if now - last_success > self.reset_timeout_secs as i64 {
+            self.tripped.store(false, Ordering::SeqCst);
+            false
+        } else {
+            true
+        }
+    }
+}
+
+// In deposit-service/src/monitor.rs - Apply the circuit breaker
+pub struct EndpointManager {
+    endpoints: Vec<(String, Arc<CircuitBreaker>)>,
+    current_index: AtomicUsize,
+    client: Client,
+}
+
+impl EndpointManager {
+    pub fn new(endpoints: Vec<String>, client: Client) -> Self {
+        let endpoints = endpoints.into_iter()
+            .map(|url| (url, Arc::new(CircuitBreaker::new(5, 60))))
+            .collect::<Vec<_>>();
+            
+        Self {
+            endpoints,
+            current_index: AtomicUsize::new(0),
+            client,
+        }
+    }
+    
+    pub fn get_current_endpoint(&self) -> Option<(String, Arc<CircuitBreaker>)> {
+        let index = self.current_index.load(Ordering::SeqCst);
+        self.endpoints.get(index).cloned()
+    }
+    
+    pub fn get_next_available_endpoint(&self) -> Option<(String, Arc<CircuitBreaker>)> {
+        for i in 0..self.endpoints.len() {
+            let idx = (self.current_index.load(Ordering::SeqCst) + i) % self.endpoints.len();
+            let (_, breaker) = &self.endpoints[idx];
+            
+            if !breaker.is_open() {
+                self.current_index.store(idx, Ordering::SeqCst);
+                return self.endpoints.get(idx).cloned();
+            }
+        }
+        None
+    }
+    
+    pub async fn request<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, PulserError> {
+        let (endpoint, breaker) = match self.get_next_available_endpoint() {
+            Some(endpoint) => endpoint,
+            None => return Err(PulserError::ApiError("All endpoints are unavailable".to_string())),
+        };
+        
+        let url = format!("{}{}", endpoint, path);
+        match self.client.get(&url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<T>().await {
+                        Ok(data) => {
+                            breaker.record_success();
+                            Ok(data)
+                        },
+                        Err(e) => {
+                            breaker.record_failure();
+                            Err(PulserError::ApiError(format!("Failed to parse response: {}", e)))
+                        }
+                    }
+                } else {
+                    breaker.record_failure();
+                    Err(PulserError::ApiError(format!("API error: {}", response.status())))
+                }
+            },
+            Err(e) => {
+                breaker.record_failure();
+                Err(PulserError::NetworkError(format!("Request failed: {}", e)))
+            }
+        }
     }
 }

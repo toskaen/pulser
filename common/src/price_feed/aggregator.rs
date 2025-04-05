@@ -3,6 +3,11 @@ use crate::error::PulserError;
 use crate::types::PriceInfo;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use log::{info, debug, warn};
+use crate::price_feed::http_sources;
+use crate::price_feed::PriceFeed;
+use crate::price_feed::Arc;
+use crate::price_feed::PriceFeedExtensions;
 
 pub struct PriceAggregator {
     min_sources: usize,
@@ -124,4 +129,81 @@ impl PriceAggregator {
         // Return as percentage (positive = futures premium, negative = backwardation)
         ((futures_price / vwap) - 1.0) * 100.0
     }
+}
+
+// In common/src/price_feed/aggregator.rs
+
+pub async fn determine_best_price(
+    source_manager: &SourceManager,
+    price_feed: &Arc<PriceFeed>,
+    user_id: &str,
+) -> Result<(f64, String, f64), PulserError> {
+    // Get prices from all available sources with retries
+    let prices = source_manager.fetch_all_prices().await;
+    
+    // Get health information for each source
+    let healthy_sources = source_manager.get_healthy_sources();
+    
+    // Log what sources we're using
+    info!("Price sources for user {}: {}", user_id, 
+         healthy_sources.iter()
+            .map(|(name, score)| format!("{}={:.2}", name, score))
+            .collect::<Vec<_>>()
+            .join(", "));
+    
+    // Select valid sources with good health
+    let mut valid_sources = Vec::new();
+    for (name, result) in &prices {
+        if let Ok(source) = result {
+            // Only include sources with decent health and valid price
+            if let Some((_, score)) = healthy_sources.iter().find(|(n, _)| n == name) {
+                if *score > 0.5 && source.price > 1000.0 {
+                    valid_sources.push((source.clone(), *score));
+                }
+            }
+        }
+    }
+    
+    if valid_sources.is_empty() {
+        // Emergency fallback to HTTP API calls
+        warn!("No valid price sources available for user {}, using emergency fallback", user_id);
+        let fallback_price = http_sources::fetch_btc_usd_price(&price_feed.client).await?;
+        return Ok((fallback_price, "HTTP_Fallback".to_string(), 0.0));
+    }
+    
+    // Calculate weighted average price based on health scores
+    let total_weight: f64 = valid_sources.iter().map(|(_, score)| score).sum();
+    let weighted_price: f64 = valid_sources.iter()
+        .map(|(source, score)| source.price * score)
+        .sum::<f64>() / total_weight;
+    
+    // Debug log individual prices
+    debug!("Price inputs for user {}: {}", user_id,
+          valid_sources.iter()
+            .map(|(source, score)| format!("{}=${:.2} (weight={:.2})", source.name, source.price, score))
+            .collect::<Vec<_>>()
+            .join(", "));
+    
+    // Get spot and futures prices for comparison
+    let spot_price = weighted_price;
+    let futures_price = match price_feed.get_deribit_price().await {
+        Ok(price) => price,
+        Err(e) => {
+            warn!("Failed to get Deribit futures price: {}, using spot price", e);
+            spot_price
+        }
+    };
+    
+    // Calculate basis
+    let basis = ((futures_price / spot_price) - 1.0) * 100.0;
+    
+    // Select higher of spot and futures (maximizes user value)
+    let (selected_price, source_desc) = if spot_price >= futures_price {
+        (spot_price, format!("VWAP (backwardation {:.2}%)", basis))
+    } else {
+        (futures_price, format!("Deribit (contango {:.2}%)", basis))
+    };
+    
+    info!("Selected price for user {}: ${:.2} using {}", user_id, selected_price, source_desc);
+    Ok((selected_price, source_desc, basis))
 }

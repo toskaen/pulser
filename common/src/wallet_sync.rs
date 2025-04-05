@@ -13,6 +13,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use bdk_chain::spk_client::SyncRequest;
 use crate::utils;
+use crate::types::ChangeEntry;
+use std::collections::HashSet;
+
 
 const MAX_SCAN_RETRIES: u32 = 3;
 const SCAN_TIMEOUT_SECS: u64 = 60;
@@ -372,6 +375,7 @@ pub async fn sync_and_stabilize_utxos(
 }
 
 /// Performs a full history resync for a wallet.
+
 pub async fn resync_full_history(
     user_id: &str,
     wallet: &mut Wallet,
@@ -384,18 +388,20 @@ pub async fn resync_full_history(
 ) -> Result<Vec<UtxoInfo>, PulserError> {
     debug!("Starting full history resync for user {}", user_id);
     
-    let mut addresses = vec![Address::from_str(&chain.multisig_addr)?.assume_checked()];
+    // IMPORTANT: Save existing history and logs before any operations
+    let existing_history = chain.history.clone();
+    let existing_change_log = chain.change_log.clone();
+    
+    // Perform all the sync operations as usual
+    let mut spks = vec![Address::from_str(&chain.multisig_addr)?.assume_checked().script_pubkey()];
+    
     for old_addr in &chain.old_addresses {
         if let Ok(addr) = Address::from_str(old_addr) {
-            addresses.push(addr.assume_checked());
+            spks.push(addr.assume_checked().script_pubkey());
         }
     }
     
-    let mut spks = vec![];
-    for addr in &addresses {
-        spks.push(addr.script_pubkey());
-    }
-    
+    // Add all wallet derived addresses
     for i in 0..=wallet.derivation_index(KeychainKind::External).unwrap_or(10) {
         spks.push(wallet.peek_address(KeychainKind::External, i).address.script_pubkey());
     }
@@ -423,7 +429,39 @@ pub async fn resync_full_history(
         min_confirmations,
     ).await?;
     
-    debug!("Full resync completed for user {}: {} new UTXOs", user_id, new_utxos.len());
+    // IMPORTANT: After sync is complete, merge back the saved history
+    
+    // Create a set to detect duplicates by (txid, vout) tuple
+    let mut txid_set = HashSet::new();
+    for utxo in &chain.history {
+        txid_set.insert((utxo.txid.clone(), utxo.vout));
+    }
+    
+    // Add back original history that doesn't conflict
+    for utxo in existing_history {
+        let key = (utxo.txid.clone(), utxo.vout);
+        if !txid_set.contains(&key) {
+            chain.history.push(utxo.clone());
+            txid_set.insert(key);
+        }
+    }
+    
+    // Add an entry in the change log for this resync
+    let mut merged_logs = existing_change_log;
+    merged_logs.push(ChangeEntry {
+        timestamp: chrono::Utc::now().timestamp(),
+        change_type: "force_resync".to_string(),
+        btc_delta: 0.0,
+        usd_delta: 0.0,
+        service: "deposit-service".to_string(),
+        details: Some(format!("Full history resync with {} new UTXOs", new_utxos.len())),
+    });
+    
+    chain.change_log = merged_logs;
+    
+    info!("Completed full history resync for user {}: {} new UTXOs with history preserved", 
+         user_id, new_utxos.len());
+    
     Ok(new_utxos)
 }
 

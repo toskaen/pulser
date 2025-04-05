@@ -5,6 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
+use crate::utils;
+
+
 
 pub mod deribit;
 pub mod binance;
@@ -99,34 +104,115 @@ impl From<KrakenProvider> for PriceProviderEnum {
     }
 }
 
-// Source manager to handle multiple price sources
-pub struct SourceManager {
-    sources: Vec<PriceProviderEnum>,
-    client: Client,
+// In common/src/price_feed/sources/mod.rs
+
+pub struct SourceHealth {
+    source_name: String,
+    last_success: Arc<AtomicI64>,
+    success_count: Arc<AtomicUsize>,
+    failure_count: Arc<AtomicUsize>,
+    consecutive_failures: Arc<AtomicUsize>,
+    total_latency_ms: Arc<AtomicU64>,
 }
 
+impl SourceHealth {
+    pub fn new(source_name: &str) -> Self {
+        Self {
+            source_name: source_name.to_string(),
+            last_success: Arc::new(AtomicI64::new(0)),
+            success_count: Arc::new(AtomicUsize::new(0)),
+            failure_count: Arc::new(AtomicUsize::new(0)),
+            consecutive_failures: Arc::new(AtomicUsize::new(0)),
+            total_latency_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+    
+    pub fn record_success(&self, latency_ms: u64) {
+        self.last_success.store(now_timestamp(), Ordering::SeqCst);
+        self.success_count.fetch_add(1, Ordering::SeqCst);
+        self.consecutive_failures.store(0, Ordering::SeqCst);
+        self.total_latency_ms.fetch_add(latency_ms, Ordering::SeqCst);
+    }
+    
+    pub fn record_failure(&self) {
+        self.failure_count.fetch_add(1, Ordering::SeqCst);
+        self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
+    }
+    
+    pub fn get_reliability_score(&self) -> f64 {
+        let success = self.success_count.load(Ordering::SeqCst) as f64;
+        let total = success + self.failure_count.load(Ordering::SeqCst) as f64;
+        
+        if total == 0.0 {
+            return 0.0;
+        }
+        
+        // Base reliability on success rate
+        let success_rate = success / total;
+        
+        // Factor in recency - penalize if last success was long ago
+        let now = now_timestamp();
+        let last_success = self.last_success.load(Ordering::SeqCst);
+        let seconds_since_success = (now - last_success).max(0) as f64;
+let recency_factor = f64::exp(-0.0001 * seconds_since_success);
+
+        
+        // Penalize consecutive failures
+        let consecutive_failures = self.consecutive_failures.load(Ordering::SeqCst) as f64;
+        let failure_penalty = (-0.1 * consecutive_failures).exp();
+        
+        success_rate * recency_factor * failure_penalty
+    }
+}
+
+// Enhance SourceManager to track health
 impl SourceManager {
     pub fn new(client: Client) -> Self {
         Self {
             sources: Vec::new(),
             client,
+            health_trackers: HashMap::new(),
         }
     }
-
-    // Register a provider that can be converted to the enum
+    
     pub fn register<T: Into<PriceProviderEnum>>(&mut self, provider: T) {
-        self.sources.push(provider.into());
+        let provider_enum = provider.into();
+        let name = provider_enum.name().to_string();
+        
+        self.health_trackers.insert(name.clone(), Arc::new(SourceHealth::new(&name)));
+        self.sources.push(provider_enum);
     }
-
-    // Fetch prices from all sources
+    
     pub async fn fetch_all_prices(&self) -> HashMap<String, Result<PriceSource, PulserError>> {
         let mut results = HashMap::new();
         
         for source in &self.sources {
+            let name = source.name().to_string();
+            let health = self.health_trackers.get(&name).unwrap();
+            
+            let start = Instant::now();
             let result = source.fetch_price(&self.client).await;
-            results.insert(source.name().to_string(), result);
+            let elapsed = start.elapsed().as_millis() as u64;
+            
+            match &result {
+                Ok(_) => health.record_success(elapsed),
+                Err(_) => health.record_failure(),
+            }
+            
+            results.insert(name, result);
         }
         
         results
+    }
+    
+    pub fn get_source_health(&self, name: &str) -> Option<Arc<SourceHealth>> {
+        self.health_trackers.get(name).cloned()
+    }
+    
+    pub fn get_healthy_sources(&self) -> Vec<(String, f64)> {
+        self.health_trackers.iter()
+            .map(|(name, health)| (name.clone(), health.get_reliability_score()))
+            .filter(|(_, score)| *score > 0.5)
+            .collect()
     }
 }

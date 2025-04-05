@@ -8,6 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH, Instant, Duration};
 use tokio::time::timeout;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use log::{info, warn};
+use crate::price_feed::PriceFeed;
+use crate::price_feed::PriceFeedExtensions;
+
 
 pub struct DeribitProvider {
     pub weight: f64,
@@ -21,7 +25,6 @@ pub struct DeribitProvider {
     pub last_price_update: Arc<RwLock<Instant>>,
 }
 
-// Add to common/src/price_feed/sources/deribit.rs
 impl std::fmt::Debug for DeribitProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeribitProvider")
@@ -29,6 +32,145 @@ impl std::fmt::Debug for DeribitProvider {
             .field("timeout_secs", &self.timeout_secs)
             .field("futures_only", &self.futures_only)
             .finish_non_exhaustive() // Use this to skip fields that don't implement Debug
+    }
+}
+
+
+impl PriceFeed {
+    pub async fn ensure_websocket_connection(&self) -> Result<bool, PulserError> {
+        // Check current connection state
+        {
+            let connected = self.connected.read().await;
+            if *connected {
+                return Ok(true);
+            }
+        }
+        
+        // Check if already trying to connect
+        {
+            let is_connecting = self.is_connecting.read().await;
+            if *is_connecting {
+                return Ok(false); // Connection attempt in progress
+            }
+        }
+        
+        // Mark as connecting
+        {
+            let mut is_connecting = self.is_connecting.write().await;
+            *is_connecting = true;
+        }
+        
+        // Use a deferred cleanup to ensure is_connecting is reset
+        struct Defer<F: FnOnce()>(Option<F>);
+        impl<F: FnOnce()> Drop for Defer<F> {
+            fn drop(&mut self) {
+                if let Some(f) = self.0.take() { f() }
+            }
+        }
+        
+        let is_connecting_ref = self.is_connecting.clone();
+        let defer = Defer(Some(|| {
+            tokio::spawn(async move {
+                let mut is_connecting = is_connecting_ref.write().await;
+                *is_connecting = false;
+            });
+        }));
+        
+        // Connect with exponential backoff
+        let mut backoff = Duration::from_millis(100);
+        let max_backoff = Duration::from_secs(60);
+        let mut attempts = 0;
+        
+        while attempts < 5 {
+            info!("Attempting to connect to Deribit WebSocket (attempt {}/5)", attempts + 1);
+            
+            match self.connect_deribit_websocket().await {
+                Ok(_) => {
+                    // Successfully connected
+                    let mut connected = self.connected.write().await;
+                    *connected = true;
+                    
+                    let mut last_activity = self.last_ws_activity.write().await;
+                    *last_activity = Instant::now();
+                    
+                    info!("Successfully connected to Deribit WebSocket");
+                    return Ok(true);
+                },
+                Err(e) => {
+                    warn!("Failed to connect to Deribit WebSocket: {}", e);
+                    attempts += 1;
+                    
+                    if attempts >= 5 {
+                        break;
+                    }
+                    
+                    // Exponential backoff with jitter
+                    let jitter = rand::random::<u64>() % 100;
+                    backoff = std::cmp::min(backoff * 2, max_backoff) + Duration::from_millis(jitter);
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+        
+        warn!("Failed to connect to Deribit WebSocket after 5 attempts");
+        Ok(false)
+    }
+    
+    // Add heartbeat mechanism to maintain connection
+    pub async fn start_heartbeat_monitor(&self) {
+        let ping_interval = Duration::from_secs(30);
+        let mut interval = tokio::time::interval(ping_interval);
+        
+        loop {
+            interval.tick().await;
+            
+            // Check if connected
+            let is_connected = {
+                let connected = self.connected.read().await;
+                *connected
+            };
+            
+            if !is_connected {
+                // Try to reconnect
+                if let Err(e) = self.ensure_websocket_connection().await {
+                    warn!("Failed to reconnect WebSocket: {}", e);
+                }
+                continue;
+            }
+            
+            // Send ping to keep connection alive
+            if let Err(e) = self.send_ping().await {
+                warn!("Failed to send ping: {}", e);
+                
+                // Mark as disconnected
+                let mut connected = self.connected.write().await;
+                *connected = false;
+            }
+            
+            // Check for stale connection
+            let last_activity = {
+                let activity = self.last_ws_activity.read().await;
+                *activity
+            };
+            
+            if Instant::now().duration_since(last_activity) > Duration::from_secs(90) {
+                warn!("WebSocket connection stale, reconnecting");
+                
+                // Mark as disconnected
+                let mut connected = self.connected.write().await;
+                *connected = false;
+                
+                // Close existing connection
+                if let Err(e) = self.shutdown_websocket().await {
+                    warn!("Error closing stale WebSocket: {:?}", e);
+                }
+                
+                // Try to reconnect
+                if let Err(e) = self.ensure_websocket_connection().await {
+                    warn!("Failed to reconnect WebSocket: {}", e);
+                }
+            }
+        }
     }
 }
 

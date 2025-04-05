@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use crate::PulserError;
 use crate::StateManager;
+use tokio::sync::{RwLock, Mutex, MutexGuard};
+use std::sync::Arc;
+
 
 pub trait Amount {
     fn to_sats(&self) -> u64;
@@ -237,6 +240,48 @@ pub struct DepositAddressInfo {
     pub user_pubkey: String,
     pub lsp_pubkey: String,
     pub trustee_pubkey: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct WalletManager {
+    wallets: RwLock<HashMap<String, Arc<Mutex<(wallet::DepositWalletType, StableChain)>>>>,
+}
+
+impl WalletManager {
+    pub fn new() -> Self {
+        Self { wallets: RwLock::new(HashMap::new()) }
+    }
+
+    // Get a wallet with exclusive access
+    pub async fn get_wallet_mut(&self, user_id: &str) -> Result<tokio::sync::MutexGuard<(wallet::DepositWalletType, StableChain)>, PulserError> {
+        let wallets = self.wallets.read().await;
+        match wallets.get(user_id) {
+            Some(wallet_mutex) => Ok(wallet_mutex.lock().await),
+            None => Err(PulserError::UserNotFound(format!("User {} not found", user_id)))
+        }
+    }
+
+    // Add/update a wallet
+    pub async fn store_wallet(&self, user_id: &str, wallet: wallet::DepositWalletType, chain: StableChain) -> Result<(), PulserError> {
+        let mut wallets = self.wallets.write().await;
+        if let Some(wallet_mutex) = wallets.get(user_id) {
+            // Update existing wallet
+            let mut guard = wallet_mutex.lock().await;
+            *guard = (wallet, chain);
+        } else {
+            // Create new wallet entry
+            wallets.insert(user_id.to_string(), Arc::new(Mutex::new((wallet, chain))));
+        }
+        Ok(())
+    }
+}
+
+// Add a simple DepositWalletType definition to avoid circular dependencies
+pub mod wallet {
+    pub struct DepositWalletType {
+        // Add minimal required fields
+        pub wallet_id: String,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
