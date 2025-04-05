@@ -7,6 +7,7 @@ use crate::PulserError;
 use crate::StateManager;
 use tokio::sync::{RwLock, Mutex, MutexGuard};
 use std::sync::Arc;
+use deposit_service::wallet::DepositWallet;
 
 
 pub trait Amount {
@@ -242,9 +243,18 @@ pub struct DepositAddressInfo {
     pub trustee_pubkey: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)] // Remove Clone derivation
 pub struct WalletManager {
     wallets: RwLock<HashMap<String, Arc<Mutex<(wallet::DepositWalletType, StableChain)>>>>,
+}
+
+// Add manual Clone implementation
+impl Clone for WalletManager {
+    fn clone(&self) -> Self {
+        Self {
+            wallets: RwLock::new(HashMap::new()), // Create new empty RwLock instead of cloning
+        }
+    }
 }
 
 impl WalletManager {
@@ -253,13 +263,12 @@ impl WalletManager {
     }
 
     // Get a wallet with exclusive access
-    pub async fn get_wallet_mut(&self, user_id: &str) -> Result<tokio::sync::MutexGuard<(wallet::DepositWalletType, StableChain)>, PulserError> {
-        let wallets = self.wallets.read().await;
-        match wallets.get(user_id) {
-            Some(wallet_mutex) => Ok(wallet_mutex.lock().await),
-            None => Err(PulserError::UserNotFound(format!("User {} not found", user_id)))
-        }
+pub async fn get_wallet(wallets: Arc<HashMap<String, Arc<Mutex<DepositWallet>>>>, user_id: &str) -> Result<Arc<Mutex<DepositWallet>>, PulserError> {
+    match wallets.get(user_id) {
+        Some(wallet_mutex) => Ok(wallet_mutex.clone()), // Clone the Arc, not the DepositWallet
+        None => Err(PulserError::NotFound("Wallet not found".to_string())),
     }
+}
 
     // Add/update a wallet
     pub async fn store_wallet(&self, user_id: &str, wallet: wallet::DepositWalletType, chain: StableChain) -> Result<(), PulserError> {
@@ -278,8 +287,8 @@ impl WalletManager {
 
 // Add a simple DepositWalletType definition to avoid circular dependencies
 pub mod wallet {
+    #[derive(Debug)] // Add Debug derivation
     pub struct DepositWalletType {
-        // Add minimal required fields
         pub wallet_id: String,
     }
 }

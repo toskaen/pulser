@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use crate::utils;
+use crate::utils::now_timestamp;
 
 
 
@@ -165,6 +166,11 @@ let recency_factor = f64::exp(-0.0001 * seconds_since_success);
     }
 }
 
+pub struct SourceManager {
+    sources: Vec<PriceProviderEnum>,
+    client: Client,
+    health_trackers: HashMap<String, Arc<SourceHealth>>,
+}
 // Enhance SourceManager to track health
 impl SourceManager {
     pub fn new(client: Client) -> Self {

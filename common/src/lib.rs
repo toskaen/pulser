@@ -7,7 +7,8 @@ pub mod storage;
 pub mod task_manager;
 pub mod wallet_sync;
 pub mod webhook;
-pub mod health;  // Add the new module
+pub mod health;
+pub mod websocket;  // Add the new module
 
 pub use error::PulserError;
 pub use types::{Amount, Bitcoin, USD, StableChain, UserStatus, ServiceStatus, 

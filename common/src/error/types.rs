@@ -96,6 +96,8 @@ pub enum PulserError {
     WithContext(Box<ContextualError>),  
     #[error("Sync error: {0}")]
     SyncError(String),
+    #[error("NotFound error: {0}")]
+    NotFound(String),
 }
 
 impl PulserError {
@@ -139,7 +141,7 @@ impl PulserError {
             Self::ConsensusError(_) => ErrorCategory::Bitcoin,
             Self::WebhookError(_) => ErrorCategory::External,
             Self::SyncError(_) => ErrorCategory::Bitcoin, // Or Internal, depending on intent
-
+		Self::NotFoundError(_) => ErrorCategory::NotFound,
         }
     }
 

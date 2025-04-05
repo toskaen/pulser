@@ -8,6 +8,8 @@ use crate::price_feed::http_sources;
 use crate::price_feed::PriceFeed;
 use crate::price_feed::Arc;
 use crate::price_feed::PriceFeedExtensions;
+use crate::price_feed::sources::SourceManager;
+
 
 pub struct PriceAggregator {
     min_sources: usize,
@@ -167,7 +169,8 @@ pub async fn determine_best_price(
     if valid_sources.is_empty() {
         // Emergency fallback to HTTP API calls
         warn!("No valid price sources available for user {}, using emergency fallback", user_id);
-        let fallback_price = http_sources::fetch_btc_usd_price(&price_feed.client).await?;
+let client = reqwest::Client::new();
+let fallback_price = http_sources::fetch_btc_usd_price(&client).await?;
         return Ok((fallback_price, "HTTP_Fallback".to_string(), 0.0));
     }
     
