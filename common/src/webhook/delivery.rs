@@ -261,26 +261,6 @@ impl WebhookManager {
         }
     }
 
-// In WebhookManager implementation
-pub async fn flush_batches(&self) -> Result<(), PulserError> {
-    // Get all endpoints with pending batches
-    let endpoints: Vec<String> = {
-        let queues = self.batch_queues.read().await;
-        queues.keys()
-            .filter(|k| !queues.get(*k).unwrap().is_empty())
-            .cloned()
-            .collect()
-    };
-    
-    // Process batches for each endpoint
-    for endpoint in endpoints {
-        self.tx.send(WebhookCommand::ProcessBatch { endpoint }).await
-            .map_err(|e| PulserError::WebhookError(format!("Failed to flush batch: {}", e)))?;
-    }
-    
-    Ok(())
-}
-
     pub async fn send(&self, endpoint: &str, payload: WebhookPayload) -> Result<(), PulserError> {
         if !self.config.enabled {
             debug!("Webhooks disabled, skipping delivery to {}", endpoint);
@@ -297,6 +277,30 @@ pub async fn flush_batches(&self) -> Result<(), PulserError> {
 
         Ok(())
     }
+    
+    // Add to WebhookManager implementation in delivery.rs
+pub async fn flush_batches(&self) -> Result<(), PulserError> {
+    // Get all endpoints with pending batches
+    let endpoints: Vec<String> = {
+        let queues = self.batch_queues.read().await;
+        queues.keys()
+            .filter(|k| !queues.get(*k).unwrap().is_empty())
+            .cloned()
+            .collect()
+    };
+    
+    // Process batches for each endpoint
+    for endpoint in endpoints {
+        if let Err(e) = self.tx.send(WebhookCommand::ProcessBatch { endpoint }).await {
+            warn!("Failed to queue batch flush: {}", e);
+            return Err(PulserError::WebhookError(format!("Failed to flush batch: {}", e)));
+        }
+    }
+    
+    // Wait a small amount of time for processing to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    Ok(())
+}
 
     pub async fn shutdown(&self) -> Result<(), PulserError> {
         if let Err(e) = self.tx.send(WebhookCommand::Shutdown).await {

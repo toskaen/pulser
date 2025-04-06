@@ -195,6 +195,18 @@ pub async fn sync_and_stabilize_utxos(
     let mut previous_utxos = chain.utxos.clone();
     let previous_balance = wallet.balance();
 
+    let mut spks = vec![deposit_addr.script_pubkey()];
+    
+    // Add all old addresses
+    for old_addr in &chain.old_addresses {
+        if let Ok(addr) = Address::from_str(old_addr) {
+            let script_pubkey = addr.assume_checked().script_pubkey();
+            if !spks.contains(&script_pubkey) {
+                spks.push(script_pubkey);
+            }
+        }
+    }
+    
     let sync_request = wallet.start_sync_with_revealed_spks();
     let sync_update = esplora.sync(sync_request, 5).await?;
     wallet.apply_update(sync_update)?;
@@ -484,6 +496,7 @@ pub async fn check_address_mempool(
         _ => Ok(false) // Default to false on any error
     }
 }
+
 
 // Helper function to validate a wallet is properly initialized (unchanged)
 pub async fn validate_wallet_state(

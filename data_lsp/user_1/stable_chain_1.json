@@ -1,0 +1,70 @@
+{
+  "user_id": 1,
+  "is_stable_receiver": false,
+  "counterparty": "unknown",
+  "accumulated_btc": {
+    "sats": 1300
+  },
+  "stabilized_usd": 1.1046555,
+  "timestamp": 1743534735,
+  "formatted_datetime": "2025-04-01T19:12:15.623476465+00:00",
+  "sc_dir": "data_lsp/user_1",
+  "raw_btc_usd": 79404.5,
+  "prices": {},
+  "multisig_addr": "tb1pyasjd7s8aue93pw9n6g6l5nprt95rnmmh2t0k89ux5r9yr6vpchs64d9v8",
+  "utxos": [
+    {
+      "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
+      "vout": 1,
+      "amount": 1300,
+      "confirmations": 1635,
+      "script_pubkey": "512053908d6e2c119a6adcb573006d20f86933908bd336b2656c77128e42b1c9ba5b",
+      "height": 1635,
+      "usd_value": 1.1046555,
+      "spent": false
+    }
+  ],
+  "pending_sweep_txid": null,
+  "events": [],
+  "total_withdrawn_usd": 0.0,
+  "expected_usd": 0.0,
+  "hedge_position_id": null,
+  "pending_channel_id": null,
+  "shorts": [],
+  "hedge_ready": false,
+  "last_hedge_time": 0,
+  "short_reduction_amount": null,
+  "old_addresses": [
+    "tb1p2wgg6m3vzxdx4h94wvqx6g8cdyeepz7nx6ex2mrhz28y9vwfhfdsgk509r"
+  ],
+  "history": [
+    {
+      "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
+      "vout": 1,
+      "amount_sat": 1300,
+      "address": "tb1p2wgg6m3vzxdx4h94wvqx6g8cdyeepz7nx6ex2mrhz28y9vwfhfdsgk509r",
+      "keychain": "External",
+      "timestamp": 1743535515,
+      "confirmations": 3,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 1.1046555,
+      "spendable": true,
+      "derivation_path": "",
+      "spent": false
+    }
+  ],
+  "change_log": [
+    {
+      "timestamp": 1743535515,
+      "change_type": "deposit",
+      "btc_delta": 0.000013,
+      "usd_delta": 1.1046555,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed"
+    }
+  ]
+}
