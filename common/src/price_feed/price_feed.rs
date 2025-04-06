@@ -28,6 +28,7 @@ pub struct PriceFeed {
     aggregator: Arc<PriceAggregator>,
     latest_deribit_price: Arc<RwLock<f64>>,
     latest_kraken_futures_price: Arc<RwLock<f64>>, // Added for Kraken Futures
+        latest_binance_futures_price: Arc<RwLock<f64>>, // New field
     last_deribit_update: Arc<RwLock<i64>>,
     client: Client,
     ws_manager: Arc<WebSocketManager>, // Added for WebSocket management
@@ -45,37 +46,38 @@ impl fmt::Debug for PriceFeed {
 }
 
 impl PriceFeed {
-    pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(super::DEFAULT_TIMEOUT_SECS))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+pub fn new() -> Self {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(super::DEFAULT_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| Client::new());
 
-        let mut source_manager = SourceManager::new(client.clone());
-        source_manager.register(KrakenProvider::new().with_weight(1.2));
-        source_manager.register(BitfinexProvider::new().with_weight(1.1));
-        source_manager.register(BinanceProvider::new().with_weight(1.0));
-        source_manager.register(DeribitProvider::new().with_weight(0.8));
+    let mut source_manager = SourceManager::new(client.clone());
+    source_manager.register(KrakenProvider::new().with_weight(1.2));
+    source_manager.register(BitfinexProvider::new().with_weight(1.1));
+    source_manager.register(BinanceProvider::new().with_weight(1.0));
+    source_manager.register(DeribitProvider::new().with_weight(0.8));
 
-        let ws_config = crate::websocket::WebSocketConfig {
-            ping_interval_secs: WS_PING_INTERVAL_SECS,
-            timeout_secs: 30,
-            max_reconnect_attempts: 10,
-            reconnect_base_delay_secs: 1,
-        };
-        let ws_manager = Arc::new(WebSocketManager::new(ws_config));
+    let ws_config = crate::websocket::WebSocketConfig {
+        ping_interval_secs: WS_PING_INTERVAL_SECS,
+        timeout_secs: 30,
+        max_reconnect_attempts: 10,
+        reconnect_base_delay_secs: 1,
+    };
+    let ws_manager = Arc::new(WebSocketManager::new(ws_config));
 
-        Self {
-            source_manager: Arc::new(RwLock::new(source_manager)),
-            aggregator: Arc::new(PriceAggregator::new().with_min_sources(2)),
-            latest_deribit_price: Arc::new(RwLock::new(0.0)),
-            latest_kraken_futures_price: Arc::new(RwLock::new(0.0)),
-            last_deribit_update: Arc::new(RwLock::new(0)),
-            client,
-            ws_manager,
-        }
+    Self {
+        source_manager: Arc::new(RwLock::new(source_manager)),
+        aggregator: Arc::new(PriceAggregator::new().with_min_sources(2)),
+        latest_deribit_price: Arc::new(RwLock::new(0.0)),
+        latest_kraken_futures_price: Arc::new(RwLock::new(0.0)),
+        latest_binance_futures_price: Arc::new(RwLock::new(0.0)), // Initialize the new field
+        last_deribit_update: Arc::new(RwLock::new(0)),
+        client,
+        ws_manager,
     }
+}
     
     pub fn get_websocket_manager(&self) -> Arc<WebSocketManager> {
         self.ws_manager.clone()
@@ -138,8 +140,8 @@ impl PriceFeed {
         Ok(price_info)
     }
 
-pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
-    // Connect to Deribit via the WebSocket manager
+pub async fn start_futures_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
+    // Connect to Deribit via the WebSocketManager
     let max_reconnect_attempts = 5;
     let base_delay_secs = 2;
     let mut attempt = 0;
@@ -274,31 +276,91 @@ pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>
         }
     }
     
+    // Add Binance Futures connection
+    let binance_endpoint = "wss://fstream.binance.com/ws/btcusdt@ticker";
+    let binance_price = self.latest_binance_futures_price.clone();
+
+    match self.ws_manager.subscribe(binance_endpoint, "", PRICE_UPDATE_INTERVAL_MS).await {
+        Ok(_) => {
+            info!("Successfully connected to Binance Futures WebSocket");
+            
+            self.ws_manager.process_messages(binance_endpoint, move |json| {
+                let binance_price = binance_price.clone();
+                
+                async move {
+                    if let Some(price) = json.get("c") // "c" is the last price in Binance's ticker stream
+                        .and_then(|p| p.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        let mut price_guard = binance_price.write().await;
+                        *price_guard = price;
+                        trace!("Binance Futures BTC/USD: ${:.2}", price);
+                    }
+                    Ok(())
+                }
+            }).await?;
+        },
+        Err(e) => {
+            warn!("Failed to connect to Binance Futures: {}", e);
+            // Continue anyway, treating Binance as optional
+        }
+    }
+
     Ok(())
 }
 
-    pub async fn get_best_futures_price(&self) -> Result<(String, f64), PulserError> {
-        let deribit_price = *self.latest_deribit_price.read().await;
-        let kraken_price = *self.latest_kraken_futures_price.read().await;
-        let last_update = *self.last_deribit_update.read().await;
-        let now = utils::now_timestamp();
+pub async fn get_best_futures_price(&self) -> Result<(String, f64), PulserError> {
+    let deribit_price = *self.latest_deribit_price.read().await;
+    let kraken_price = *self.latest_kraken_futures_price.read().await;
+    let binance_price = *self.latest_binance_futures_price.read().await;
+    let last_update = *self.last_deribit_update.read().await;
+    let now = utils::now_timestamp();
 
-        if now - last_update > 60 {
-            warn!("Futures prices stale, last update: {}", last_update);
-            return Err(PulserError::PriceFeedError("Futures prices outdated".to_string()));
-        }
-
-        match (deribit_price > 0.0, kraken_price > 0.0) {
-            (true, true) => Ok(if deribit_price < kraken_price {
-                ("Deribit".to_string(), deribit_price)
-            } else {
-                ("Kraken".to_string(), kraken_price)
-            }),
-            (true, false) => Ok(("Deribit".to_string(), deribit_price)),
-            (false, true) => Ok(("Kraken".to_string(), kraken_price)),
-            (false, false) => Err(PulserError::PriceFeedError("No valid futures prices".to_string())),
-        }
+    if now - last_update > 60 {
+        warn!("Futures prices stale, last update: {}", last_update);
+        return Err(PulserError::PriceFeedError("Futures prices outdated".to_string()));
     }
+
+    // Collect all valid prices
+    let mut valid_prices = Vec::new();
+    if deribit_price > 0.0 {
+        valid_prices.push(("Deribit".to_string(), deribit_price));
+    }
+    if kraken_price > 0.0 {
+        valid_prices.push(("Kraken".to_string(), kraken_price));
+    }
+    if binance_price > 0.0 {
+        valid_prices.push(("Binance".to_string(), binance_price));
+    }
+
+    if valid_prices.is_empty() {
+        return Err(PulserError::PriceFeedError("No valid futures prices".to_string()));
+    }
+
+    // For hedging shorts, find the lowest price
+    valid_prices.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(valid_prices[0].clone())
+}
+
+pub async fn get_all_futures_prices(&self) -> HashMap<String, f64> {
+    let mut prices = HashMap::new();
+    let deribit_price = *self.latest_deribit_price.read().await;
+    if deribit_price > 0.0 {
+        prices.insert("Deribit".to_string(), deribit_price);
+    }
+    
+    let kraken_price = *self.latest_kraken_futures_price.read().await;
+    if kraken_price > 0.0 {
+        prices.insert("Kraken".to_string(), kraken_price);
+    }
+    
+    let binance_price = *self.latest_binance_futures_price.read().await;
+    if binance_price > 0.0 {
+        prices.insert("Binance".to_string(), binance_price);
+    }
+    
+    prices
+}
 
     pub async fn get_deribit_price(&self) -> Result<f64, PulserError> {
         let deribit_price = *self.latest_deribit_price.read().await;
@@ -348,10 +410,26 @@ pub async fn start_deribit_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>
     }
     
 pub async fn is_websocket_connected(&self) -> bool {
+    // We consider it connected if at least Deribit (our primary source) is connected
     self.ws_manager.is_connected("wss://test.deribit.com/ws/api/v2").await
+    
+    // Alternative: check if ANY of the connections are active
+    // let deribit = self.ws_manager.is_connected("wss://test.deribit.com/ws/api/v2").await;
+    // let kraken = self.ws_manager.is_connected("wss://futures.kraken.com/ws/v1").await;
+    // let binance = self.ws_manager.is_connected("wss://fstream.binance.com/ws/btcusdt@ticker").await;
+    // deribit || kraken || binance
 }
 
 pub async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>> {
-    self.ws_manager.shutdown_connection("wss://test.deribit.com/ws/api/v2").await
+    // Shutdown all connections
+    let deribit_result = self.ws_manager.shutdown_connection("wss://test.deribit.com/ws/api/v2").await;
+    
+    // Also shutdown Kraken and Binance connections
+    self.ws_manager.shutdown_connection("wss://futures.kraken.com/ws/v1").await;
+    self.ws_manager.shutdown_connection("wss://fstream.binance.com/ws/btcusdt@ticker").await;
+    
+    // Return the Deribit result (our primary connection)
+    deribit_result
 }
 }
+

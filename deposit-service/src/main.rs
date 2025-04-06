@@ -61,12 +61,18 @@ async fn preload_existing_users(
                 debug!("Preloading user: {}", user_id);
                 match DepositWallet::from_config(config, user_id, state_manager, price_feed.clone()).await {
                     Ok((wallet, deposit_info, chain, _recovery_doc)) => {
+                        // Calculate total_value_btc from unspent historical UTXOs
+                        let total_value_btc = chain.history.iter()
+                            .filter(|entry| !entry.spent && entry.confirmations >= config.min_confirmations)
+                            .map(|entry| entry.amount_sat as f64 / 100_000_000.0)
+                            .sum::<f64>();
+
                         let status = UserStatus {
                             user_id: user_id.to_string(),
                             last_sync: 0,
-                            sync_status: "pending".to_string(),  // Mark as unsynced
+                            sync_status: "pending".to_string(),
                             utxo_count: chain.utxos.len() as u32,
-                            total_value_btc: 0.0,  // Defer to monitor
+                            total_value_btc,  // Use calculated value instead of 0.0
                             total_value_usd: chain.stabilized_usd.0,
                             confirmations_pending: false,
                             last_update_message: "Preloaded from disk, awaiting sync".to_string(),
@@ -85,7 +91,7 @@ async fn preload_existing_users(
                             let mut statuses_lock = user_statuses.lock().await;
                             statuses_lock.insert(user_id.to_string(), status);
                         }
-                        sync_tx.send(user_id.to_string()).await?;  // Queue for monitor
+                        sync_tx.send(user_id.to_string()).await?;
                         loaded_count += 1;
                     }
                     Err(e) => {
@@ -302,6 +308,8 @@ env_logger::Builder::new()
         PriceFeedCheck::new(price_feed.clone())
             .with_min_price(2121.0)
             .with_max_staleness(120) // 2 minutes
+                    .with_timeout(Duration::from_secs(30)) // Add explicit timeout
+
     );
 
     health_checker.register(
@@ -339,41 +347,41 @@ let health_checker = Arc::new(health_checker);
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
 
     // Start the Deribit feed handler
-    let deribit_feed_handle = tokio::spawn({
-        let price_feed = price_feed.clone();
-        let service_status = service_status.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            let mut failures = 0;
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        info!("Deribit feed handle shutting down");
-                        break;
-                    }
-                    _ = async { if failures > 0 { tokio::time::sleep(Duration::from_secs(5 * failures as u64)).await; } } => {
-                        match price_feed.start_deribit_feed(&mut shutdown_rx).await {
-                            Ok(_) => {
-                                failures = 0;
-                                service_status.lock().await.websocket_active = true;
-                            }
-                            Err(e) => {
-                                failures += 1;
-                                warn!("Deribit feed failed ({} attempts): {}", failures, e);
-                                if failures > 5 {
-                                    let mut status = service_status.lock().await;
-                                    status.health = "websocket error".to_string();
-                                    status.websocket_active = false;
-                                }
+let deribit_feed_handle = tokio::spawn({
+    let price_feed = price_feed.clone();
+    let service_status = service_status.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    async move {
+        let mut failures = 0;
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Futures feed handle shutting down");
+                    break;
+                }
+                _ = async { if failures > 0 { tokio::time::sleep(Duration::from_secs(5 * failures as u64)).await; } } => {
+                    match price_feed.start_futures_feed(&mut shutdown_rx).await {
+                        Ok(_) => {
+                            failures = 0;
+                            service_status.lock().await.websocket_active = true;
+                        }
+                        Err(e) => {
+                            failures += 1;
+                            warn!("Futures feed failed ({} attempts): {}", failures, e);
+                            if failures > 5 {
+                                let mut status = service_status.lock().await;
+                                status.health = "websocket error".to_string();
+                                status.websocket_active = false;
                             }
                         }
                     }
                 }
             }
-            info!("Deribit feed handle completed");
-            Ok::<(), PulserError>(())
         }
-    });
+        info!("Futures feed handle completed");
+        Ok::<(), PulserError>(())
+    }
+});
     
 // Structured price update function
 async fn update_price_info(

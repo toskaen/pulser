@@ -54,7 +54,7 @@ trustee_endpoint = "http://127.0.0.1:8087/trustee"
 max_fee_percent = 2.1
 
 # Monitoring settings
-max_concurrent_users = 25  # Moved to top level
+max_concurrent_users = 21  # Moved to top level
 
 # Price settings
 price_feed_url = "wss://test.deribit.com/ws/api/v2"

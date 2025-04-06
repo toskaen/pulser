@@ -1,4 +1,3 @@
-// common/src/health/providers/price_feed.rs
 use crate::error::PulserError;
 use crate::health::{Component, ComponentType, HealthCheck, HealthResult};
 use crate::price_feed::{PriceFeed, PriceFeedExtensions};
@@ -12,6 +11,7 @@ pub struct PriceFeedCheck {
     price_feed: Arc<PriceFeed>,
     min_price: f64,
     max_staleness_secs: u64,
+    timeout: Duration, // New field for configurable timeout
 }
 
 impl PriceFeedCheck {
@@ -26,6 +26,7 @@ impl PriceFeedCheck {
             price_feed,
             min_price: 2121.0,  // Minimum reasonable BTC price
             max_staleness_secs: 120,  // 2 minutes
+            timeout: Duration::from_secs(5), // Default timeout
         }
     }
     
@@ -38,6 +39,11 @@ impl PriceFeedCheck {
         self.max_staleness_secs = max_staleness_secs;
         self
     }
+    
+    pub fn with_timeout(mut self, timeout: Duration) -> Self { // New method
+        self.timeout = timeout;
+        self
+    }
 }
 
 #[async_trait]
@@ -46,8 +52,8 @@ impl HealthCheck for PriceFeedCheck {
         // Check WebSocket connection status
         let is_connected = self.price_feed.is_websocket_connected().await;
         
-        // Get the latest price
-        match timeout(Duration::from_secs(5), self.price_feed.get_price()).await {
+        // Get the latest price with configurable timeout
+        match timeout(self.timeout, self.price_feed.get_price()).await {
             Ok(Ok(price_info)) => {
                 // Check if price is reasonable
                 let price = price_info.raw_btc_usd;
@@ -82,8 +88,8 @@ impl HealthCheck for PriceFeedCheck {
                 Ok(HealthResult::Healthy)
             },
             Ok(Err(e)) => {
-                // Try Deribit price as fallback
-                match timeout(Duration::from_secs(3), self.price_feed.get_deribit_price()).await {
+                // Try Deribit price as fallback with half the timeout
+                match timeout(self.timeout / 2, self.price_feed.get_deribit_price()).await {
                     Ok(Ok(deribit_price)) => {
                         if deribit_price < self.min_price {
                             return Ok(HealthResult::Unhealthy { 

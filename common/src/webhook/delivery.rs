@@ -261,6 +261,26 @@ impl WebhookManager {
         }
     }
 
+// In WebhookManager implementation
+pub async fn flush_batches(&self) -> Result<(), PulserError> {
+    // Get all endpoints with pending batches
+    let endpoints: Vec<String> = {
+        let queues = self.batch_queues.read().await;
+        queues.keys()
+            .filter(|k| !queues.get(*k).unwrap().is_empty())
+            .cloned()
+            .collect()
+    };
+    
+    // Process batches for each endpoint
+    for endpoint in endpoints {
+        self.tx.send(WebhookCommand::ProcessBatch { endpoint }).await
+            .map_err(|e| PulserError::WebhookError(format!("Failed to flush batch: {}", e)))?;
+    }
+    
+    Ok(())
+}
+
     pub async fn send(&self, endpoint: &str, payload: WebhookPayload) -> Result<(), PulserError> {
         if !self.config.enabled {
             debug!("Webhooks disabled, skipping delivery to {}", endpoint);
