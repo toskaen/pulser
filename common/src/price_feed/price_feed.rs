@@ -84,19 +84,27 @@ pub fn new() -> Self {
     }
 
     pub async fn get_price(&self) -> Result<PriceInfo, PulserError> {
-        let now = utils::now_timestamp();
-        let cache = PRICE_CACHE.read().await;
-        if cache.0 > 0.0 && (now - cache.1) < DEFAULT_CACHE_DURATION_SECS as i64 {
-            trace!("Using cached price: ${:.2}", cache.0);
-            let mut price_feeds = HashMap::new();
-            price_feeds.insert("cache".to_string(), cache.0);
-            return Ok(PriceInfo {
-                raw_btc_usd: cache.0,
-                timestamp: cache.1,
-                price_feeds,
-            });
-        }
-        drop(cache);
+let cache_ttl = Duration::from_secs(DEFAULT_CACHE_DURATION_SECS);
+let now = utils::now_timestamp();
+// Fix - store the read lock in a variable
+let cache = PRICE_CACHE.read().await;
+let cached_price = if cache.0 > 0.0 && (now - cache.1) < cache_ttl.as_secs() as i64 {
+    Some((cache.0, cache.1))
+} else {
+    None
+};
+drop(cache); // Now cache is in scope
+
+if let Some((price, timestamp)) = cached_price {
+    let mut feeds = HashMap::new();
+    feeds.insert("cached".to_string(), price);
+    return Ok(PriceInfo {
+        raw_btc_usd: price,
+        timestamp,
+        price_feeds: feeds,
+    });
+}
+
 
         debug!("Fetching fresh prices from configured sources");
         let sources = tokio::time::timeout(Duration::from_secs(5), self.source_manager.read()).await
@@ -421,15 +429,49 @@ pub async fn is_websocket_connected(&self) -> bool {
 }
 
 pub async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>> {
-    // Shutdown all connections
-    let deribit_result = self.ws_manager.shutdown_connection("wss://test.deribit.com/ws/api/v2").await;
+    info!("Closing all WebSocket connections...");
     
-    // Also shutdown Kraken and Binance connections
-    self.ws_manager.shutdown_connection("wss://futures.kraken.com/ws/v1").await;
-    self.ws_manager.shutdown_connection("wss://fstream.binance.com/ws/btcusdt@ticker").await;
+    // First: Unsubscribe from all active subscriptions
+    let deribit_endpoint = "wss://test.deribit.com/ws/api/v2";
+    let kraken_endpoint = "wss://futures.kraken.com/ws/v1";
+    let binance_endpoint = "wss://fstream.binance.com/ws/btcusdt@ticker";
     
-    // Return the Deribit result (our primary connection)
-    deribit_result
+    // Send unsubscribe messages if applicable
+    if self.ws_manager.is_connected(deribit_endpoint).await {
+        let unsubscribe_msg = r#"{"method":"public/unsubscribe_all","params":{},"id":1}"#;
+        // Try to send the unsubscribe message with a short timeout
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.ws_manager.send_message(deribit_endpoint, unsubscribe_msg)
+        ).await {
+            Ok(Ok(_)) => debug!("Unsubscribed from Deribit"),
+            _ => debug!("Failed to unsubscribe from Deribit"),
+        };
+    }
+    
+    // Similar for other endpoints if they have unsubscribe protocols
+    
+    // Give a short pause for unsubscribe messages to be processed
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    
+    // Now close connections forcefully if needed
+    let futures = vec![
+        self.ws_manager.shutdown_connection_with_timeout(deribit_endpoint, Duration::from_secs(3)),
+        self.ws_manager.shutdown_connection_with_timeout(kraken_endpoint, Duration::from_secs(2)),
+        self.ws_manager.shutdown_connection_with_timeout(binance_endpoint, Duration::from_secs(2)),
+    ];
+    
+    // Wait for all shutdown attempts to complete
+    let results = futures::future::join_all(futures).await;
+    
+    // Check if any succeeded
+    let result = results.into_iter()
+        .filter_map(|r| r)
+        .next();
+    
+    info!("All WebSocket connections cleanup complete");
+    result
 }
+
 }
 

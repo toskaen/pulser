@@ -185,6 +185,14 @@ if should_reconnect {
             }
         }
     }
+    
+    // Add this method to your WebSocketManager implementation in websocket/mod.rs
+pub async fn send_message(&self, endpoint: &str, message: &str) -> Result<(), PulserError> {
+    let conn = self.get_connection(endpoint).await?;
+    let mut stream = conn.stream.lock().await;
+    stream.send(Message::Text(message.to_string())).await
+        .map_err(|e| PulserError::NetworkError(format!("Failed to send message to {}: {}", endpoint, e)))
+}
 
     pub async fn process_messages<F, Fut>(
         &self,
@@ -320,5 +328,44 @@ pub async fn is_connected(&self, endpoint: &str) -> bool {
             None
         }
     }
+
+pub async fn force_close_connection(&self, endpoint: &str) -> bool {
+    let mut connections = self.connections.write().await;
+    if let Some(conn) = connections.remove(endpoint) {
+        // Just drop the connection without waiting for graceful close
+        debug!("Forcefully closed connection to {}", endpoint);
+        true
+    } else {
+        false
+    }
 }
 
+pub async fn shutdown_connection_with_timeout(&self, endpoint: &str, timeout: Duration) 
+-> Option<Result<(), PulserError>> {
+    match tokio::time::timeout(timeout, self.shutdown_connection(endpoint)).await {
+        Ok(result) => result,
+        Err(_) => {
+            warn!("Timeout shutting down connection to {}", endpoint);
+            // Force-close when timeout occurs
+            if self.force_close_connection(endpoint).await {
+                Some(Ok(()))
+            } else {
+                None
+            }
+        }
+    }
+}
+    
+  pub async fn force_close_all(&self) {
+    let endpoints = {
+        let connections = self.connections.read().await;
+        connections.keys().cloned().collect::<Vec<_>>()
+    };
+    
+    for endpoint in endpoints {
+        if let Some(Err(e)) = self.shutdown_connection(&endpoint).await {
+            warn!("Error force closing {}: {}", endpoint, e);
+        }
+    }
+}
+}

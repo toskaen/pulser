@@ -844,55 +844,38 @@ let save_status_handle = tokio::spawn({
     }
 });
 
-    // Wait for shutdown signal
+// Wait for shutdown signal
 shutdown_tx.subscribe().recv().await?;
 info!("Shutting down...");
 
-    // Close WebSocket connections
-    info!("Closing WebSocket connections...");
-    match tokio::time::timeout(Duration::from_secs(5), price_feed.shutdown_websocket()).await {
-        Ok(Some(_)) => info!("WebSocket closed successfully"),
-        Ok(None) => info!("No active WebSocket to close"),
-        Err(_) => warn!("Timeout closing WebSocket"),
-    }
+// Wait for tasks to complete (they will handle their own cleanup)
+let handles = vec![
+    deribit_feed_handle,
+    ws_health_handle,
+    retry_handle,
+    monitor_handle,
+    sync_handle,
+    status_update_handle,
+    server_handle,
+    save_status_handle, // This one runs perform_graceful_shutdown
+];
 
-    // Save final service status
-    info!("Saving final service status...");
-    {
-        let status = service_status.lock().await;
-        if let Err(e) = state_manager.save_service_status(&status).await {
-            warn!("Failed to save final service status: {}", e);
-        }
-    }
-
-    // Wait for all tasks to complete
-    let handles = vec![
-        deribit_feed_handle,
-        ws_health_handle,
-        retry_handle,
-        monitor_handle,
-        sync_handle,
-        status_update_handle,
-        server_handle,
-        save_status_handle,
-    ];
-
-    // Give tasks time to shut down gracefully
-    info!("Waiting for tasks to complete...");
-    match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
-        Ok(results) => {
-            for result in results {
-                if let Err(e) = result {
-                    warn!("Task error during shutdown: {}", e);
-                }
+// Give tasks time to shut down gracefully
+info!("Waiting for tasks to complete...");
+match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
+    Ok(results) => {
+        for result in results {
+            if let Err(e) = result {
+                warn!("Task error during shutdown: {}", e);
             }
-            info!("All tasks shut down gracefully");
         }
-        Err(_) => {
-            warn!("Shutdown timed out after {}s, some tasks may not have completed", MAX_SHUTDOWN_WAIT_SECS);
-        }
+        info!("All tasks shut down gracefully");
     }
+    Err(_) => {
+        warn!("Shutdown timed out after {}s, some tasks may not have completed", MAX_SHUTDOWN_WAIT_SECS);
+    }
+}
 
-    info!("Deposit service shutdown complete");
-    Ok(())
+info!("Deposit service shutdown complete");
+Ok(())
 }

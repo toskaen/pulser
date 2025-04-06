@@ -335,19 +335,29 @@ async fn force_sync_handler(
                 config.min_confirmations,
             ).await {
                 Ok(new_utxos) => {
-                    // Create a set to detect duplicates
-                    let mut txid_set = HashSet::new();
-                    for utxo in &chain.history {
-                        txid_set.insert((utxo.txid.clone(), utxo.vout));
-                    }
-                    
-                    // Add back original history that doesn't conflict
-                    for utxo in existing_history {
-                        let key = (utxo.txid.clone(), utxo.vout);
-                        if !txid_set.contains(&key) {
-                            chain.history.push(utxo.clone());
-                        }
-                    }
+                    // Use a HashMap instead of HashSet for deduplication with updates
+let mut txid_map: HashMap<(String, u32), UtxoInfo> = HashMap::new();
+
+// First add all current history items
+for utxo in &chain.history {
+    txid_map.insert((utxo.txid.clone(), utxo.vout), utxo.clone());
+}
+
+// Then add back old history, only overwriting if it has MORE confirmations
+for utxo in existing_history {
+    let key = (utxo.txid.clone(), utxo.vout);
+    
+    // Only insert if:
+    // 1. Entry doesn't exist yet, OR
+    // 2. New entry has MORE confirmations than existing one
+    if !txid_map.contains_key(&key) || 
+       utxo.confirmations > txid_map.get(&key).unwrap().confirmations {
+        txid_map.insert(key, utxo.clone());
+    }
+}
+
+// Replace history with deduplicated values
+chain.history = txid_map.values().cloned().collect();
                     
                     // Add resync log entry
                     let mut merged_logs = existing_change_log;

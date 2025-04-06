@@ -233,7 +233,7 @@ pub async fn sync_and_stabilize_utxos(
             amount: utxo_info.amount_sat,
             script_pubkey: u.txout.script_pubkey.to_hex_string(),
             confirmations,
-            height: None,
+            height: Some(confirmations),
             usd_value: None,
             spent: utxo_info.spent,
         };
