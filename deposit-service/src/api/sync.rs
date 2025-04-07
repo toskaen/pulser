@@ -397,7 +397,9 @@ chain.history = txid_map.values().cloned().collect();
     }
 }
 
-// Main sync user function to work with monitor - Fixed the locking issues
+// Replace or modify the sync_user function in sync.rs
+// This version minimizes lock time and avoids lifetime issues
+
 pub async fn sync_user(
     user_id: &str,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -433,15 +435,14 @@ pub async fn sync_user(
         price_guard.clone()
     };
 
-    // CRITICAL CHANGE: Instead of removing the wallet from the HashMap,
-    // we access it within the lock scope per operation
+    // Process each attempt with minimal lock time
     for attempt in 0..3 {
         if attempt > 0 {
             debug!("Retry attempt {}/3 for user {} sync", attempt, user_id);
         }
         
-        // Get deposit address and other data
-        let (deposit_address, prev_balance, prev_utxo_count) = {
+        // 1. First, get the data we need with a short-lived lock
+        let sync_data = {
             let wallets_lock = acquire_lock_with_retry(
                 &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
             ).await?;
@@ -451,15 +452,17 @@ pub async fn sync_user(
                 None => return Err(PulserError::UserNotFound(format!("Wallet not found for user {}", user_id))),
             };
             
-            let address = Address::from_str(&chain.multisig_addr)?;
-            (
-                address.assume_checked(),
-                chain.stabilized_usd.0,
-                chain.utxos.len()
-            )
+            // Clone the things we need
+            let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
+            let prev_balance = chain.stabilized_usd.0;
+            let prev_utxo_count = chain.utxos.len();
+            
+            (deposit_addr, prev_balance, prev_utxo_count)
         };
         
-        // Perform the sync within a new lock scope to minimize lock time
+        let (deposit_address, prev_balance, prev_utxo_count) = sync_data;
+        
+        // 2. Now perform the sync operation with a fresh lock
         let sync_result = {
             let mut wallets_lock = acquire_lock_with_retry(
                 &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
@@ -467,74 +470,79 @@ pub async fn sync_user(
             
             let (wallet, chain) = match wallets_lock.get_mut(user_id) {
                 Some(pair) => pair,
-                None => return Err(PulserError::UserNotFound(format!("Wallet not found for user {}", user_id))),
+                None => return Err(PulserError::UserNotFound(format!("Wallet disappeared for user {}", user_id))),
             };
             
-            let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
-            wallet_sync::sync_and_stabilize_utxos(
-                user_id,
-                &mut wallet.wallet,
-                esplora,
-                chain,
-                price_feed.clone(),
-                &current_price,
-                &deposit_address,
-                &change_addr,
-                &state_manager,
-                config.min_confirmations,
-            ).await
+            // Create a targeted sync request with just the addresses we care about
+            let mut spks = vec![deposit_address.script_pubkey()];
+            
+            // Add all old addresses
+            for old_addr in &chain.old_addresses {
+                if let Ok(addr) = Address::from_str(old_addr) {
+                    spks.push(addr.assume_checked().script_pubkey());
+                }
+            }
+            
+            let sync_request = bdk_chain::spk_client::SyncRequest::builder()
+                .spks(spks.into_iter())
+                .build();
+                
+            // Sync with targeted request
+            match esplora.sync(sync_request, 5).await {
+                Ok(update) => {
+                    wallet.wallet.apply_update(update)?;
+                    let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
+                    
+                    wallet_sync::sync_and_stabilize_utxos(
+                        user_id,
+                        &mut wallet.wallet,
+                        esplora,
+                        chain,
+                        price_feed.clone(),
+                        &current_price,
+                        &deposit_address,
+                        &change_addr,
+                        &state_manager,
+                        config.min_confirmations,
+                    ).await
+                },
+                Err(e) => Err(e.into()),
+            }
         };
         
         match sync_result {
             Ok(_) => {
-                // Now check if new funds were found
-                let (new_balance, new_utxo_count, state_save_result) = {
-                    let mut wallets_lock = acquire_lock_with_retry(
+                // 3. Check for new funds with another short-lived lock
+                let post_sync_data = {
+                    let wallets_lock = acquire_lock_with_retry(
                         &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
                     ).await?;
                     
-                    let (wallet, chain) = match wallets_lock.get_mut(user_id) {
+                    let (_, chain) = match wallets_lock.get(user_id) {
                         Some(pair) => pair,
-                        None => return Err(PulserError::UserNotFound(format!("Wallet not found for user {}", user_id))),
+                        None => return Err(PulserError::UserNotFound(format!("Wallet disappeared for user {}", user_id))),
                     };
                     
-                    // Save the state with retries in a separate task
-                    let state_save_result = tokio::spawn({
-                        let user_id = user_id.to_string();
-                        let chain = chain.clone();
-                        let changeset = wallet.wallet.staged().cloned();
-                        let state_manager = state_manager.clone();
-                        
-                        async move {
-                            if let Err(e) = state_manager.save_stable_chain(&user_id, &chain).await {
-                                warn!("Error saving StableChain for user {}: {}", user_id, e);
-                                return false;
-                            }
-                            
-                            if let Some(changeset) = changeset {
-                                if let Err(e) = state_manager.save_changeset(&user_id, &changeset).await {
-                                    warn!("Error saving wallet changeset for user {}: {}", user_id, e);
-                                    return false;
-                                }
-                            }
-                            true
-                        }
-                    });
-                    
-                    (chain.stabilized_usd.0, chain.utxos.len(), state_save_result)
+                    // Extract what we need to process outside the lock
+                    (chain.stabilized_usd.0, chain.utxos.len(), chain.clone())
                 };
                 
-                // Check if saving was successful
-                if let Ok(save_ok) = timeout(Duration::from_secs(5), state_save_result).await {
-                    if let Ok(false) = save_ok {
-                        if attempt < 2 {
-                            warn!("State save failed for user {}, retry attempt {}", user_id, attempt + 1);
-                            continue; // Retry on state save failure
+                let (new_balance, new_utxo_count, chain_clone) = post_sync_data;
+                
+                // 4. Save state asynchronously
+                tokio::spawn({
+                    let user_id = user_id.to_string();
+                    let chain = chain_clone;
+                    let state_manager = state_manager.clone();
+                    
+                    async move {
+                        if let Err(e) = state_manager.save_stable_chain(&user_id, &chain).await {
+                            warn!("Error saving StableChain for user {}: {}", user_id, e);
                         }
                     }
-                }
+                });
 
-                // Check if new funds were found
+                // 5. Check if new funds were found
                 if new_balance > prev_balance || new_utxo_count > prev_utxo_count {
                     new_funds_found = true;
                     debug!(
@@ -542,7 +550,7 @@ pub async fn sync_user(
                         user_id, prev_balance, new_balance, prev_utxo_count, new_utxo_count
                     );
 
-                    // Send webhook notification if new funds found
+                    // 6. Handle webhook notification if new funds found
                     if !webhook_url.is_empty() && new_funds_found {
                         let webhook_data = json!({
                             "event": "deposit",
@@ -556,6 +564,7 @@ pub async fn sync_user(
                         let webhook_url_owned = webhook_url.to_string();
                         let webhook_manager = webhook_manager.clone();
                         
+                        // Launch webhook in a separate task to not block sync
                         tokio::spawn(async move {
                             let payload = WebhookPayload {
                                 event: "deposit".to_string(),
@@ -564,22 +573,8 @@ pub async fn sync_user(
                                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
                             };
                             
-                            match timeout(
-                                Duration::from_secs(WEBHOOK_TIMEOUT_SECS), 
-                                webhook_manager.send(&webhook_url_owned, payload)
-                            ).await {
-                                Ok(Ok(_)) => debug!(
-                                    "Webhook sent successfully for new deposit for user {}",
-                                    user_id_owned
-                                ),
-                                Ok(Err(e)) => warn!(
-                                    "Failed to send webhook for user {}: {}",
-                                    user_id_owned, e
-                                ),
-                                Err(_) => warn!(
-                                    "Webhook send timed out for user {}",
-                                    user_id_owned
-                                ),
+                            if let Err(e) = webhook_manager.send(&webhook_url_owned, payload).await {
+                                warn!("Failed to send webhook for user {}: {}", user_id_owned, e);
                             }
                         });
                     }
@@ -617,13 +612,14 @@ pub async fn sync_user(
         "Sync completed successfully"
     };
     
+    // Update user status with a short-lived lock
     let elapsed = start_time.elapsed().as_millis() as u64;
     status::update_user_status_full(
         user_id,
         "success",
-        0, // We don't have utxo count here, but it will be updated elsewhere
-        0.0, // Same for BTC value
-        0.0, // Same for USD value
+        0,
+        0.0,
+        0.0,
         false,
         success_message,
         elapsed,

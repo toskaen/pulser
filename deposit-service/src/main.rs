@@ -30,6 +30,7 @@ use common::health::providers::{PriceFeedCheck, BlockchainCheck, WebSocketCheck,
 use common::utils; // Import utils module
 use deposit_service::monitor::monitor_deposits;
 use common::websocket::WebSocketManager;
+use tokio::sync::Semaphore;
 
 
 
@@ -60,7 +61,12 @@ async fn preload_existing_users(
             if let Some(user_id) = path.file_name().and_then(|f| f.to_str()).and_then(|s| s.strip_prefix("user_")) {
                 debug!("Preloading user: {}", user_id);
                 match DepositWallet::from_config(config, user_id, state_manager, price_feed.clone()).await {
-                    Ok((wallet, deposit_info, chain, _recovery_doc)) => {
+                    Ok((mut wallet, deposit_info, chain, _recovery_doc)) => {
+                            wallet.cleanup_old_addresses().await.ok();
+                    if let Err(e) = wallet.cleanup_old_addresses().await {
+                        warn!("Failed to clean up old addresses for user {}: {}", user_id, e);
+                    }
+                   
                         // Calculate total_value_btc from unspent historical UTXOs
                         let total_value_btc = chain.history.iter()
                             .filter(|entry| !entry.spent && entry.confirmations >= config.min_confirmations)
@@ -141,45 +147,112 @@ async fn perform_graceful_shutdown(
     }
     
     // Step 2: Close WebSocket connections
-    info!("Closing WebSocket connections...");
-    match tokio::time::timeout(Duration::from_secs(5), price_feed.shutdown_websocket()).await {
-        Ok(Some(Ok(_))) => info!("WebSocket closed successfully"),
-        Ok(Some(Err(e))) => warn!("Error closing WebSocket: {}", e),
-        Ok(None) => info!("No active WebSocket to close"),
-        Err(_) => warn!("Timeout closing WebSocket"),
+info!("Closing WebSocket connections...");
+let mut ws_closed = false;
+
+// Try graceful close with a reasonable timeout
+match tokio::time::timeout(
+    Duration::from_secs(5),
+    price_feed.shutdown_websocket()
+).await {
+    Ok(Some(Ok(_))) => {
+        info!("WebSocket closed successfully");
+        ws_closed = true;
+    },
+    Ok(Some(Err(e))) => {
+        warn!("Error during websocket shutdown: {}", e);
+    },
+    Ok(None) => {
+        info!("No active WebSocket to close");
+        ws_closed = true;
+    },
+    Err(_) => {
+        warn!("Timeout during websocket shutdown");
     }
+};
+
+// If graceful close failed, force close connections
+if !ws_closed {
+    info!("Forcing WebSocket close");
+    if let Some(manager) = price_feed.get_websocket_manager() {
+        manager.force_close_all().await;
+    }
+}
     
-    // Step 3: Save wallet state for all users
+    // Step 3: Save wallet state for all users with optimized locking
     info!("Saving wallet state for all users...");
-    match tokio::time::timeout(Duration::from_secs(10), wallets.lock()).await {
-        Ok(wallets_guard) => {
-            let user_count = wallets_guard.len();
-            info!("Saving state for {} users", user_count);
+    let user_data = match tokio::time::timeout(Duration::from_secs(10), async {
+        let wallets_lock = wallets.lock().await;
+        // Extract just what we need for saving
+        wallets_lock.iter()
+            .map(|(user_id, (wallet, chain))| {
+                (
+                    user_id.clone(),
+                    chain.clone(),
+                    wallet.wallet.staged().cloned()
+                )
+            })
+            .collect::<Vec<_>>()
+    }).await {
+        Ok(data) => data,
+        Err(_) => {
+            warn!("Timeout acquiring wallets lock for final save");
+            vec![] // Empty vector if we can't get the lock
+        }
+    };
+    
+    // Now save each user's data without holding the lock
+    let mut saved = 0;
+    let mut failed = 0;
+    let user_count = user_data.len();
+    
+    info!("Saving state for {} users", user_count);
+    
+    // Use a semaphore to limit concurrent saves
+    let semaphore = Arc::new(Semaphore::new(5));
+    let futures = user_data.into_iter().map(|(user_id, chain, changeset)| {
+        let state_manager = state_manager.clone();
+        let semaphore = semaphore.clone();
+        
+        async move {
+            let _permit = semaphore.acquire().await?;
             
-            let mut saved = 0;
-            let mut failed = 0;
+            let mut user_saved = false;
             
-            for (user_id, (wallet, chain)) in wallets_guard.iter() {
-                if let Some(changeset) = wallet.wallet.staged() {
-                    if let Err(e) = state_manager.save_changeset(user_id, changeset).await {
-                        warn!("Failed to save changeset for user {}: {}", user_id, e);
-                        failed += 1;
-                    } else {
-                        saved += 1;
-                    }
-                }
-                
-                if let Err(e) = state_manager.save_stable_chain(user_id, chain).await {
-                    warn!("Failed to save StableChain for user {}: {}", user_id, e);
-                    failed += 1;
+            // Save chain state
+            if let Err(e) = state_manager.save_stable_chain(&user_id, &chain).await {
+                warn!("Failed to save StableChain for user {}: {}", user_id, e);
+            } else {
+                user_saved = true;
+            }
+            
+            // Save changeset if available
+            if let Some(changeset) = changeset {
+                if let Err(e) = state_manager.save_changeset(&user_id, &changeset).await {
+                    warn!("Failed to save changeset for user {}: {}", user_id, e);
                 } else {
-                    saved += 1;
+                    user_saved = true;
                 }
             }
             
-            info!("Saved state for {} operations, {} failed", saved, failed);
+            Ok::<bool, PulserError>(user_saved)
+        }
+    }).collect::<Vec<_>>();
+    
+    // Wait for all saves to complete or timeout
+    match tokio::time::timeout(Duration::from_secs(20), join_all(futures)).await {
+        Ok(results) => {
+            for result in results {
+                match result {
+                    Ok(true) => saved += 1,
+                    _ => failed += 1,
+                }
+            }
+            info!("Saved state for {} users, {} failed", saved, failed);
         },
-        Err(_) => warn!("Timeout acquiring wallets lock for final save"),
+        Err(_) => {
+            warn!("Timeout waiting for user state saves to complete");
+        }
     }
     
     // Step 4: Wait for active tasks to complete
@@ -188,25 +261,32 @@ async fn perform_graceful_shutdown(
     if active_count > 0 {
         info!("Waiting for {} active tasks to complete", active_count);
         
-        // Give tasks a chance to complete with timeout
-        for i in 0..10 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let new_count = active_tasks_manager.get_active_tasks().await.len();
-            if new_count < active_count {
-                info!("Progress: {} of {} tasks completed", active_count - new_count, active_count);
-                if new_count == 0 {
-                    info!("All tasks completed successfully");
-                    break;
+        // Wait with timeout
+        match tokio::time::timeout(Duration::from_secs(10), async {
+            let mut remaining = active_count;
+            for i in 0..10 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let new_count = active_tasks_manager.get_active_tasks().await.len();
+                if new_count < remaining {
+                    info!("Progress: {} of {} tasks completed", remaining - new_count, active_count);
+                    remaining = new_count;
+                    if remaining == 0 {
+                        info!("All tasks completed successfully");
+                        break;
+                    }
+                }
+                
+                // After 5 seconds, clean up stale tasks
+                if i == 5 {
+                    let cleaned = active_tasks_manager.clean_stale_tasks().await;
+                    if cleaned > 0 {
+                        info!("Cleaned {} stale tasks", cleaned);
+                    }
                 }
             }
-            
-            // After 5 seconds, clean up stale tasks
-            if i == 5 {
-                let cleaned = active_tasks_manager.clean_stale_tasks().await;
-                if cleaned > 0 {
-                    info!("Cleaned {} stale tasks", cleaned);
-                }
-            }
+        }).await {
+            Ok(_) => {},
+            Err(_) => warn!("Timeout waiting for tasks to complete"),
         }
         
         // Final check
@@ -218,7 +298,14 @@ async fn perform_graceful_shutdown(
     
     // Step 5: Flush webhook queue
     info!("Finalizing webhook delivery...");
-    match tokio::time::timeout(Duration::from_secs(5), webhook_manager.shutdown()).await {
+    match tokio::time::timeout(Duration::from_secs(5), webhook_manager.flush_batches()).await {
+        Ok(Ok(_)) => info!("Webhook queue flushed successfully"),
+        Ok(Err(e)) => warn!("Error flushing webhook queue: {}", e),
+        Err(_) => warn!("Timeout flushing webhook queue"),
+    }
+    
+    // Try to shut down webhook manager
+    match tokio::time::timeout(Duration::from_secs(3), webhook_manager.shutdown()).await {
         Ok(Ok(_)) => info!("Webhook manager shut down successfully"),
         Ok(Err(e)) => warn!("Error shutting down webhook manager: {}", e),
         Err(_) => warn!("Timeout shutting down webhook manager"),
@@ -227,7 +314,6 @@ async fn perform_graceful_shutdown(
     info!("Graceful shutdown complete");
     Ok(())
 }
-
 
 
 #[tokio::main]
@@ -255,6 +341,7 @@ env_logger::Builder::new()
     .filter_module("hyper", LevelFilter::Warn)
     .filter_module("reqwest", LevelFilter::Warn)
     .filter_module("tokio", LevelFilter::Warn)
+        .filter_module("common::webhook", LevelFilter::Debug)
     .format(|buf, record| {
         writeln!(
             buf,
@@ -326,6 +413,14 @@ health_checker.register(
     .with_max_inactivity(60)
 );
 
+// In main.rs startup sequence
+info!("WebhookManager initialized with URL: {}", config.webhook_url);
+if config.webhook_enabled {
+    info!("Webhook notifications enabled");
+} else {
+    warn!("Webhook notifications disabled in config");
+}
+
     // Add Redis check if Redis is configured
     if config.redis_enabled {
         health_checker.register(
@@ -384,114 +479,80 @@ let deribit_feed_handle = tokio::spawn({
 });
     
 // Structured price update function
-async fn update_price_info(
+async fn update_prices(
     client: &Client,
     price_info: &Arc<Mutex<PriceInfo>>,
     service_status: &Arc<Mutex<ServiceStatus>>,
-    state_manager: &Arc<StateManager>
-) -> Result<PriceInfo, PulserError> {
-    match fetch_btc_usd_price(client).await {
-        Ok(price_data) => {
-            // Create the price info object
-            let now = utils::now_timestamp();
-            let new_price_info = PriceInfo {
-                raw_btc_usd: price_data,
-                timestamp: now,
-                price_feeds: {
-                    let mut feeds = HashMap::new();
-                    feeds.insert("HTTP_Fallback".to_string(), price_data);
-                    feeds
-                },
-            };
-            
-            // Update the price cache atomically
-            {
-                let mut price_guard = match tokio::time::timeout(
-                    Duration::from_secs(3), 
-                    price_info.lock()
-                ).await {
-                    Ok(guard) => guard,
-                    Err(_) => {
-                        warn!("Timeout acquiring price_info lock");
-                        return Ok(new_price_info);
-                    }
-                };
-                *price_guard = new_price_info.clone();
-            }
-            
-            // Update the state manager
-            if let Err(e) = state_manager.update_price_cache(
-                new_price_info.raw_btc_usd, 
-                new_price_info.timestamp
-            ).await {
-                warn!("Failed to update price cache: {}", e);
-            }
-            
-            // Update service status
-            {
-                let mut status = match tokio::time::timeout(
-                    Duration::from_secs(3),
-                    service_status.lock()
-                ).await {
-                    Ok(guard) => guard,
-                    Err(_) => {
-                        warn!("Timeout acquiring service_status lock");
-                        return Ok(new_price_info);
-                    }
-                };
-                status.last_price = new_price_info.raw_btc_usd;
-                status.price_update_count += 1;
-            }
-            
-            trace!("Price updated: ${:.2}", new_price_info.raw_btc_usd);
-            Ok(new_price_info)
-        },
-        Err(e) => {
+    state_manager: &Arc<StateManager>,
+) -> Result<(), PulserError> {
+    // Fetch price with timeout
+    let price_data = match tokio::time::timeout(
+        Duration::from_secs(10),
+        fetch_btc_usd_price(client)
+    ).await {
+        Ok(Ok(price)) => price,
+        Ok(Err(e)) => {
             warn!("Price fetch failed: {}", e);
-            Err(PulserError::PriceFeedError(format!("Price fetch failed: {}", e)))
-        }
-    }
-}
-
-// Fix for the main.rs price update section
-match fetch_btc_usd_price(&client).await {
-    Ok(price_data) => {
-        // Convert f64 to PriceInfo
-        let now = utils::now_timestamp();
-        let new_price_info = PriceInfo {
-            raw_btc_usd: price_data,
-            timestamp: now,
-            price_feeds: {
-                let mut feeds = HashMap::new();
-                feeds.insert("HTTP_Fallback".to_string(), price_data);
-                feeds
+            
+            // Update service status to indicate price feed error
+            match tokio::time::timeout(Duration::from_secs(2), service_status.lock()).await {
+                Ok(mut status) => {
+                    status.health = "price feed error".to_string();
+                },
+                Err(_) => warn!("Timeout acquiring service status lock for price error update"),
             }
-        };
-        
-        // Update the price cache
-        {
-            let mut price_guard = price_info.lock().await;
+            
+            return Err(PulserError::PriceFeedError(format!("Price fetch failed: {}", e)));
+        },
+        Err(_) => {
+            warn!("Price fetch timed out");
+            return Err(PulserError::PriceFeedError("Price fetch timed out".to_string()));
+        }
+    };
+    
+    // Create new price info object
+    let now = utils::now_timestamp();
+    let new_price_info = PriceInfo {
+        raw_btc_usd: price_data,
+        timestamp: now,
+        price_feeds: {
+            let mut feeds = HashMap::new();
+            feeds.insert("HTTP_Fallback".to_string(), price_data);
+            feeds
+        }
+    };
+    
+    // Update price cache with timeout
+    match tokio::time::timeout(Duration::from_secs(2), price_info.lock()).await {
+        Ok(mut price_guard) => {
             *price_guard = new_price_info.clone();
+        },
+        Err(_) => {
+            warn!("Timeout acquiring price_info lock for update");
+            // Continue anyway - we can still try to update the state manager
         }
-        
-        // Update cache in state manager
-        let price_data = {
-            let price_guard = price_info.lock().await;
-            (price_guard.raw_btc_usd, price_guard.timestamp)
-        };
-        state_manager.update_price_cache(price_data.0, price_data.1).await?;
-        
-        // Update service status
-        {
-            let mut status = service_status.lock().await;
-            status.last_price = price_data.0;
-            trace!("Price updated: ${:.2}", price_data.0);
-        }
-    },
-    Err(e) => {
-        // Handle error case
-        warn!("Price fetch failed: {}", e);
     }
+    
+    // Update state manager (this doesn't need a lock)
+    if let Err(e) = state_manager.update_price_cache(price_data, now).await {
+        warn!("Failed to update price cache in state manager: {}", e);
+    }
+    
+    // Update service status with timeout
+    match tokio::time::timeout(Duration::from_secs(2), service_status.lock()).await {
+        Ok(mut status) => {
+            status.last_price = price_data;
+            if status.health == "price feed error" {
+                status.health = "healthy".to_string();
+            }
+            trace!("Price updated: ${:.2}", price_data);
+        },
+        Err(_) => {
+            warn!("Timeout acquiring service_status lock for price update");
+        }
+    }
+    
+    Ok(())
 }
     
     // Preload existing users
@@ -573,6 +634,8 @@ match fetch_btc_usd_price(&client).await {
         }
     });
 
+let webhook_manager_for_monitor = webhook_manager.clone();
+
     // Start webhook retry handler
     let retry_handle = tokio::spawn({
         let retry_queue = retry_queue.clone();
@@ -617,6 +680,7 @@ match fetch_btc_usd_price(&client).await {
         let state_manager = state_manager.clone();
         let service_status = service_status.clone();
         let shutdown_tx_clone = shutdown_tx.clone();
+    let webhook_manager = webhook_manager_for_monitor; // Use the cloned variable here
 
         async move {
             monitor_deposits(
@@ -632,6 +696,7 @@ match fetch_btc_usd_price(&client).await {
                 blockchain,
                 state_manager,
                 service_status,
+                    webhook_manager,  // Add this parameter
             ).await?;
             info!("Monitor handle completed");
             Ok::<(), PulserError>(())
@@ -730,56 +795,107 @@ match fetch_btc_usd_price(&client).await {
     });
 
     // Start status update handler  
-    let status_update_handle = tokio::spawn({
-        let service_status = service_status.clone();
-        let wallets = wallets.clone();
-        let state_manager = state_manager.clone();
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(STATUS_UPDATE_INTERVAL_SECS));
-            loop {
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        info!("Status update handle shutting down");
-                        break;
-                    }
-                    _ = interval.tick() => {
-                        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                        let mut status = service_status.lock().await;
-                        match tokio::time::timeout(Duration::from_secs(5), wallets.lock()).await {
-                            Ok(wallets_lock) => {
-                                status.users_monitored = wallets_lock.len() as u32;
-                                status.total_utxos = wallets_lock.values().map(|(_, chain)| chain.utxos.len() as u32).sum();
-                                status.total_value_btc = wallets_lock.values().map(|(wallet, _)| {
-                                    let btc = wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0;
-                                    // Optional: only log non-zero balances
-                                    if btc > 0.0 {
-                                        debug!("User balance: {:.8} BTC", btc);
-                                    }
-                                    btc
-                                }).sum();
-                                status.total_value_usd = wallets_lock.values().map(|(_, chain)| chain.stabilized_usd.0).sum();
-                            }
-                            Err(_) => {
-                                warn!("Timeout locking wallets, using last values");
-                            }
-                        };
-                        status.last_update = now;
-                        if status.health != "price feed error" && status.health != "websocket error" {
-                            status.health = "healthy".to_string();
+let status_update_handle = tokio::spawn({
+    let service_status = service_status.clone();
+    let wallets = wallets.clone();
+    let state_manager = state_manager.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(STATUS_UPDATE_INTERVAL_SECS));
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Status update handle shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    // First gather statistics with a short-lived lock
+let stats = match tokio::time::timeout(
+    Duration::from_secs(5),
+    async {
+        let wallets_lock = wallets.lock().await;
+        let users = wallets_lock.len() as u32;
+        let utxos = wallets_lock.values()
+            .map(|(_, chain)| chain.utxos.len() as u32)
+            .sum();
+        let btc = wallets_lock.values()
+            .map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0)
+            .sum();
+        let usd = wallets_lock.values()
+            .map(|(_, chain)| chain.stabilized_usd.0)
+            .sum();
+        Ok::<(u32, u32, f64, f64), PulserError>((users, utxos, btc, usd))
+    }
+).await {
+    Ok(Ok(stats)) => stats,
+    Ok(Err(e)) => {
+        warn!("Error gathering wallet statistics: {}", e);
+        continue;
+    },
+    Err(_) => {
+        warn!("Timeout gathering wallet statistics");
+        continue;
+    }
+};
+                    
+                    // Then update service status with another lock
+                    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                    let updated = match tokio::time::timeout(
+    Duration::from_secs(3),
+    async {
+        let (users, utxos, btc, usd) = stats;
+        let mut status = service_status.lock().await;
+        status.users_monitored = users;
+        status.total_utxos = utxos;
+        status.total_value_btc = btc;
+        status.total_value_usd = usd;
+        status.last_update = timestamp;
+        if status.health != "price feed error" && status.health != "websocket error" {
+            status.health = "healthy".to_string();
+        }
+        debug!("Updated ServiceStatus: {} users, {:.8} BTC, ${:.2} USD", 
+               users, btc, usd);
+        true
+    }
+).await {
+    Ok(true) => true,
+    Ok(false) => {
+        warn!("Failed to update service status");
+        false
+    },
+    Err(_) => {
+        warn!("Timeout updating service status");
+        false
+    }
+};
+                    
+                    // If update was successful, save to state manager
+                    if updated {
+                        let status_copy = match tokio::time::timeout(
+    Duration::from_secs(2),
+    async {
+        let status = service_status.lock().await;
+        status.clone()
+    }
+).await {
+    Ok(status) => status,
+    Err(_) => {
+        warn!("Timeout getting status copy");
+        continue;
+    }
+};
+                        
+                        if let Err(e) = state_manager.save_service_status(&status_copy).await {
+                            warn!("Failed to save service status: {}", e);
                         }
-                        debug!("Updating ServiceStatus: {} users, {:.8} BTC, ${:.2} USD", 
-                               status.users_monitored, status.total_value_btc, status.total_value_usd);
-                        state_manager.save_service_status(&status).await?;
-                        trace!("Status: {} users, {} UTXOs, {} BTC, ${} USD", 
-                               status.users_monitored, status.total_utxos, status.total_value_btc, status.total_value_usd);
                     }
                 }
             }
-            info!("Status update handle completed");
-            Ok::<(), PulserError>(())
         }
-    });
+        info!("Status update handle completed");
+        Ok::<(), PulserError>(())
+    }
+});
 
     // Start web server
     let server_handle = tokio::spawn({
@@ -848,6 +964,10 @@ let save_status_handle = tokio::spawn({
 shutdown_tx.subscribe().recv().await?;
 info!("Shutting down...");
 
+shutdown_tx.send(())?;
+
+info!("Waiting for tasks to complete...");
+
 // Wait for tasks to complete (they will handle their own cleanup)
 let handles = vec![
     deribit_feed_handle,
@@ -861,7 +981,6 @@ let handles = vec![
 ];
 
 // Give tasks time to shut down gracefully
-info!("Waiting for tasks to complete...");
 match tokio::time::timeout(Duration::from_secs(MAX_SHUTDOWN_WAIT_SECS), join_all(handles)).await {
     Ok(results) => {
         for result in results {

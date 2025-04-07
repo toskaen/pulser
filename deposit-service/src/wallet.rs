@@ -269,7 +269,11 @@ let new_utxos = wallet_sync::sync_and_stabilize_utxos(
         logged.insert(self.stable_chain.user_id.to_string(), new_addr.clone());
 
         let old_addr = self.stable_chain.multisig_addr.clone();
+        
+    if !self.stable_chain.old_addresses.contains(&old_addr) && 
+       old_addr != new_addr.to_string() {
         self.stable_chain.old_addresses.push(old_addr.clone());
+    }
         self.stable_chain.multisig_addr = new_addr.to_string();
         self.stable_chain.log_change(
             "address_change",
@@ -296,6 +300,48 @@ let new_utxos = wallet_sync::sync_and_stabilize_utxos(
             self.stable_chain.user_id, new_addr
         );
         Ok(new_addr)
+    }
+    
+     /// Removes duplicate addresses from old_addresses and ensures current address isn't duplicated
+    pub async fn cleanup_old_addresses(&mut self) -> Result<bool, PulserError> {
+        let mut changed = false;
+        let current_addr = self.stable_chain.multisig_addr.clone();
+        
+        // Use a HashSet for efficient deduplication
+        let mut unique_addresses = std::collections::HashSet::new();
+        let mut new_old_addresses = Vec::new();
+        
+        // Build a new clean list without duplicates
+        for addr in &self.stable_chain.old_addresses {
+            if addr != &current_addr && unique_addresses.insert(addr.clone()) {
+                new_old_addresses.push(addr.clone());
+            } else {
+                changed = true; // We removed a duplicate
+            }
+        }
+        
+        // Only update if we found duplicates
+        if changed {
+            debug!("Cleaning up old addresses for user {}: removed duplicates", 
+                   self.stable_chain.user_id);
+            self.stable_chain.old_addresses = new_old_addresses;
+            
+            // Add a log entry
+            self.stable_chain.log_change(
+                "maintenance",
+                0.0,
+                0.0,
+                "deposit-service",
+                Some("Removed duplicate addresses".to_string()),
+            );
+            
+            // Save the changes
+            self.state_manager
+                .save_stable_chain(&self.stable_chain.user_id.to_string(), &self.stable_chain)
+                .await?;
+        }
+        
+        Ok(changed)
     }
 
     pub fn get_cached_utxos(&self) -> Vec<UtxoInfo> {

@@ -9,7 +9,7 @@
   "timestamp": 1743534757,
   "formatted_datetime": "2025-04-01T19:12:37.206671103+00:00",
   "sc_dir": "data_lsp/user_2",
-  "raw_btc_usd": 82391.0,
+  "raw_btc_usd": 79404.5,
   "prices": {},
   "multisig_addr": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
   "utxos": [
@@ -17,9 +17,9 @@
       "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 1560,
+      "confirmations": 1610,
       "script_pubkey": "51206035364a49fa4b57af87f8cd172a63c69c0b22d5d8b33366f508f71bd071ffec",
-      "height": 1560,
+      "height": 1610,
       "usd_value": 1.1050325,
       "spent": false
     },
@@ -27,9 +27,9 @@
       "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
       "vout": 0,
       "amount": 1000,
-      "confirmations": 240,
+      "confirmations": 290,
       "script_pubkey": "5120f14867dd80ebac9fa03b0a97c534cacfcd8a20a90776e809f5fff02caa4c2243",
-      "height": 240,
+      "height": 290,
       "usd_value": 0.82391,
       "spent": false
     }
