@@ -22,6 +22,16 @@ pub use bitfinex::BitfinexProvider;
 pub use kraken::KrakenProvider;
 pub use self::deribit::DeribitProvider;
 
+/// Represents a price source with its reliability and volume information
+/// 
+/// The weight field represents the venue preference factor:
+/// - Higher values (e.g., 1.2 for Kraken) indicate strategic preference for venues 
+///   that will be used for fiat on-ramps and futures trading
+/// - This weight is multiplied by actual market volume to create a quality-adjusted VWAP
+/// - The result is a price feed that favors preferred venues but still accounts for 
+///   actual market liquidity
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceSource {
     pub name: String,

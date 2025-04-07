@@ -20,21 +20,17 @@ use std::collections::HashSet;
 const MAX_SCAN_RETRIES: u32 = 3;
 const SCAN_TIMEOUT_SECS: u64 = 60;
 
-/// Analyzes market conditions to determine the optimal stabilization price.
-/// Always selects the higher of spot or futures price to maximize user value,
-/// allowing the operator to improve defense from hedging short at the futures price.
-/// Retains detailed logging for contango/backwardation analysis.
+/// Analyzes market conditions and returns the optimal stabilization price.
+/// Always selects the higher of aggregated spot or futures price to maximize user value.
 async fn determine_stabilization_price(
     price_feed: &Arc<PriceFeed>,
     user_id: &str,
-    _is_new_confirmation: bool, // Kept for compatibility, ignored in decision
-    _min_advantage_threshold: f64, // Kept for compatibility, ignored in decision
 ) -> Result<(f64, String, f64), PulserError> {
-    // Fetch spot VWAP price
+    // Get the current spot price
     let vwap_info = match price_feed.get_price().await {
         Ok(info) => info,
         Err(e) => {
-            warn!("Failed to get VWAP price for user {}: {}, trying fallback", user_id, e);
+            warn!("Failed to get aggregated spot price for user {}: {}, trying fallback", user_id, e);
             let client = reqwest::Client::new();
             match crate::price_feed::http_sources::fetch_btc_usd_price(&client).await {
                 Ok(price) => {
@@ -47,28 +43,28 @@ async fn determine_stabilization_price(
                         price_feeds: feeds,
                     }
                 },
-                Err(e2) => return Err(PulserError::PriceFeedError(format!("Both VWAP and fallback price fetches failed: {} / {}", e, e2))),
+                Err(e2) => return Err(PulserError::PriceFeedError(format!("Both aggregated and fallback price fetches failed: {} / {}", e, e2))),
             }
         }
     };
     
     let spot_price = vwap_info.raw_btc_usd;
     if spot_price <= 0.0 {
-        return Err(PulserError::PriceFeedError("Invalid VWAP price (zero or negative)".to_string()));
+        return Err(PulserError::PriceFeedError("Invalid spot price (zero or negative)".to_string()));
     }
     
     // Fetch futures price from Deribit
     let futures_price = match price_feed.get_deribit_price().await {
         Ok(price) => price,
         Err(e) => {
-            warn!("Failed to get Deribit futures price for user {}: {}, defaulting to spot VWAP", user_id, e);
-            return Ok((spot_price, "VWAP (futures unavailable)".to_string(), 0.0));
+            warn!("Failed to get Deribit futures price for user {}: {}, defaulting to spot price", user_id, e);
+            return Ok((spot_price, "Spot (futures unavailable)".to_string(), 0.0));
         }
     };
     
     if futures_price <= 0.0 {
-        warn!("Invalid futures price (zero or negative), defaulting to spot VWAP");
-        return Ok((spot_price, "VWAP (invalid futures)".to_string(), 0.0));
+        warn!("Invalid futures price (zero or negative), defaulting to spot price");
+        return Ok((spot_price, "Spot (invalid futures)".to_string(), 0.0));
     }
     
     // Calculate basis for logging and analysis
@@ -78,7 +74,7 @@ async fn determine_stabilization_price(
     let (stab_price, source) = if spot_price >= futures_price {
         info!("Spot price selected for user {}: ${:.2} > futures ${:.2}, basis {:.2}% (backwardation)", 
               user_id, spot_price, futures_price, basis);
-        (spot_price, format!("VWAP (backwardation {:.2}%)", basis))
+        (spot_price, format!("Spot (backwardation {:.2}%)", basis))
     } else {
         info!("Futures price selected for user {}: ${:.2} > spot ${:.2}, basis {:.2}% (contango)", 
               user_id, futures_price, spot_price, basis);
@@ -88,7 +84,7 @@ async fn determine_stabilization_price(
     debug!("Market analysis for user {}: Spot=${:.2}, Futures=${:.2}, Basis={:.2}%", 
            user_id, spot_price, futures_price, basis);
     
-    Ok((stab_price, source, basis))
+    return Ok((stab_price, source, basis));
 }
 
 /// Updates StableChain with newly confirmed deposits applying optimal pricing.
@@ -101,16 +97,13 @@ async fn process_new_confirmation(
 ) -> Result<(f64, String, f64), PulserError> {
     if utxo.usd_value.is_some() {
         debug!("UTXO {}:{} for user {} already stabilized at ${:.2}", 
-               utxo.txid, utxo.vout, user_id, utxo.usd_value.as_ref().unwrap().0); // Borrow with as_ref()
-        return Ok((utxo.usd_value.as_ref().unwrap().0, "existing".to_string(), 0.0)); // Borrow with as_ref()
+               utxo.txid, utxo.vout, user_id, utxo.usd_value.as_ref().unwrap().0); 
+        return Ok((utxo.usd_value.as_ref().unwrap().0, "existing".to_string(), 0.0));
     }
-
     
     let (stab_price, source, market_basis) = determine_stabilization_price(
         &price_feed,
-        user_id,
-        true,  // Ignored in new logic, kept for compatibility
-        0.25   // Ignored in new logic, kept for compatibility
+        user_id
     ).await?;
     
     let btc_amount = utxo.amount as f64 / 100_000_000.0;
@@ -165,6 +158,8 @@ async fn process_new_confirmation(
 
 /// Syncs wallet with blockchain and stabilizes any new UTXOs.
 /// Maintains extensive logging for market condition analysis.
+/// Syncs wallet with blockchain and stabilizes any new UTXOs.
+/// Maintains extensive logging for market condition analysis.
 pub async fn sync_and_stabilize_utxos(
     user_id: &str,
     wallet: &mut Wallet,
@@ -179,13 +174,18 @@ pub async fn sync_and_stabilize_utxos(
 ) -> Result<Vec<UtxoInfo>, PulserError> {
     debug!("Starting sync for user {}", user_id);
     let start_time = Instant::now();
+    
+    let needs_price_fetch = chain.utxos.iter().any(|utxo| utxo.usd_value.is_none());
 
-    let (stabilization_price, price_source, basis) = determine_stabilization_price(
-        &price_feed,
-        user_id,
-        false,  // Ignored in new logic
-        0.25    // Ignored in new logic
-    ).await?;
+    let (stabilization_price, price_source, basis) = if needs_price_fetch {
+        // Only perform expensive price determination for new UTXOs that need stabiliz...
+        determine_stabilization_price(
+            &price_feed,
+            user_id,
+        ).await?
+    } else {
+        (price_info.raw_btc_usd, "cached".to_string(), 0.0)
+    };
     
     if stabilization_price <= 0.0 {
         return Err(PulserError::PriceFeedError("No valid price available after analysis".to_string()));
@@ -253,83 +253,30 @@ pub async fn sync_and_stabilize_utxos(
         if let Some(existing) = previous_utxos.iter_mut().find(|prev| prev.txid == chain_utxo.txid && prev.vout == chain_utxo.vout) {
             chain_utxo.usd_value = existing.usd_value.clone();
             
-            if !is_change && confirmations >= min_confirmations && chain_utxo.usd_value.is_none() {
+            // Only process unconfirmed UTXOs that need stabilization
+            if !is_change && 
+               confirmations >= min_confirmations && 
+               chain_utxo.usd_value.is_none() {
+                // This is a deposit that needs price stabilization
                 let (stable_value_usd, source, market_basis) = process_new_confirmation(
                     user_id, &mut chain_utxo, chain, price_feed.clone()
                 ).await?;
+
                 let stabilized_utxo = UtxoInfo { stable_value_usd, ..utxo_info.clone() };
                 new_utxos.push(stabilized_utxo.clone());
                 chain.history.push(stabilized_utxo);
-                
-                info!("Stabilized existing UTXO for user {}: {}:{} | {} sats (${:.2} using {})", 
-                      user_id, chain_utxo.txid, chain_utxo.vout, chain_utxo.amount, stable_value_usd, source);
-                
-                // Additional logging for hedging analysis
-                let futures_price = match price_feed.get_deribit_price().await {
-                    Ok(price) => price,
-                    Err(_) => stabilization_price,
-                };
-                let btc_amount = chain_utxo.amount as f64 / 100_000_000.0;
-                let futures_value = btc_amount * futures_price;
-                let benefit = stable_value_usd - futures_value;
-                if market_basis < 0.0 && benefit > 0.0 {
-                    info!("Operator hedging benefit (existing UTXO) for user {}: ${:.2} (basis {:.2}% backwardation)", 
-                          user_id, benefit, market_basis);
-                    chain.log_change(
-                        "hedging_benefit",
-                        0.0,
-                        benefit,
-                        "price-feed",
-                        Some(format!("Hedging benefit at basis {:.2}% (backwardation)", market_basis))
-                    );
-                } else if market_basis > 0.0 && benefit < 0.0 {
-                    info!("Operator hedging cost (existing UTXO) for user {}: ${:.2} (basis {:.2}% contango)", 
-                          user_id, -benefit, market_basis);
-                    chain.log_change(
-                        "hedging_cost",
-                        0.0,
-                        -benefit,
-                        "price-feed",
-                        Some(format!("Hedging cost at basis {:.2}% (contango)", market_basis))
-                    );
-                }
             }
             updated_utxos.push(chain_utxo);
         } else if !is_change {
+            // Only stabilize new confirmed deposits
             let (stable_value_usd, source) = if confirmations >= min_confirmations {
+                // This is a new confirmed deposit - stabilize it
                 let (value, src, market_basis) = process_new_confirmation(
                     user_id, &mut chain_utxo, chain, price_feed.clone()
                 ).await?;
-                let futures_price = match price_feed.get_deribit_price().await {
-                    Ok(price) => price,
-                    Err(_) => stabilization_price,
-                };
-                let btc_amount = chain_utxo.amount as f64 / 100_000_000.0;
-                let futures_value = btc_amount * futures_price;
-                let benefit = value - futures_value;
-                if market_basis < 0.0 && benefit > 0.0 {
-                    info!("Operator hedging benefit (new UTXO) for user {}: ${:.2} (basis {:.2}% backwardation)", 
-                          user_id, benefit, market_basis);
-                    chain.log_change(
-                        "hedging_benefit",
-                        0.0,
-                        benefit,
-                        "price-feed",
-                        Some(format!("Hedging benefit at basis {:.2}% (backwardation)", market_basis))
-                    );
-                } else if market_basis > 0.0 && benefit < 0.0 {
-                    info!("Operator hedging cost (new UTXO) for user {}: ${:.2} (basis {:.2}% contango)", 
-                          user_id, -benefit, market_basis);
-                    chain.log_change(
-                        "hedging_cost",
-                        0.0,
-                        -benefit,
-                        "price-feed",
-                        Some(format!("Hedging cost at basis {:.2}% (contango)", market_basis))
-                    );
-                }
                 (value, src)
             } else {
+                // This is pending confirmation - don't fetch price yet
                 (0.0, "pending".to_string())
             };
             
@@ -383,7 +330,7 @@ pub async fn sync_and_stabilize_utxos(
     }
 
     debug!("Completed sync for user {} in {}ms: {} new UTXOs", user_id, start_time.elapsed().as_millis(), new_utxos.len());
-    Ok(new_utxos)
+    return Ok(new_utxos);
 }
 
 /// Performs a full history resync for a wallet.

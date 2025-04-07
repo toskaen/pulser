@@ -31,7 +31,7 @@ use common::utils; // Import utils module
 use deposit_service::monitor::monitor_deposits;
 use common::websocket::WebSocketManager;
 use tokio::sync::Semaphore;
-
+use common::price_feed::http_sources;
 
 
 // Constants
@@ -40,6 +40,7 @@ const PRICE_UPDATE_INTERVAL_SECS: u64 = 600; // 10 minutes
 const STALE_LOCK_CLEANUP_SECS: u64 = 300;
 const MAX_SHUTDOWN_WAIT_SECS: u64 = 30;
 const WEBSOCKET_HEALTH_CHECK_SECS: u64 = 30;
+const GLOBAL_PRICE_UPDATE_INTERVAL_SECS: u64 = 210; // Update global price once per minute
 
 async fn preload_existing_users(
     data_dir: &str,
@@ -148,37 +149,27 @@ async fn perform_graceful_shutdown(
     
     // Step 2: Close WebSocket connections
 info!("Closing WebSocket connections...");
-let mut ws_closed = false;
-
-// Try graceful close with a reasonable timeout
-match tokio::time::timeout(
-    Duration::from_secs(5),
-    price_feed.shutdown_websocket()
-).await {
-    Ok(Some(Ok(_))) => {
+let ws_manager = price_feed.get_websocket_manager();
+match tokio::time::timeout(Duration::from_secs(3), async {
+    if let Some(Ok(_)) = price_feed.shutdown_websocket().await {
         info!("WebSocket closed successfully");
-        ws_closed = true;
-    },
-    Ok(Some(Err(e))) => {
-        warn!("Error during websocket shutdown: {}", e);
-    },
-    Ok(None) => {
-        info!("No active WebSocket to close");
-        ws_closed = true;
+        true
+    } else {
+        warn!("Error during WebSocket shutdown");
+        // Force close as backup
+        ws_manager.force_close_all_with_timeout(Duration::from_secs(1)).await
+    }
+}).await {
+    Ok(closed) => {
+        info!("WebSocket connections {} closed", 
+              if closed { "successfully" } else { "partially" });
     },
     Err(_) => {
-        warn!("Timeout during websocket shutdown");
+        warn!("Timeout during WebSocket shutdown, forcing close");
+        ws_manager.force_close_all().await;
     }
 };
-
-// If graceful close failed, force close connections
-if !ws_closed {
-    info!("Forcing WebSocket close");
-    if let Some(manager) = price_feed.get_websocket_manager() {
-        manager.force_close_all().await;
-    }
-}
-    
+   
     // Step 3: Save wallet state for all users with optimized locking
     info!("Saving wallet state for all users...");
     let user_data = match tokio::time::timeout(Duration::from_secs(10), async {
@@ -554,7 +545,72 @@ async fn update_prices(
     
     Ok(())
 }
+
+// Then your update_global_price function:
+async fn update_global_price(
+    client: &Client,
+    price_info: &Arc<Mutex<PriceInfo>>,
+    price_feed: &Arc<PriceFeed>
+) -> Result<f64, PulserError> {
+    // Get the price with appropriate error handling
+    let price_result = match price_feed.get_price().await {
+        Ok(info) => info,
+        Err(_) => {
+            // Fallback to HTTP source
+            let price = http_sources::fetch_btc_usd_price(client).await?;
+            let now = utils::now_timestamp();
+            let mut feeds = HashMap::new();
+            feeds.insert("HTTP_Fallback".to_string(), price);
+            PriceInfo {
+                raw_btc_usd: price,
+                timestamp: now,
+                price_feeds: feeds,
+            }
+        }
+    };
     
+    // Update the shared price info
+    {
+        let mut lock = price_info.lock().await;
+        *lock = price_result.clone();
+    }
+    
+    Ok(price_result.raw_btc_usd)
+}
+
+// And in your price update handler:
+let price_update_handle = tokio::spawn({
+    let price_feed = price_feed.clone();
+    let price_info = price_info.clone();
+    let client = client.clone();
+    let service_status = service_status.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut interval = tokio::time::interval(Duration::from_secs(GLOBAL_PRICE_UPDATE_INTERVAL_SECS));
+    
+    async move {
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Price update task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    match update_global_price(&client, &price_info, &price_feed).await {
+                        Ok(price) => {
+                            debug!("Updated global price: ${:.2}", price);
+                            let mut status = service_status.lock().await;
+                            status.last_price = price;
+                            status.price_update_count += 1;
+                        },
+                        Err(e) => warn!("Failed to update global price: {}", e),
+                    }
+                }
+            }
+        }
+        info!("Price update task completed");
+        Ok::<(), PulserError>(())
+    }
+});
     // Preload existing users
     match preload_existing_users(
         &data_dir, 

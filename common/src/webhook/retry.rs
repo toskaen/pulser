@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio::time::timeout;
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WebhookEntry {
@@ -193,55 +195,108 @@ impl RetryQueue {
         }
     }
 
-    pub async fn retry_failed(
-        &mut self,
-        client: &reqwest::Client,
-        webhook_secret: &str,
-        backoff_fn: impl Fn(u32) -> Duration,
-    ) -> Result<(), PulserError> {
-        let now = super::now();
-        
-        // Process up to 20 items at a time
-        for _ in 0..20 {
-            if let Some(mut entry) = self.pop_ready(now).await? {
-                // Deliver the webhook
-                let signature = super::delivery::generate_signature(&entry.payload, webhook_secret);
-                
-                match super::delivery::deliver_single_webhook(
-                    client,
-                    &entry.endpoint,
-                    &entry.payload,
-                    &signature,
-                    10, // timeout_secs
-                ).await {
-                    Ok(_) => {
-                        info!("Successfully delivered retry webhook to {}, entry id: {}", entry.endpoint, entry.id);
-                    }
-                    Err(_e) => {
-                        entry.attempts += 1;
+// In common/src/webhook/retry.rs
+// Enhance the retry_failed method
+
+pub async fn retry_failed(
+    &mut self,
+    client: &reqwest::Client,
+    webhook_secret: &str,
+    backoff_fn: impl Fn(u32) -> Duration,
+) -> Result<(), PulserError> {
+    let now = super::now();
+    let max_retries = 3; // Process up to 3 retries at once to avoid overwhelming
+    
+    for _ in 0..max_retries {
+        if let Some(mut entry) = self.pop_ready(now).await? {
+            // Generate a unique request ID for tracing
+            let request_id = uuid::Uuid::new_v4().to_string();
+            debug!("Retrying webhook (id: {}): attempt {}/{})", request_id, entry.attempts, self.max_attempts);
+            
+            // Add extra headers for improved diagnostics
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("X-Retry-Attempt", entry.attempts.to_string().parse().unwrap());
+            headers.insert("X-Request-ID", request_id.parse().unwrap());
+            
+            // Generate signature
+            let signature = super::delivery::generate_signature(&entry.payload, webhook_secret);
+            
+            // Increase timeout for retries
+            let timeout_secs = 15; // Longer timeout for retries
+            
+            match timeout(
+                Duration::from_secs(timeout_secs),
+                client
+                    .post(&entry.endpoint)
+                    .json(&entry.payload)
+                    .headers(headers)
+                    .header("X-Webhook-Signature", signature)
+                    .send(),
+            ).await {
+                Ok(Ok(response)) => {
+                    if response.status().is_success() {
+                        info!("Successfully delivered retry webhook to {}, entry id: {}", 
+                              entry.endpoint, entry.id);
+                    } else {
+                        // Non-success status code
+                        let status = response.status();
                         
-                        if entry.attempts >= self.max_attempts {
-                            // Too many failures, move to deadletter
-                            self.move_to_deadletter(entry).await?;
-                        } else {
-                            // Calculate next attempt time with backoff
+                        // Check if we should retry based on status code
+                        let should_retry = match status.as_u16() {
+                            408 | 429 | 500..=599 => true, // Timeouts, rate limits, server errors
+                            _ => false, // Don't retry client errors
+                        };
+                        
+                        if should_retry && entry.attempts < self.max_attempts {
+                            entry.attempts += 1;
                             let backoff = backoff_fn(entry.attempts);
                             entry.next_attempt = now + backoff.as_secs();
-                            
-                            // Push back to queue
                             self.push(entry).await?;
-                            debug!("Webhook retry failed, rescheduled for {}s later", backoff.as_secs());
+                            debug!("Webhook retry failed with status {}, rescheduled for {}s later", 
+                                  status, backoff.as_secs());
+                        } else {
+                            // Too many attempts or non-retryable error
+                            self.move_to_deadletter(entry).await?;
                         }
                     }
+                },
+                Ok(Err(e)) => {
+                    // Network error
+                    entry.attempts += 1;
+                    if entry.attempts >= self.max_attempts {
+                        self.move_to_deadletter(entry).await?;
+                    } else {
+                        let backoff = backoff_fn(entry.attempts);
+                        entry.next_attempt = now + backoff.as_secs();
+                        self.push(entry).await?;
+                        debug!("Webhook retry failed with error: {}, rescheduled for {}s later", 
+                              e, backoff.as_secs());
+                    }
+                },
+                Err(_) => {
+                    // Timeout
+                    entry.attempts += 1;
+                    if entry.attempts >= self.max_attempts {
+                        self.move_to_deadletter(entry).await?;
+                    } else {
+                        let backoff = backoff_fn(entry.attempts);
+                        entry.next_attempt = now + backoff.as_secs();
+                        self.push(entry).await?;
+                        debug!("Webhook retry timed out, rescheduled for {}s later", backoff.as_secs());
+                    }
                 }
-            } else {
-                // No more ready webhooks
-                break;
             }
+            
+            // Add a small delay between retries to avoid flooding
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        } else {
+            // No more ready entries
+            break;
         }
-        
-        Ok(())
     }
+    
+    Ok(())
+}
 
     pub async fn process_until_empty(
         &mut self,

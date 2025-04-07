@@ -34,103 +34,103 @@ impl PriceAggregator {
         self
     }
     
-    pub fn calculate_vwap(&self, sources: &HashMap<String, Result<PriceSource, PulserError>>) -> Result<PriceInfo, PulserError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-            .as_secs();
-            
-        // Filter valid sources (successful and recent)
-        let mut valid_sources: Vec<&PriceSource> = sources.values()
-            .filter_map(|r| r.as_ref().ok())
-            .filter(|s| now - s.timestamp <= self.max_price_age_secs)
-            .filter(|s| s.price > 0.0) // Only filter clearly invalid prices
-            .collect();
-            
-        if valid_sources.len() < self.min_sources {
-            return Err(PulserError::PriceFeedError(format!(
-                "Insufficient valid price sources: {}/{} required", 
-                valid_sources.len(), 
-                self.min_sources
-            )));
-        }
+pub fn calculate_quality_adjusted_vwap(
+    &self,
+    sources: &HashMap<String, Result<PriceSource, PulserError>>
+) -> Result<PriceInfo, PulserError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .as_secs();
         
-        // Filter outliers if we have enough sources
-        if valid_sources.len() >= 3 {
-            // Calculate median price
-            let mut prices: Vec<f64> = valid_sources.iter().map(|s| s.price).collect();
-            prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let median = if prices.len() % 2 == 0 {
-                (prices[prices.len() / 2 - 1] + prices[prices.len() / 2]) / 2.0
-            } else {
-                prices[prices.len() / 2]
-            };
-            
-            // Filter out prices that deviate more than 15% from median
-            let outlier_threshold = 0.15; // 15% deviation from median
-            let pre_filter_count = valid_sources.len();
-            valid_sources.retain(|s| {
-                let deviation = (s.price - median).abs() / median;
-                if deviation > outlier_threshold {
-                    log::warn!("Outlier detected from {}: ${:.2} (median: ${:.2}, deviation: {:.2}%)", 
-                               s.name, s.price, median, deviation * 100.0);
-                    false
-                } else {
-                    true
-                }
-            });
-            
-            if valid_sources.len() < pre_filter_count {
-                log::info!("Removed {} outlier price(s)", pre_filter_count - valid_sources.len());
-            }
-            
-            // Make sure we still have enough sources after filtering outliers
-            if valid_sources.len() < self.min_sources {
-                return Err(PulserError::PriceFeedError(format!(
-                    "Insufficient valid price sources after outlier removal: {}/{} required", 
-                    valid_sources.len(), 
-                    self.min_sources
-                )));
-            }
-        }
+    // Filter valid sources (successful, recent, and reasonable price)
+    let valid_sources: Vec<&PriceSource> = sources.values()
+        .filter_map(|r| r.as_ref().ok())
+        .filter(|s| now - s.timestamp <= self.max_price_age_secs)
+        .collect();
         
-        // Calculate volume-weighted average price
-        let mut total_volume = 0.0;
-        let mut weighted_sum = 0.0;
-        
-        for source in &valid_sources {
-            total_volume += source.volume * source.weight;
-            weighted_sum += source.price * source.volume * source.weight;
-        }
-        
-        if total_volume <= 0.0 {
-            return Err(PulserError::PriceFeedError("Zero volume reported by all sources".to_string()));
-        }
-        
-        let vwap = weighted_sum / total_volume;
-        
-        // Create price feeds map for info
-        let mut price_feeds = HashMap::new();
-        for source in valid_sources {
-            price_feeds.insert(source.name.clone(), source.price);
-        }
-        
-        Ok(PriceInfo {
-            raw_btc_usd: vwap,
-            timestamp: now as i64,
-            price_feeds,
-        })
+    if valid_sources.len() < self.min_sources {
+        return Err(PulserError::PriceFeedError(format!(
+            "Insufficient valid price sources: {}/{} required", 
+            valid_sources.len(), 
+            self.min_sources
+        )));
     }
     
-    // Calculate the spread between spot VWAP and futures
-    pub fn calculate_basis(&self, vwap: f64, futures_price: f64) -> f64 {
-        if vwap <= 0.0 || futures_price <= 0.0 {
-            return 0.0;
-        }
+    // Filter outliers if we have enough sources
+    let valid_sources = if valid_sources.len() >= 3 {
+        self.filter_outliers(&valid_sources)
+    } else {
+        valid_sources
+    };
+    
+    // Calculate VWAP with quality adjustment
+    let mut total_adjusted_volume = 0.0;
+    let mut weighted_sum = 0.0;
+    
+    for source in &valid_sources {
+        // Quality adjustment based on source weight (which represents your venue preference)
+        let quality_factor = source.weight;  // This preserves Kraken as your preferred source
+        let adjusted_volume = source.volume * quality_factor;
         
-        // Return as percentage (positive = futures premium, negative = backwardation)
-        ((futures_price / vwap) - 1.0) * 100.0
+        total_adjusted_volume += adjusted_volume;
+        weighted_sum += source.price * adjusted_volume;
     }
+    
+    if total_adjusted_volume <= 0.0 {
+        return Err(PulserError::PriceFeedError("Zero adjusted volume from all sources".to_string()));
+    }
+    
+    let vwap = weighted_sum / total_adjusted_volume;
+    
+    // Create price feeds map for info
+    let mut price_feeds = HashMap::new();
+    for source in valid_sources {
+        price_feeds.insert(source.name.clone(), source.price);
+    }
+    
+    Ok(PriceInfo {
+        raw_btc_usd: vwap,
+        timestamp: now as i64,
+        price_feeds,
+    })
+}
+
+// Helper method to filter outliers
+fn filter_outliers<'a>(&self, sources: &[&'a PriceSource]) -> Vec<&'a PriceSource> {
+    // Calculate median price
+    let mut prices: Vec<f64> = sources.iter().map(|s| s.price).collect();
+    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    
+    let median = if prices.len() % 2 == 0 {
+        (prices[prices.len() / 2 - 1] + prices[prices.len() / 2]) / 2.0
+    } else {
+        prices[prices.len() / 2]
+    };
+    
+    // Filter out prices that deviate significantly from median
+    let outlier_threshold = 0.15; // 15% deviation from median
+    let filtered: Vec<&PriceSource> = sources.iter()
+        .filter(|&s| {
+            let deviation = (s.price - median).abs() / median;
+            if deviation > outlier_threshold {
+                log::warn!("Outlier detected from {}: ${:.2} (median: ${:.2}, deviation: {:.2}%)", 
+                         s.name, s.price, median, deviation * 100.0);
+                false
+            } else {
+                true
+            }
+        })
+        .copied()
+        .collect();
+    
+    // Make sure we still have enough sources
+    if filtered.len() < self.min_sources {
+        log::warn!("Too many outliers removed, using all valid sources");
+        return sources.to_vec();
+    }
+    
+    filtered
 }
 
 // In common/src/price_feed/aggregator.rs
@@ -209,4 +209,5 @@ let fallback_price = http_sources::fetch_btc_usd_price(&client).await?;
     
     info!("Selected price for user {}: ${:.2} using {}", user_id, selected_price, source_desc);
     Ok((selected_price, source_desc, basis))
+}
 }

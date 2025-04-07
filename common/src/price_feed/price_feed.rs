@@ -121,7 +121,7 @@ if let Some((price, timestamp)) = cached_price {
             }
         }
 
-        let price_info = self.aggregator.calculate_vwap(&results)?;
+let price_info = self.aggregator.as_ref().calculate_quality_adjusted_vwap(&results)?;
         let mut cache = PRICE_CACHE.write().await;
         *cache = (price_info.raw_btc_usd, price_info.timestamp);
         info!("Calculated VWAP price: ${:.2} from {} sources", 
@@ -428,49 +428,50 @@ pub async fn is_websocket_connected(&self) -> bool {
     // deribit || kraken || binance
 }
 
+// In common/src/price_feed/price_feed.rs - Improve the shutdown_websocket method
 pub async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>> {
     info!("Closing all WebSocket connections...");
     
-    // First: Unsubscribe from all active subscriptions
-    let deribit_endpoint = "wss://test.deribit.com/ws/api/v2";
-    let kraken_endpoint = "wss://futures.kraken.com/ws/v1";
-    let binance_endpoint = "wss://fstream.binance.com/ws/btcusdt@ticker";
-    
-    // Send unsubscribe messages if applicable
-    if self.ws_manager.is_connected(deribit_endpoint).await {
-        let unsubscribe_msg = r#"{"method":"public/unsubscribe_all","params":{},"id":1}"#;
-        // Try to send the unsubscribe message with a short timeout
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            self.ws_manager.send_message(deribit_endpoint, unsubscribe_msg)
-        ).await {
-            Ok(Ok(_)) => debug!("Unsubscribed from Deribit"),
-            _ => debug!("Failed to unsubscribe from Deribit"),
-        };
-    }
-    
-    // Similar for other endpoints if they have unsubscribe protocols
-    
-    // Give a short pause for unsubscribe messages to be processed
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    
-    // Now close connections forcefully if needed
     let futures = vec![
-        self.ws_manager.shutdown_connection_with_timeout(deribit_endpoint, Duration::from_secs(3)),
-        self.ws_manager.shutdown_connection_with_timeout(kraken_endpoint, Duration::from_secs(2)),
-        self.ws_manager.shutdown_connection_with_timeout(binance_endpoint, Duration::from_secs(2)),
+        self.send_unsubscribe_message("wss://test.deribit.com/ws/api/v2"),
+        self.send_unsubscribe_message("wss://futures.kraken.com/ws/v1"),
+        self.send_unsubscribe_message("wss://fstream.binance.com/ws/btcusdt@ticker"),
     ];
     
-    // Wait for all shutdown attempts to complete
-    let results = futures::future::join_all(futures).await;
+    // Send all unsubscribe messages in parallel with a short timeout
+    let _ = tokio::time::timeout(Duration::from_millis(500), futures::future::join_all(futures)).await;
     
-    // Check if any succeeded
-    let result = results.into_iter()
-        .filter_map(|r| r)
-        .next();
+    // Short pause for messages to be processed
+    tokio::time::sleep(Duration::from_millis(100)).await;
     
-    info!("All WebSocket connections cleanup complete");
-    result
+    // Now close connections with a short timeout for each
+    self.ws_manager.force_close_all_with_timeout(Duration::from_secs(2)).await;
+    
+    Some(Ok(()))
+}
+
+// Add this new helper method to price_feed.rs
+async fn send_unsubscribe_message(&self, endpoint: &str) -> Result<(), PulserError> {
+    if self.ws_manager.is_connected(endpoint).await {
+        let unsubscribe_msg = match endpoint {
+            "wss://test.deribit.com/ws/api/v2" => r#"{"method":"public/unsubscribe_all","params":{},"id":1}"#,
+            "wss://futures.kraken.com/ws/v1" => r#"{"event":"unsubscribe","feed":"ticker"}"#,
+            "wss://fstream.binance.com/ws/btcusdt@ticker" => "", // Binance doesn't need explicit unsubscribe
+            _ => ""
+        };
+        
+        if !unsubscribe_msg.is_empty() {
+            match tokio::time::timeout(
+                Duration::from_millis(300),
+                self.ws_manager.send_message(endpoint, unsubscribe_msg)
+            ).await {
+                Ok(Ok(_)) => debug!("Sent unsubscribe to {}", endpoint),
+                _ => debug!("Failed to send unsubscribe to {}", endpoint),
+            }
+        }
+    }
+    
+    Ok(())
 }
 
 }

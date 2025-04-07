@@ -24,6 +24,8 @@ pub const WS_CONNECTION_TIMEOUT_SECS: u64 = 30;
 pub const MAX_HISTORY_ENTRIES: usize = 1440;
 pub const FALLBACK_RETRY_ATTEMPTS: u32 = 2;
 pub const PRICE_UPDATE_INTERVAL_MS: u64 = 1000;
+pub const GLOBAL_PRICE_UPDATE_INTERVAL_SECS: u64 = 1000; // Update global price once per minute
+pub const PRICE_STALENESS_THRESHOLD_SECS: u64 = 2100; // Consider price stale after 2 minutes
 
 // Common types
 #[derive(Serialize, Deserialize, Debug, Clone)]

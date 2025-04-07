@@ -28,7 +28,8 @@ use serde_json::json;
 use common::webhook::WebhookPayload;
 use common::webhook::WebhookManager;
 // In monitor.rs - add this import
-use bdk_chain::chain_sync::WalletUpdateSummary as UpdatedSyncState;
+use bdk_chain::spk_client::SyncResponse as UpdatedSyncState;
+
 
 
 
@@ -255,7 +256,7 @@ async fn process_wallets_batch(
             let mut error_msg = None;
             
             // IMPROVEMENT 4: Extract address information with minimal lock time
-            let (deposit_addr, change_addr, sync_request) = match extract_wallet_info(&wallets, &user_id).await {
+let (deposit_addr, change_addr, sync_request) = match extract_wallet_info(&wallets, &user_id, &blockchain).await {
                 Ok(info) => info,
                 Err(e) => {
                     warn!("Failed to extract wallet info for user {}: {}", user_id, e);
@@ -341,7 +342,7 @@ async fn process_wallets_batch(
 async fn extract_wallet_info(
     wallets: &Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     user_id: &str,
-    blockchain: &AsyncClient // Pass blockchain as a parameter
+    blockchain: &AsyncClient 
 ) -> Result<(Address, Address, SyncRequest), PulserError> {
     // Acquire lock with retry and timeout
     let mut wallets_lock = match timeout(
@@ -353,12 +354,29 @@ async fn extract_wallet_info(
         Err(_) => return Err(PulserError::Timeout("Timeout acquiring wallets lock".to_string())),
     };
     
-    if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {
+    if let Some((wallet, chain)) = wallets_lock.get_mut(user_id) {  // Change get() to get_mut()
         let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
+        
+        // Now wallet is a &mut reference, so we can call reveal_next_address
         let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
         
-        // Create and clone the sync request to use outside the lock
-        let sync_request = wallet.wallet.start_sync_with_revealed_spks();
+        // Create a SyncRequest directly with revealed SPKs
+        let mut spks = vec![deposit_addr.script_pubkey()];
+        
+        // Add all old addresses
+        for old_addr in &chain.old_addresses {
+            if let Ok(addr) = Address::from_str(old_addr) {
+                let script_pubkey = addr.assume_checked().script_pubkey();
+                if !spks.contains(&script_pubkey) {
+                    spks.push(script_pubkey);
+                }
+            }
+        }
+        
+        // Create the SyncRequest directly
+        let sync_request = SyncRequest::builder()
+            .spks(spks.into_iter())
+            .build();
         
         Ok((deposit_addr, change_addr, sync_request))
     } else {

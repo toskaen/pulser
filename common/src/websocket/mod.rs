@@ -269,37 +269,89 @@ pub async fn is_connected(&self, endpoint: &str) -> bool {
     }
 }
 
-    pub async fn reconnect(&self, endpoint: &str, subscription: Option<&str>) -> Result<Arc<WebSocketConnection>, PulserError> {
-        let mut connections = self.connections.write().await;
-        connections.remove(endpoint);
-
-        debug!("Reconnecting to {}", endpoint);
-        let (ws_stream, _) = timeout(Duration::from_secs(10), connect_async(endpoint))
-            .await
-            .map_err(|_| PulserError::NetworkError("Reconnection timeout".to_string()))?
-            .map_err(|e| PulserError::NetworkError(format!("Reconnect failed to {}: {}", endpoint, e)))?;
-        let conn = Arc::new(WebSocketConnection {
-            stream: Arc::new(Mutex::new(ws_stream)),
-            connected: Arc::new(RwLock::new(true)),
-            last_activity: Arc::new(RwLock::new(Instant::now())),
-            last_processed: Arc::new(RwLock::new(Instant::now())),
-            throttle_ms: 0,
-        });
-
-        if let Some(sub) = subscription {
-            let mut stream = conn.stream.lock().await;
-            stream.send(Message::Text(sub.to_string())).await?;
-            if let Some(Ok(Message::Text(text))) = timeout(Duration::from_secs(5), stream.next()).await? {
-                debug!("Resubscription response for {}: {}", endpoint, text);
-            } else {
-                warn!("No resubscription response from {}", endpoint);
+// Replace the reconnect method with this simplified version
+pub async fn reconnect(&self, endpoint: &str, subscription: Option<&str>) -> Result<Arc<WebSocketConnection>, PulserError> {
+    debug!("Reconnecting to {}", endpoint);
+    
+    // Simple reconnection strategy
+    let mut delay_ms = 100;
+    let max_delay_ms = 30000; // 30 seconds
+    let mut attempts = 0;
+    let max_attempts = 5;
+    
+    while attempts < max_attempts {
+        attempts += 1;
+        
+        // Try to connect
+        match timeout(Duration::from_secs(10), connect_async(endpoint)).await {
+            Ok(Ok((ws_stream, _))) => {
+                let mut connections = self.connections.write().await;
+                
+                // Create new connection
+                let conn = Arc::new(WebSocketConnection {
+                    stream: Arc::new(Mutex::new(ws_stream)),
+                    connected: Arc::new(RwLock::new(true)),
+                    last_activity: Arc::new(RwLock::new(Instant::now())),
+                    last_processed: Arc::new(RwLock::new(Instant::now())),
+                    throttle_ms: 0,
+                });
+                
+                // Handle subscription if needed
+                if let Some(sub) = subscription {
+                    // Get stream from the connection
+                    let mut stream_guard = conn.stream.lock().await;
+                    
+                    // Send subscription
+                    if let Err(e) = stream_guard.send(Message::Text(sub.to_string())).await {
+                        warn!("Failed to send subscription to {}: {}", endpoint, e);
+                        // Drop the guard and proceed to next attempt
+                        drop(stream_guard);
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms = (delay_ms * 2).min(max_delay_ms);
+                        continue;
+                    }
+                    
+                    // Wait for subscription response
+                    match timeout(Duration::from_secs(5), stream_guard.next()).await {
+                        Ok(Some(Ok(_))) => {
+                            // Success - drop the guard first to avoid borrow issues
+                            drop(stream_guard);
+                            
+                            // Update subscriptions
+                            self.subscriptions.write().await.insert(endpoint.to_string(), sub.to_string());
+                            
+                            // Store the connection and return it
+                            connections.insert(endpoint.to_string(), conn.clone());
+                            return Ok(conn);
+                        },
+                        _ => {
+                            // Failed to get proper response - try again
+                            warn!("Failed to get subscription response from {}", endpoint);
+                            // Drop the guard and proceed to next attempt
+                            drop(stream_guard);
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            delay_ms = (delay_ms * 2).min(max_delay_ms);
+                            continue;
+                        }
+                    }
+                } else {
+                    // No subscription needed - just store the connection and return
+                    connections.insert(endpoint.to_string(), conn.clone());
+                    return Ok(conn);
+                }
+            },
+            _ => {
+                warn!("Reconnection attempt {}/{} to {} failed, retrying in {}ms", 
+                      attempts, max_attempts, endpoint, delay_ms);
             }
         }
-
-        connections.insert(endpoint.to_string(), conn.clone());
-        Ok(conn)
+        
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        delay_ms = (delay_ms * 2).min(max_delay_ms); // Exponential backoff with cap
     }
-
+    
+    Err(PulserError::NetworkError(format!("Failed to reconnect to {} after {} attempts", endpoint, max_attempts)))
+}
     pub async fn get_connection_stats(&self, endpoint: &str) -> Option<ConnectionStats> {
         if self.is_connected(endpoint).await {
             Some(ConnectionStats {
@@ -338,6 +390,34 @@ pub async fn force_close_connection(&self, endpoint: &str) -> bool {
     } else {
         false
     }
+}
+
+pub async fn force_close_all_with_timeout(&self, timeout_duration: Duration) -> bool {
+    let endpoints = {
+        let connections = self.connections.read().await;
+        connections.keys().cloned().collect::<Vec<_>>()
+    };
+    
+    let mut all_closed = true;
+    
+    for endpoint in endpoints {
+        match tokio::time::timeout(
+            timeout_duration,
+            self.shutdown_connection(&endpoint)
+        ).await {
+            Ok(Some(Ok(_))) => {
+                debug!("Successfully closed connection to {}", endpoint);
+            },
+            _ => {
+                warn!("Failed to gracefully close connection to {}, forcing close", endpoint);
+                if !self.force_close_connection(&endpoint).await {
+                    all_closed = false;
+                }
+            }
+        }
+    }
+    
+    all_closed
 }
 
 pub async fn shutdown_connection_with_timeout(&self, endpoint: &str, timeout: Duration) 

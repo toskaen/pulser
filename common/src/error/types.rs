@@ -98,6 +98,8 @@ pub enum PulserError {
     SyncError(String),
     #[error("NotFound error: {0}")]
     NotFound(String),
+    #[error("Operation timed out: {0}")]
+    Timeout(String),
 }
 
 impl PulserError {
@@ -142,6 +144,8 @@ impl PulserError {
             Self::WebhookError(_) => ErrorCategory::External,
             Self::SyncError(_) => ErrorCategory::Bitcoin, // Or Internal, depending on intent
         Self::NotFound(_) => ErrorCategory::NotFound,
+                    Self::Timeout(_) => ErrorCategory::Network,
+
         }
     }
 
@@ -182,6 +186,7 @@ impl ResponseError for PulserError {
                 PulserError::ChannelError(_) => StatusCode::SERVICE_UNAVAILABLE,
                             PulserError::SyncError(_) => StatusCode::SERVICE_UNAVAILABLE,
             PulserError::NotFound(_) => StatusCode::NOT_FOUND,
+            PulserError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
 
 
         }
