@@ -125,6 +125,8 @@ fn create_price_info(price_data: f64, source: &str) -> PriceInfo {
     }
 }
 
+// In deposit-service/src/main.rs - Replace existing perform_graceful_shutdown with this improved version
+
 async fn perform_graceful_shutdown(
     service_status: Arc<Mutex<ServiceStatus>>,
     state_manager: Arc<StateManager>,
@@ -147,7 +149,7 @@ async fn perform_graceful_shutdown(
         Err(_) => warn!("Timeout acquiring service status for final save"),
     }
     
-    // Step 2: Close WebSocket connections
+// Step 2: Close WebSocket connections
 info!("Closing WebSocket connections...");
 let ws_manager = price_feed.get_websocket_manager();
 match tokio::time::timeout(Duration::from_secs(3), async {
@@ -156,8 +158,11 @@ match tokio::time::timeout(Duration::from_secs(3), async {
         true
     } else {
         warn!("Error during WebSocket shutdown");
-        // Force close as backup
-        ws_manager.force_close_all_with_timeout(Duration::from_secs(1)).await
+        // Attempt shutdown with timeout
+        if let Err(_) = tokio::time::timeout(Duration::from_secs(1), ws_manager.shutdown()).await {
+            warn!("WebSocket shutdown timed out");
+        }
+        false
     }
 }).await {
     Ok(closed) => {
@@ -165,8 +170,7 @@ match tokio::time::timeout(Duration::from_secs(3), async {
               if closed { "successfully" } else { "partially" });
     },
     Err(_) => {
-        warn!("Timeout during WebSocket shutdown, forcing close");
-        ws_manager.force_close_all().await;
+        warn!("Timeout during WebSocket shutdown");
     }
 };
    
@@ -357,7 +361,10 @@ env_logger::Builder::new()
     let wallets = Arc::new(Mutex::new(HashMap::<String, (DepositWallet, StableChain)>::new()));
     let user_statuses = Arc::new(Mutex::new(HashMap::<String, UserStatus>::new()));
     let retry_queue = Arc::new(Mutex::new(RetryQueue::new_memory(webhook_config.retry_max_attempts)));
-    let price_feed = Arc::new(PriceFeed::new());
+let price_feed = Arc::new(PriceFeed::new_with_auth(
+    config.deribit_id.clone(),
+    config.deribit_secret.clone()
+));
     let active_tasks_manager = Arc::new(UserTaskLock::new());
     let price_info = Arc::new(Mutex::new(PriceInfo {
         raw_btc_usd: 0.0,
@@ -395,10 +402,11 @@ env_logger::Builder::new()
             .with_max_tip_age(3600) // 1 hour
     );
 
+let ws_manager = price_feed.get_websocket_manager();
 health_checker.register(
     WebSocketCheck::new_with_manager(
-        price_feed.get_websocket_manager(),
-        WebSocketManager::get_exchange_url("deribit").to_string()
+        ws_manager.clone(),
+        ws_manager.get_exchange_url("deribit").to_string()
     )
     .with_name("deribit_websocket")
     .with_max_inactivity(60)
@@ -856,8 +864,16 @@ let status_update_handle = tokio::spawn({
     let wallets = wallets.clone();
     let state_manager = state_manager.clone();
     let mut shutdown_rx = shutdown_tx.subscribe();
+    let price_feed = price_feed.clone();
+    let blockchain = blockchain.clone();
+    let health_checker = health_checker.clone();
+    
     async move {
         let mut interval = tokio::time::interval(Duration::from_secs(STATUS_UPDATE_INTERVAL_SECS));
+        
+        // Initialize the performance tracking
+        let mut last_update_time = Instant::now();
+        
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
@@ -866,93 +882,267 @@ let status_update_handle = tokio::spawn({
                 }
                 _ = interval.tick() => {
                     // First gather statistics with a short-lived lock
-let stats = match tokio::time::timeout(
-    Duration::from_secs(5),
-    async {
-        let wallets_lock = wallets.lock().await;
-        let users = wallets_lock.len() as u32;
-        let utxos = wallets_lock.values()
-            .map(|(_, chain)| chain.utxos.len() as u32)
-            .sum();
-        let btc = wallets_lock.values()
-            .map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0)
-            .sum();
-        let usd = wallets_lock.values()
-            .map(|(_, chain)| chain.stabilized_usd.0)
-            .sum();
-        Ok::<(u32, u32, f64, f64), PulserError>((users, utxos, btc, usd))
-    }
-).await {
-    Ok(Ok(stats)) => stats,
-    Ok(Err(e)) => {
-        warn!("Error gathering wallet statistics: {}", e);
-        continue;
-    },
-    Err(_) => {
-        warn!("Timeout gathering wallet statistics");
-        continue;
-    }
-};
+                    let stats = match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        async {
+                            let wallets_lock = wallets.lock().await;
+                            let users = wallets_lock.len() as u32;
+                            let utxos = wallets_lock.values()
+                                .map(|(_, chain)| chain.utxos.len() as u32)
+                                .sum();
+                            let btc = wallets_lock.values()
+                                .map(|(wallet, _)| wallet.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0)
+                                .sum();
+                            let usd = wallets_lock.values()
+                                .map(|(_, chain)| chain.stabilized_usd.0)
+                                .sum();
+                            Ok::<(u32, u32, f64, f64), PulserError>((users, utxos, btc, usd))
+                        }
+                    ).await {
+                        Ok(Ok(stats)) => stats,
+                        Ok(Err(e)) => {
+                            warn!("Error gathering wallet statistics: {}", e);
+                            continue;
+                        },
+                        Err(_) => {
+                            warn!("Timeout gathering wallet statistics");
+                            continue;
+                        }
+                    };
                     
                     // Then update service status with another lock
                     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
                     let updated = match tokio::time::timeout(
-    Duration::from_secs(3),
-    async {
-        let (users, utxos, btc, usd) = stats;
-        let mut status = service_status.lock().await;
-        status.users_monitored = users;
-        status.total_utxos = utxos;
-        status.total_value_btc = btc;
-        status.total_value_usd = usd;
-        status.last_update = timestamp;
-        if status.health != "price feed error" && status.health != "websocket error" {
-            status.health = "healthy".to_string();
-        }
-        debug!("Updated ServiceStatus: {} users, {:.8} BTC, ${:.2} USD", 
-               users, btc, usd);
-        true
-    }
-).await {
-    Ok(true) => true,
-    Ok(false) => {
-        warn!("Failed to update service status");
-        false
-    },
-    Err(_) => {
-        warn!("Timeout updating service status");
-        false
-    }
-};
+                        Duration::from_secs(3),
+                        async {
+                            let (users, utxos, btc, usd) = stats;
+                            let mut status = service_status.lock().await;
+                            
+                            // First check if we need to update basic stats
+                            let stats_changed = status.users_monitored != users || 
+                                               status.total_utxos != utxos ||
+                                               (status.total_value_btc - btc).abs() > 0.00001 ||
+                                               (status.total_value_usd - usd).abs() > 0.01;
+                                               
+                            if stats_changed {
+                                // Update the basic stats
+                                status.users_monitored = users;
+                                status.total_utxos = utxos;
+                                status.total_value_btc = btc;
+                                status.total_value_usd = usd;
+                            }
+                            
+                            // Always update the timestamp
+                            status.last_update = timestamp;
+                            
+                            // Update price sources if we have them
+                            if let Ok(price_guard) = tokio::time::timeout(Duration::from_secs(1), price_info.lock()).await {
+                                status.update_price_sources(&price_guard);
+                            }
+                            
+                            // Update WebSocket status
+                            let ws_active = price_feed.is_websocket_connected().await;
+                            if status.websocket_active != ws_active {
+                                status.websocket_active = ws_active;
+                                
+                                // Update component health for WebSocket
+                                let ws_status = if ws_active { "healthy" } else { "degraded" };
+                                let ws_reason = if ws_active { 
+                                    None 
+                                } else { 
+                                    Some("WebSocket disconnected".to_string()) 
+                                };
+                                status.update_component_health("websocket", ws_status, ws_reason);
+                            }
+                            
+                            // Update blockchain status every 5 minutes
+                            static LAST_BLOCKCHAIN_CHECK: AtomicU64 = AtomicU64::new(0);
+                            let now = utils::now_timestamp() as u64;
+                            let last_check = LAST_BLOCKCHAIN_CHECK.load(Ordering::SeqCst);
+                            
+                            if now - last_check > 300 { // Every 5 minutes
+                                if let Ok(height) = tokio::time::timeout(
+                                    Duration::from_secs(2), 
+                                    blockchain.get_height()
+                                ).await {
+                                    match height {
+                                        Ok(tip_height) => {
+                                            // Check tip timestamp
+                                            if let Ok(Ok(blocks)) = tokio::time::timeout(
+                                                Duration::from_secs(2),
+                                                blockchain.get_blocks(Some(tip_height))
+                                            ).await {
+                                                if let Some(block) = blocks.first() {
+                                                    let block_time = block.time.timestamp as u64;
+                                                    let tip_age = now.saturating_sub(block_time);
+                                                    
+                                                    status.update_blockchain_status(
+                                                        true, tip_height as u32, tip_age as u32
+                                                    );
+                                                }
+                                            }
+                                        },
+                                        Err(e) => {
+                                            warn!("Failed to get blockchain height: {}", e);
+                                            status.update_blockchain_status(false, 0, 0);
+                                        }
+                                    }
+                                    
+                                    LAST_BLOCKCHAIN_CHECK.store(now, Ordering::SeqCst);
+                                }
+                            }
+                            
+                            // Update resource usage metrics (simplified example)
+                            if status.resource_usage.is_none() {
+                                status.resource_usage = Some(ResourceUsage {
+                                    cpu_percent: 0.0,
+                                    memory_mb: 0.0,
+                                    disk_operations_per_min: 0,
+                                });
+                            }
+                            
+                            // Update performance metrics
+                            if status.performance.is_none() {
+                                status.performance = Some(PerformanceMetrics {
+                                    avg_sync_time_ms: 0,
+                                    avg_price_fetch_time_ms: 0,
+                                    max_sync_time_ms: 0,
+                                });
+                            }
+                            
+                            // Measure time since last update and add to performance
+                            let elapsed = last_update_time.elapsed().as_millis() as u32;
+                            last_update_time = Instant::now();
+                            
+                            // Update status based on health checker components
+                            let health_status = health_checker.check_all();
+                            for (component, status_str) in &health_status.components {
+                                let reason = health_status.details.get(component)
+                                    .and_then(|details| details.get("reason").and_then(|r| r.as_str()))
+                                    .map(|s| s.to_string());
+                                    
+                                status.update_component_health(component, status_str, reason);
+                            }
+                            
+                            debug!("Updated ServiceStatus: {} users, {:.8} BTC, ${:.2} USD, health: {}", 
+                                   users, btc, usd, status.health);
+                                   
+                            true
+                        }
+                    ).await {
+                        Ok(true) => true,
+                        Ok(false) => {
+                            warn!("Failed to update service status");
+                            false
+                        },
+                        Err(_) => {
+                            warn!("Timeout updating service status");
+                            false
+                        }
+                    };
                     
-                    // If update was successful, save to state manager
+                    // If update was successful, check if we need to save to disk
                     if updated {
                         let status_copy = match tokio::time::timeout(
-    Duration::from_secs(2),
-    async {
-        let status = service_status.lock().await;
-        status.clone()
-    }
-).await {
-    Ok(status) => status,
-    Err(_) => {
-        warn!("Timeout getting status copy");
-        continue;
-    }
-};
+                            Duration::from_secs(2),
+                            async {
+                                let status = service_status.lock().await;
+                                status.clone()
+                            }
+                        ).await {
+                            Ok(status) => status,
+                            Err(_) => {
+                                warn!("Timeout getting status copy");
+                                continue;
+                            }
+                        };
                         
-                        if let Err(e) = state_manager.save_service_status(&status_copy).await {
-                            warn!("Failed to save service status: {}", e);
+                        // Use atomic to track last saved hash to avoid redundant saves
+                        static LAST_SAVED_HASH: AtomicU64 = AtomicU64::new(0);
+                        static LAST_SAVE_TIME: AtomicU64 = AtomicU64::new(0);
+                        
+                        // Create a hash of important fields
+                        let hash_input = format!("{:.8}{:.2}{}{}", 
+                            status_copy.total_value_btc,
+                            status_copy.total_value_usd,
+                            status_copy.users_monitored,
+                            status_copy.health
+                        );
+                        
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        hash_input.hash(&mut hasher);
+                        let hash = hasher.finish();
+                        
+                        let last_hash = LAST_SAVED_HASH.load(Ordering::SeqCst);
+                        let last_save = LAST_SAVE_TIME.load(Ordering::SeqCst);
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                        
+                        // Save if:
+                        // 1. Hash is different (important stats changed)
+                        // 2. OR health status changed (critical to save immediately)
+                        // 3. OR it's been over 5 minutes since last save
+                        let should_save = hash != last_hash || (now - last_save) > 300;
+                        
+                        if should_save {
+                            if let Err(e) = state_manager.save_service_status(&status_copy).await {
+                                warn!("Failed to save service status: {}", e);
+                            } else {
+                                // Update the atomic trackers after successful save
+                                LAST_SAVED_HASH.store(hash, Ordering::SeqCst);
+                                LAST_SAVE_TIME.store(now, Ordering::SeqCst);
+                                
+                                // Only log at INFO level if health changed or significant changes
+                                if hash != last_hash {
+                                    info!("Saved ServiceStatus: {} users, {:.8} BTC, ${:.2} USD, health: {}", 
+                                         status_copy.users_monitored, 
+                                         status_copy.total_value_btc, 
+                                         status_copy.total_value_usd, 
+                                         status_copy.health);
+                                } else {
+                                    debug!("Saved ServiceStatus after timeout interval");
+                                }
+                            }
+                        } else {
+                            trace!("Skipping save for unchanged ServiceStatus");
                         }
                     }
                 }
             }
         }
+        
         info!("Status update handle completed");
         Ok::<(), PulserError>(())
     }
 });
 
+// Start cache flush task
+let cache_flush_handle = tokio::spawn({
+    let state_manager = state_manager.clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(120)); // 2 minutes
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!("Cache flush task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    match state_manager.flush_dirty_chains().await {
+                        Ok(flushed) => {
+                            if flushed > 0 {
+                                debug!("Flushed {} dirty chains", flushed);
+                            }
+                        },
+                        Err(e) => warn!("Error flushing dirty chains: {}", e),
+                    }
+                }
+            }
+        }
+        info!("Cache flush task completed");
+        Ok::<(), PulserError>(())
+    }
+});
     // Start web server
     let server_handle = tokio::spawn({
         let config = config.clone();
@@ -1022,6 +1212,8 @@ info!("Shutting down...");
 
 shutdown_tx.send(())?;
 
+tokio::time::sleep(Duration::from_millis(500)).await;
+
 info!("Waiting for tasks to complete...");
 
 // Wait for tasks to complete (they will handle their own cleanup)
@@ -1032,6 +1224,7 @@ let handles = vec![
     monitor_handle,
     sync_handle,
     status_update_handle,
+    cache_flush_handle,
     server_handle,
     save_status_handle, // This one runs perform_graceful_shutdown
 ];

@@ -1,3 +1,5 @@
+// In deposit-service/src/api/status.rs - Replace with this improved implementation
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

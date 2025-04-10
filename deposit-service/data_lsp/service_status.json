@@ -1,14 +1,14 @@
 {
   "up_since": 1743532136,
-  "last_update": 1744043809,
+  "last_update": 1744103421,
   "version": "unknown",
   "users_monitored": 3,
-  "total_utxos": 3,
-  "total_value_btc": 0.000036,
-  "total_value_usd": 3.0335980000000005,
-  "health": "healthy",
-  "last_price": 78327.06028037598,
-  "price_update_count": 29,
+  "total_utxos": 4,
+  "total_value_btc": 0.00032239,
+  "total_value_usd": 25.56322175998293,
+  "health": "degraded",
+  "last_price": 79200.75277210523,
+  "price_update_count": 42,
   "active_syncs": 0,
-  "websocket_active": true
+  "websocket_active": false
 }

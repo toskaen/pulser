@@ -4,6 +4,7 @@ pub mod user;
 pub mod sync;
 pub mod register;
 pub mod status;  // New consolidated status module
+pub mod service;
 
 use warp::{Filter, Rejection, Reply};
 use std::sync::Arc;
@@ -21,6 +22,8 @@ use crate::config::Config;
 use reqwest::Client;
 use std::time::Duration;
 use common::health::HealthChecker;
+use crate::service::service_routes;
+
 
 // Re-export the sync_user function for use by other modules
 pub use sync::sync_user;
@@ -134,4 +137,6 @@ pub fn routes(
             user_statuses.clone(),
             price_feed.clone(),
         ))
+            .or(service_routes(state_manager.clone())); // Add this line
+
 }

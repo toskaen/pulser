@@ -3,23 +3,23 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 2300
+    "sats": 30939
   },
-  "stabilized_usd": 1.9289425000000002,
+  "stabilized_usd": 24.45856625998293,
   "timestamp": 1743534757,
   "formatted_datetime": "2025-04-01T19:12:37.206671103+00:00",
   "sc_dir": "data_lsp/user_2",
-  "raw_btc_usd": 78327.06028037598,
+  "raw_btc_usd": 79044.30079547163,
   "prices": {},
-  "multisig_addr": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+  "multisig_addr": "tb1p27te30wdxnl2wl67j9gw3vfa55qzse46qu03ytus4rdg8lvuamus60mg89",
   "utxos": [
     {
       "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 1830,
+      "confirmations": 2004,
       "script_pubkey": "51206035364a49fa4b57af87f8cd172a63c69c0b22d5d8b33366f508f71bd071ffec",
-      "height": 1830,
+      "height": 2004,
       "usd_value": 1.1050325,
       "spent": false
     },
@@ -27,10 +27,20 @@
       "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
       "vout": 0,
       "amount": 1000,
-      "confirmations": 510,
+      "confirmations": 684,
       "script_pubkey": "5120f14867dd80ebac9fa03b0a97c534cacfcd8a20a90776e809f5fff02caa4c2243",
-      "height": 510,
+      "height": 684,
       "usd_value": 0.82391,
+      "spent": false
+    },
+    {
+      "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
+      "vout": 1,
+      "amount": 28639,
+      "confirmations": 144,
+      "script_pubkey": "512041f96637e8b44b6a73f29390fab21b79fa48a06edad5a9f9581da3b120720b67",
+      "height": 144,
+      "usd_value": 22.52962375998293,
       "spent": false
     }
   ],
@@ -48,7 +58,9 @@
     "tb1pvq6nvjjflf940tu8lrx3w2nrc6wqkgk4mzenxeh4prm3h5r3llkqf5ykfm",
     "tb1p79yx0hvqawkflgpmp2tu2dx2elxc5g9fqamwsz04llcze2jvyfpsd0qavy",
     "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
-    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq"
+    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+    "tb1pfht6gmmyrlagduu7s20dat9h0zhtluzx8w7el6yqa3f54n9q47qs7335uu"
   ],
   "history": [
     {
@@ -83,6 +95,42 @@
         "trustee"
       ],
       "stable_value_usd": 1.1050325,
+      "spendable": true,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
+      "vout": 1,
+      "amount_sat": 28639,
+      "address": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+      "keychain": "External",
+      "timestamp": 1744053006,
+      "confirmations": 0,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 0.0,
+      "spendable": false,
+      "derivation_path": "",
+      "spent": false
+    },
+    {
+      "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
+      "vout": 1,
+      "amount_sat": 28639,
+      "address": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+      "keychain": "External",
+      "timestamp": 1744053760,
+      "confirmations": 4,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "stable_value_usd": 22.52962375998293,
       "spendable": true,
       "derivation_path": "",
       "spent": false
@@ -128,6 +176,30 @@
       "usd_delta": 0.0,
       "service": "deposit-service",
       "details": "Full history resync with 0 new UTXOs"
+    },
+    {
+      "timestamp": 1744053006,
+      "change_type": "deposit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.0,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed using cached, basis 0.00%"
+    },
+    {
+      "timestamp": 1744053760,
+      "change_type": "hedging_benefit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.005193454982929779,
+      "service": "price-feed",
+      "details": "Hedging benefit at basis -0.02% (backwardation)"
+    },
+    {
+      "timestamp": 1744053760,
+      "change_type": "deposit",
+      "btc_delta": 0.00028639,
+      "usd_delta": 22.52962375998293,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed using Spot (backwardation -0.02%), basis -0.02%"
     }
   ]
 }

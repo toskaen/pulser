@@ -1,6 +1,6 @@
 use tokio::sync::{Mutex, mpsc, broadcast, Semaphore};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Instant, Duration};
 use std::str::FromStr;
 use log::{info, warn, debug, error};
 use bdk_wallet::bitcoin::{Address, Amount};
@@ -27,14 +27,11 @@ use common::utils::now_timestamp;
 use serde_json::json;
 use common::webhook::WebhookPayload;
 use common::webhook::WebhookManager;
-// In monitor.rs - add this import
 use bdk_chain::spk_client::SyncResponse as UpdatedSyncState;
-
-
-
-
 use bdk_chain::spk_client::SyncRequest;
 use common::UtxoInfo;
+use lazy_static::lazy_static;
+
 
 // Constants
 const MAX_CONCURRENT_SYNCS: usize = 5;
@@ -42,6 +39,11 @@ const INITIAL_BACKOFF_MS: u64 = 100;
 const MAX_BACKOFF_MS: u64 = 30_000;
 const BACKOFF_FACTOR: f64 = 1.5;
 const SERVICE_STATUS_UPDATE_INTERVAL_SECS: u64 = 15;
+
+lazy_static! {
+    static ref MEMPOOL_TIMESTAMPS: Arc<Mutex<HashMap<(String, u32), u64>>> = 
+        Arc::new(Mutex::new(HashMap::new()));
+}
 
 // Retry utility
 async fn with_backoff<F, Fut, T>(operation: F, label: &str) -> Result<T, PulserError>
@@ -151,7 +153,7 @@ pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, addre
     
     // Function to attempt the API call with detailed error handling
     let fetch_mempool = || async {
-            debug!("Checking mempool for address: {}", url);
+        debug!("Checking mempool for address: {}", url);
 
         let response = client.get(&url).send().await?;
         
@@ -185,9 +187,31 @@ pub async fn check_mempool_for_address(client: &Client, esplora_url: &str, addre
     };
     
     // Use with_backoff to retry with exponential backoff
-    with_backoff(fetch_mempool, "Check mempool").await
+    let mempool_txs = with_backoff(fetch_mempool, "Check mempool").await?;
+    
+    if !mempool_txs.is_empty() {
+        let now = chrono::Utc::now().timestamp() as u64;
+        let mut timestamps = MEMPOOL_TIMESTAMPS.lock().await;
+        
+        for tx in &mempool_txs {
+            let txid = tx.txid().to_string();
+            for (vout, _) in tx.output.iter().enumerate() {
+                // Only store if not already present (preserve earliest time)
+                timestamps.entry((txid.clone(), vout as u32))
+                    .or_insert(now);
+            }
+        }
+        
+        debug!("Updated mempool timestamps for {} transactions", mempool_txs.len());
+    }
+    
+    // Return mempool transactions
+    Ok(mempool_txs)
 }
 
+pub async fn get_mempool_timestamps() -> HashMap<(String, u32), u64> {
+    MEMPOOL_TIMESTAMPS.lock().await.clone()
+}
 // Prune inactive users
 async fn prune_inactive_users(
     activity: &mut HashMap<String, u64>,
@@ -395,9 +419,11 @@ async fn apply_sync_update(
     price_info: &PriceInfo,
     state_manager: &StateManager,
     min_confirmations: u32,
-        blockchain: &AsyncClient // Add blockchain parameter
-
+    blockchain: &AsyncClient
 ) -> Result<Vec<UtxoInfo>, PulserError> {
+    // Get mempool timestamps
+    let mempool_timestamps = get_mempool_timestamps().await;
+    
     // Acquire lock with retry and timeout
     let mut wallets_lock = match timeout(
         Duration::from_secs(5),
@@ -424,6 +450,7 @@ async fn apply_sync_update(
             &change_addr,
             &state_manager,
             min_confirmations,
+            &mempool_timestamps, // Pass the timestamps
         ).await?;
         
         Ok(new_utxos)
@@ -456,14 +483,30 @@ pub async fn monitor_deposits(
     let mut reconnect_attempts = 0;
     let mut last_block_height = get_blockchain_tip(&client, &config.esplora_url).await.unwrap_or(0);
     let mut last_fallback_sync = 0;
-    let mut mempool_interval = interval(Duration::from_secs(130)); // 2min10s
+    let mut mempool_interval = interval(Duration::from_secs(210)); //
 let last_sync = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
 
     let mut fallback_interval = interval(Duration::from_secs(config.monitor.fallback_sync_interval_secs));
     let ping_interval = interval(Duration::from_secs(config.monitor.websocket_ping_interval_secs));
     let mut status_interval = interval(Duration::from_secs(SERVICE_STATUS_UPDATE_INTERVAL_SECS));
     let mut prune_interval = interval(Duration::from_secs(config.monitor.fallback_sync_interval_secs / 2));
+let mut last_cleanup = Instant::now();
 
+if last_cleanup.elapsed() > Duration::from_secs(3600) {
+    // Clean up timestamps older than 24 hours
+    let now = chrono::Utc::now().timestamp() as u64;
+    let day_ago = now - 86400;
+    
+    let mut timestamps = MEMPOOL_TIMESTAMPS.lock().await;
+    let before_count = timestamps.len();
+    timestamps.retain(|_, timestamp| *timestamp > day_ago);
+    let after_count = timestamps.len();
+    
+    debug!("Cleaned up mempool timestamp cache: removed {} stale entries, {} remaining", 
+          before_count - after_count, after_count);
+    
+    last_cleanup = Instant::now();
+}
  let mut ws = if let Ok(mut websocket) = connect_websocket(&config.monitor.websocket_url).await {
         subscribe_to_blocks(&mut websocket).await?;
         service_status.lock().await.websocket_active = true;
@@ -545,12 +588,14 @@ msg = async {
                         ).await {
                             Ok(()) => {
                                 debug!("Successfully processed wallets for block {}", last_block_height);
-                                for user_id in &active_users {
-                                    last_activity_check.lock().await.insert(user_id.clone(), now_timestamp() as u64);
-                                    if let Err(e) = sync_tx.send(user_id.clone()).await {
-                                        warn!("Failed to send sync signal for user {}: {}", user_id, e);
-                                    }
-                                }
+            {
+                let mut last_sync_guard = last_sync.lock().await;
+                let now = now_timestamp() as u64;
+                for user_id in &active_users {
+                    last_sync_guard.insert(user_id.clone(), now);
+                    last_activity_check.lock().await.insert(user_id.clone(), now_timestamp() as u64);
+                }
+            }
                                 if let Err(e) = prune_inactive_users(
                                     &mut *last_activity_check.lock().await,
                                     config.monitor.deposit_window_hours * 3600,

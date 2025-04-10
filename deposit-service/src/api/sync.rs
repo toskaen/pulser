@@ -1,10 +1,10 @@
-// deposit-service/src/api/sync.rs - revised implementation
+// deposit-service/src/api/sync.rs - Improved implementation
 use warp::{Filter, Rejection, Reply};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::timeout;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::collections::{HashMap, VecDeque, HashSet};
+use std::collections::{HashMap, HashSet};
 use log::{info, warn, debug, error, trace};
 use serde_json::json;
 use reqwest::Client;
@@ -34,40 +34,6 @@ const SYNC_LOCK_TIMEOUT_SECS: u64 = 5;
 const WEBHOOK_TIMEOUT_SECS: u64 = 10;
 const MAX_RETRY_ATTEMPTS: usize = 3;
 const RETRY_DELAY_BASE_MS: u64 = 250;
-
-// Helper function to acquire a lock with timeout and backoff
-async fn acquire_lock_with_retry<'a, T>(
-    mutex: &'a Arc<Mutex<T>>,
-    user_id: &str,
-    operation: &str,
-    timeout_ms: u64,
-    max_retries: usize,
-) -> Result<tokio::sync::MutexGuard<'a, T>, PulserError> {
-    let mut attempts = 0;
-    
-    loop {
-        debug!("Attempting to acquire lock for {} operation on user {}, attempt {}/{}", 
-               operation, user_id, attempts + 1, max_retries + 1);
-        
-        match timeout(Duration::from_millis(timeout_ms), mutex.lock()).await {
-            Ok(guard) => return Ok(guard),
-            Err(_) => {
-                attempts += 1;
-                if attempts > max_retries {
-                    return Err(PulserError::InternalError(format!(
-                        "Timeout acquiring {} lock after {} attempts", operation, attempts
-                    )));
-                }
-                
-                // Exponential backoff
-                let delay = RETRY_DELAY_BASE_MS * (1 << attempts);
-                warn!("Timeout acquiring {} lock for user {}, retrying in {}ms (attempt {}/{})", 
-                      operation, user_id, delay, attempts, max_retries + 1);
-                tokio::time::sleep(Duration::from_millis(delay)).await;
-            }
-        }
-    }
-}
 
 // Routes configuration
 pub fn sync_route(
@@ -103,7 +69,7 @@ pub fn sync_route(
         .and_then(sync_user_handler)
 }
 
-// Force sync endpoint
+// Force sync endpoint - last resort full resync
 pub fn force_sync(
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
     active_tasks_manager: Arc<UserTaskLock>,
@@ -121,6 +87,37 @@ pub fn force_sync(
         .and(super::with_state_manager(state_manager))
         .and(super::with_config(config))
         .and_then(force_sync_handler)
+}
+
+// Helper function to acquire a lock with timeout and backoff
+async fn acquire_lock_with_retry<'a, T>(
+    mutex: &'a Arc<Mutex<T>>,
+    user_id: &str,
+    operation: &str,
+    timeout_ms: u64,
+    max_retries: usize,
+) -> Result<tokio::sync::MutexGuard<'a, T>, PulserError> {
+    let mut attempts = 0;
+    
+    loop {
+        match timeout(Duration::from_millis(timeout_ms), mutex.lock()).await {
+            Ok(guard) => return Ok(guard),
+            Err(_) => {
+                attempts += 1;
+                if attempts > max_retries {
+                    return Err(PulserError::InternalError(format!(
+                        "Timeout acquiring {} lock after {} attempts", operation, attempts
+                    )));
+                }
+                
+                // Exponential backoff
+                let delay = RETRY_DELAY_BASE_MS * (1 << attempts);
+                warn!("Timeout acquiring {} lock for user {}, retrying in {}ms (attempt {}/{})", 
+                      operation, user_id, delay, attempts, max_retries + 1);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
 }
 
 // Main sync user handler for HTTP API
@@ -143,22 +140,8 @@ async fn sync_user_handler(
     debug!("Received sync request for user {}", user_id);
     let start_time = Instant::now();
     
-    // Check if user is already being synced with timeout
-    let is_active = match timeout(
-        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS), 
-        active_tasks_manager.is_user_active(&user_id)
-    ).await {
-        Ok(active) => active,
-        Err(_) => {
-            warn!("Timeout checking active status for user {}", user_id);
-            return Ok(warp::reply::json(&json!({
-                "status": "error", 
-                "message": "Service busy, try again later"
-            })));
-        }
-    };
-
-    if is_active {
+    // Check if user is already being synced
+    if active_tasks_manager.is_user_active(&user_id).await {
         debug!("User {} is already being synced", user_id);
         return Ok(warp::reply::json(&json!({
             "status": "error", 
@@ -167,42 +150,25 @@ async fn sync_user_handler(
     }
 
     // Use ScopedTask for automatic cleanup on drop
-    let task = match timeout(
-        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
-        ScopedTask::new(&active_tasks_manager, &user_id, "sync")
-    ).await {
-        Ok(Some(task)) => task,
-        Ok(None) => {
+    let task = match ScopedTask::new(&active_tasks_manager, &user_id, "sync").await {
+        Some(task) => task,
+        None => {
             debug!("Failed to mark user {} as active, likely already syncing", user_id);
             return Ok(warp::reply::json(&json!({
                 "status": "error", 
                 "message": "User already syncing or unable to begin sync"
             })));
-        },
-        Err(_) => {
-            warn!("Timeout attempting to mark user {} as active", user_id);
-            return Ok(warp::reply::json(&json!({
-                "status": "error", 
-                "message": "Service busy, try again later"
-            })));
         }
     };
 
     // Update service status to increment active syncs
-    match timeout(
-        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
-        acquire_lock_with_retry(
-            &service_status,
-            &user_id,
-            "service_status",
-            DEFAULT_LOCK_TIMEOUT_MS,
-            MAX_RETRY_ATTEMPTS
-        )
-    ).await {
-        Ok(Ok(mut status)) => status.active_syncs += 1,
-        Ok(Err(e)) => warn!("Error acquiring service status lock for user {}: {}", user_id, e),
-        Err(_) => warn!("Timeout acquiring service status lock for user {}", user_id),
+    match service_status.lock().await {
+        Ok(mut status) => status.active_syncs += 1,
+        Err(_) => warn!("Failed to acquire service status lock for user {}", user_id),
     }
+
+    // Update user status to indicate sync is in progress
+    status::update_user_status_simple(&user_id, "syncing", "Sync in progress", &user_statuses).await;
 
     // Execute sync operation with timeout
     let sync_result = match timeout(
@@ -251,40 +217,47 @@ async fn sync_user_handler(
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     // Update user status with duration
-    match timeout(
-        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
-        user_statuses.lock()
-    ).await {
+    match user_statuses.lock().await {
         Ok(mut statuses) => {
             if let Some(status) = statuses.get_mut(&user_id) {
                 status.sync_duration_ms = duration_ms;
                 status.last_sync = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
             }
         },
-        Err(_) => warn!("Timeout updating user status duration for {}", user_id),
+        Err(_) => warn!("Failed to acquire user status lock for update"),
     }
 
     // Update service statistics
-    match timeout(
-        Duration::from_secs(SYNC_LOCK_TIMEOUT_SECS),
-        service_status.lock()
-    ).await {
+    match service_status.lock().await {
         Ok(mut status) => {
             status.active_syncs = status.active_syncs.saturating_sub(1);
+            
+            // Only update overall stats if we can get the wallets lock with a short timeout
             if let Ok(wallets_lock) = timeout(Duration::from_secs(2), wallets.lock()).await {
-                status.total_utxos = wallets_lock.values().map(|(_, c)| c.utxos.len() as u32).sum();
-                status.total_value_btc = wallets_lock.values().map(|(w, _)| 
+                // Update global statistics only when needed (use atomic fetch operations inside)
+                let total_utxos = wallets_lock.values().map(|(_, c)| c.utxos.len() as u32).sum();
+                let total_value_btc = wallets_lock.values().map(|(w, _)| 
                     w.wallet.balance().confirmed.to_sat() as f64 / 100_000_000.0).sum();
-                status.total_value_usd = wallets_lock.values().map(|(_, c)| c.stabilized_usd.0).sum();
+                let total_value_usd = wallets_lock.values().map(|(_, c)| c.stabilized_usd.0).sum();
+                
+                // Only update if values actually changed to avoid unnecessary writes
+                if status.total_utxos != total_utxos || 
+                   (status.total_value_btc - total_value_btc).abs() > 0.00001 || 
+                   (status.total_value_usd - total_value_usd).abs() > 0.01 {
+                    status.total_utxos = total_utxos;
+                    status.total_value_btc = total_value_btc;
+                    status.total_value_usd = total_value_usd;
+                    status.last_update = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                }
             }
         },
-        Err(_) => warn!("Timeout updating service status after sync for {}", user_id),
+        Err(_) => warn!("Failed to acquire service status lock for update"),
     }
     
     Ok(warp::reply::json(&sync_result))
 }
 
-// Force sync handler - unchanged except for updating the history preservation
+// Force sync handler - "last resort" complete wallet resync
 async fn force_sync_handler(
     user_id: String,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -295,111 +268,130 @@ async fn force_sync_handler(
     config: Arc<Config>
 ) -> Result<impl Reply, Rejection> {
     debug!("Received force_sync request for user {}", user_id);
-
-    let price_feed = Arc::new(PriceFeed::new());
-
+    
     // Check if user is already being synced
     if active_tasks_manager.is_user_active(&user_id).await {
         debug!("User {} already being synced", &user_id);
         return Ok(warp::reply::json(&json!({"status": "error", "message": "User already syncing"})));
     }
 
-    // Acquire task lock
-    if !active_tasks_manager.mark_user_active(&user_id, "force_sync").await {
-        return Ok(warp::reply::json(&json!({"status": "error", "message": "Failed to lock user for sync"})));
-    }
-    
-    // IMPORTANT: We access the wallet without removing it from the HashMap
-    {
-        let mut wallets_lock = wallets.lock().await;
-        if let Some((wallet, chain)) = wallets_lock.get_mut(&user_id) {
-            // Save existing history before syncing
-            let existing_history = chain.history.clone();
-            let existing_change_log = chain.change_log.clone();
-            
-            // Get the current price information
-            let price_info_data = match tokio::time::timeout(Duration::from_secs(3), price_info.lock()).await {
-                Ok(lock) => lock.clone(),
-                Err(_) => return Err(PulserError::InternalError("Timeout acquiring price info".to_string()))?,
-            };
-            
-            // Perform the sync
-            match wallet_sync::resync_full_history(
-                &user_id,
-                &mut wallet.wallet,
-                &esplora,
-                chain,
-                price_feed.clone(),
-                &price_info_data,
-                &state_manager,
-                config.min_confirmations,
-            ).await {
-                Ok(new_utxos) => {
-                    // Use a HashMap instead of HashSet for deduplication with updates
-let mut txid_map: HashMap<(String, u32), UtxoInfo> = HashMap::new();
-
-// First add all current history items
-for utxo in &chain.history {
-    txid_map.insert((utxo.txid.clone(), utxo.vout), utxo.clone());
-}
-
-// Then add back old history, only overwriting if it has MORE confirmations
-for utxo in existing_history {
-    let key = (utxo.txid.clone(), utxo.vout);
-    
-    // Only insert if:
-    // 1. Entry doesn't exist yet, OR
-    // 2. New entry has MORE confirmations than existing one
-    if !txid_map.contains_key(&key) || 
-       utxo.confirmations > txid_map.get(&key).unwrap().confirmations {
-        txid_map.insert(key, utxo.clone());
-    }
-}
-
-// Replace history with deduplicated values
-chain.history = txid_map.values().cloned().collect();
-                    
-                    // Add resync log entry
-                    let mut merged_logs = existing_change_log;
-                    merged_logs.push(ChangeEntry {
-                        timestamp: chrono::Utc::now().timestamp(),
-                        change_type: "force_resync".to_string(),
-                        btc_delta: 0.0,
-                        usd_delta: 0.0,
-                        service: "deposit-service".to_string(),
-                        details: Some(format!("Full history resync with {} new UTXOs", new_utxos.len())),
-                    });
-                    chain.change_log = merged_logs;
-                    
-                    info!("Full resync completed for user {} with history preserved: {} UTXOs", &user_id, chain.history.len());
-                    
-                    // Make sure to save the updated chain and wallet state
-                    state_manager.save_stable_chain(&user_id, chain).await?;
-                    if let Some(changeset) = wallet.wallet.take_staged() {
-                        state_manager.save_changeset(&user_id, &changeset).await?;
-                    }
-                    
-                    active_tasks_manager.mark_user_inactive(&user_id).await;
-                    Ok(warp::reply::json(&json!({
-                        "status": "ok",
-                        "message": format!("Full resync completed, {} new UTXOs, history preserved", new_utxos.len())
-                    })))
-                },
-                Err(e) => {
-                    active_tasks_manager.mark_user_inactive(&user_id).await;
-                    Err(e)?
-                },
-            }
-        } else {
-            active_tasks_manager.mark_user_inactive(&user_id).await;
-            Ok(warp::reply::json(&json!({"status": "error", "message": "User wallet disappeared"})))
+    // Use ScopedTask for automatic cleanup on drop
+    let _task = match ScopedTask::new(&active_tasks_manager, &user_id, "force_sync").await {
+        Some(task) => task,
+        None => {
+            debug!("Failed to mark user {} as active for force_sync", user_id);
+            return Ok(warp::reply::json(&json!({
+                "status": "error", 
+                "message": "Unable to begin force sync"
+            })));
         }
-    }
+    };
+    
+    // Initialize price feed (needed for resync)
+    let price_feed = Arc::new(PriceFeed::new());
+    
+    // Retrieve current price info with timeout
+    let price_info_data = match timeout(Duration::from_secs(5), price_info.lock()).await {
+        Ok(lock) => lock.clone(),
+        Err(_) => return Ok(warp::reply::json(&json!({
+            "status": "error", 
+            "message": "Timeout acquiring price info"
+        }))),
+    };
+    
+    // Attempt to acquire wallet lock with reasonable timeout
+    let wallet_result = match timeout(Duration::from_secs(10), wallets.lock()).await {
+        Ok(mut wallets_lock) => {
+            if let Some((wallet, chain)) = wallets_lock.get_mut(&user_id) {
+                // Save existing history and logs before syncing
+                let existing_history = chain.history.clone();
+                let existing_change_log = chain.change_log.clone();
+                
+                // Perform full resync through wallet_sync module
+                match wallet_sync::resync_full_history(
+                    &user_id,
+                    &mut wallet.wallet,
+                    &esplora,
+                    chain,
+                    price_feed.clone(),
+                    &price_info_data,
+                    &state_manager,
+                    config.min_confirmations,
+                ).await {
+                    Ok(new_utxos) => {
+                        // Use a HashMap to deduplicate and preserve most updated UTXOs
+                        let mut txid_map = HashMap::new();
+
+                        // First add all current history items 
+                        for utxo in &chain.history {
+                            txid_map.insert((utxo.txid.clone(), utxo.vout), utxo.clone());
+                        }
+
+                        // Then add back old history, only overwriting if it has MORE confirmations
+                        for utxo in existing_history {
+                            let key = (utxo.txid.clone(), utxo.vout);
+                            
+                            // Only insert if it doesn't exist or has more confirmations
+                            if !txid_map.contains_key(&key) || 
+                               utxo.confirmations > txid_map.get(&key).unwrap().confirmations {
+                                txid_map.insert(key, utxo.clone());
+                            }
+                        }
+
+                        // Replace history with deduplicated values
+                        chain.history = txid_map.values().cloned().collect();
+                        
+                        // Add a resync log entry
+                        chain.change_log = {
+                            let mut logs = existing_change_log;
+                            logs.push(ChangeEntry {
+                                timestamp: chrono::Utc::now().timestamp(),
+                                change_type: "force_resync".to_string(),
+                                btc_delta: 0.0,
+                                usd_delta: 0.0,
+                                service: "deposit-service".to_string(),
+                                details: Some(format!("Full history resync with {} new UTXOs", new_utxos.len())),
+                            });
+                            logs
+                        };
+                        
+                        // Save the updated chain state
+                        if let Err(e) = state_manager.save_stable_chain(&user_id, chain).await {
+                            warn!("Failed to save StableChain after force_sync: {}", e);
+                        }
+                        
+                        // Save changeset if available
+                        if let Some(changeset) = wallet.wallet.take_staged() {
+                            if let Err(e) = state_manager.save_changeset(&user_id, &changeset).await {
+                                warn!("Failed to save changeset after force_sync: {}", e);
+                            }
+                        }
+                        
+                        json!({
+                            "status": "ok",
+                            "message": format!("Full resync completed, {} new UTXOs, history preserved", new_utxos.len())
+                        })
+                    },
+                    Err(e) => {
+                        json!({
+                            "status": "error",
+                            "message": format!("Force sync failed: {}", e)
+                        })
+                    },
+                }
+            } else {
+                json!({"status": "error", "message": "User wallet not found"})
+            }
+        },
+        Err(_) => {
+            json!({"status": "error", "message": "Timeout acquiring wallet lock"})
+        }
+    };
+    
+    Ok(warp::reply::json(&wallet_result))
 }
 
-// Replace or modify the sync_user function in sync.rs
-// This version minimizes lock time and avoids lifetime issues
-
+// Core sync user function - called by the HTTP handler
 pub async fn sync_user(
     user_id: &str,
     wallets: Arc<Mutex<HashMap<String, (DepositWallet, StableChain)>>>,
@@ -417,83 +409,81 @@ pub async fn sync_user(
     let start_time = Instant::now();
     debug!("Starting sync for user {}", user_id);
 
-    // Update user status to indicate sync is in progress
-    status::update_user_status_simple(user_id, "syncing", "Sync in progress", &user_statuses).await;
-
     // Track if new funds are discovered
     let mut new_funds_found = false;
-
+    
     // Get current price data
-    let current_price = {
-        let price_guard = acquire_lock_with_retry(
-            &price_info,
-            user_id,
-            "price_info",
-            DEFAULT_LOCK_TIMEOUT_MS,
-            MAX_RETRY_ATTEMPTS,
-        ).await?;
-        price_guard.clone()
+    let current_price = match timeout(Duration::from_secs(5), price_info.lock()).await {
+        Ok(guard) => guard.clone(),
+        Err(_) => return Err(PulserError::InternalError("Timeout acquiring price info".to_string())),
     };
 
-    // Process each attempt with minimal lock time
+    // Perform the actual sync operation
     for attempt in 0..3 {
         if attempt > 0 {
-            debug!("Retry attempt {}/3 for user {} sync", attempt, user_id);
+            debug!("Retry attempt {}/3 for user {} sync", attempt + 1, user_id);
+            tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
         }
         
-        // 1. First, get the data we need with a short-lived lock
-        let sync_data = {
-            let wallets_lock = acquire_lock_with_retry(
-                &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
-            ).await?;
+        // Get the current and old addresses with minimal wallet lock time
+        let (deposit_address, old_addresses) = {
+            let wallets_lock = match timeout(Duration::from_secs(5), wallets.lock()).await {
+                Ok(lock) => lock,
+                Err(_) => return Err(PulserError::InternalError("Timeout acquiring wallets lock".to_string())),
+            };
             
             let (wallet, chain) = match wallets_lock.get(user_id) {
                 Some(pair) => pair,
                 None => return Err(PulserError::UserNotFound(format!("Wallet not found for user {}", user_id))),
             };
             
-            // Clone the things we need
+            // Clone the data we need to minimize lock time
             let deposit_addr = Address::from_str(&chain.multisig_addr)?.assume_checked();
-            let prev_balance = chain.stabilized_usd.0;
-            let prev_utxo_count = chain.utxos.len();
+            let old_addresses = chain.old_addresses.clone();
             
-            (deposit_addr, prev_balance, prev_utxo_count)
+            (deposit_addr, old_addresses)
         };
         
-        let (deposit_address, prev_balance, prev_utxo_count) = sync_data;
-        
-        // 2. Now perform the sync operation with a fresh lock
-        let sync_result = {
-            let mut wallets_lock = acquire_lock_with_retry(
-                &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
-            ).await?;
-            
-            let (wallet, chain) = match wallets_lock.get_mut(user_id) {
-                Some(pair) => pair,
-                None => return Err(PulserError::UserNotFound(format!("Wallet disappeared for user {}", user_id))),
-            };
-            
-            // Create a targeted sync request with just the addresses we care about
-            let mut spks = vec![deposit_address.script_pubkey()];
-            
-            // Add all old addresses
-            for old_addr in &chain.old_addresses {
-                if let Ok(addr) = Address::from_str(old_addr) {
-                    spks.push(addr.assume_checked().script_pubkey());
-                }
+        // Create a targeted sync request with current and all old addresses
+        let mut spks = vec![deposit_address.script_pubkey()];
+        for old_addr in &old_addresses {
+            if let Ok(addr) = Address::from_str(old_addr) {
+                spks.push(addr.assume_checked().script_pubkey());
             }
+        }
+        
+        // Build a targeted sync request
+        let sync_request = bdk_chain::spk_client::SyncRequest::builder()
+            .spks(spks.into_iter())
+            .build();
             
-            let sync_request = bdk_chain::spk_client::SyncRequest::builder()
-                .spks(spks.into_iter())
-                .build();
-                
-            // Sync with targeted request
-            match esplora.sync(sync_request, 5).await {
-                Ok(update) => {
+        // Perform sync with esplora API
+        match esplora.sync(sync_request, 5).await {
+            Ok(update) => {
+                // Now update the wallet with minimal lock time
+                let prev_balance = {
+                    let mut wallets_lock = match timeout(Duration::from_secs(10), wallets.lock()).await {
+                        Ok(lock) => lock,
+                        Err(_) => return Err(PulserError::InternalError("Timeout acquiring wallets lock".to_string())),
+                    };
+                    
+                    let (wallet, chain) = match wallets_lock.get_mut(user_id) {
+                        Some(pair) => pair,
+                        None => return Err(PulserError::UserNotFound(format!("Wallet disappeared for user {}", user_id))),
+                    };
+                    
+                    // Apply the update to the wallet
                     wallet.wallet.apply_update(update)?;
+                    
+                    // Get the previous balance to check for new funds
+                    let prev_balance = chain.stabilized_usd.0;
+                    let prev_utxo_count = chain.utxos.len();
+                    
+                    // Get a change address for UTXO stabilization
                     let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
                     
-                    wallet_sync::sync_and_stabilize_utxos(
+                    // Synchronize UTXOs and stabilize them
+                    match wallet_sync::sync_and_stabilize_utxos(
                         user_id,
                         &mut wallet.wallet,
                         esplora,
@@ -504,102 +494,75 @@ pub async fn sync_user(
                         &change_addr,
                         &state_manager,
                         config.min_confirmations,
-                    ).await
-                },
-                Err(e) => Err(e.into()),
-            }
-        };
-        
-        match sync_result {
-            Ok(_) => {
-                // 3. Check for new funds with another short-lived lock
-                let post_sync_data = {
-                    let wallets_lock = acquire_lock_with_retry(
-                        &wallets, user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS, MAX_RETRY_ATTEMPTS
-                    ).await?;
-                    
-                    let (_, chain) = match wallets_lock.get(user_id) {
-                        Some(pair) => pair,
-                        None => return Err(PulserError::UserNotFound(format!("Wallet disappeared for user {}", user_id))),
-                    };
-                    
-                    // Extract what we need to process outside the lock
-                    (chain.stabilized_usd.0, chain.utxos.len(), chain.clone())
+                    ).await {
+                        Ok(_) => {
+                            // New funds check
+                            new_funds_found = chain.stabilized_usd.0 > prev_balance || chain.utxos.len() > prev_utxo_count;
+                            
+                            if new_funds_found {
+                                debug!(
+                                    "New funds for user {}: ${:.2} -> ${:.2}, UTXOs: {} -> {}",
+                                    user_id, prev_balance, chain.stabilized_usd.0, prev_utxo_count, chain.utxos.len()
+                                );
+                            }
+                            
+                            prev_balance
+                        },
+                        Err(e) => return Err(e),
+                    }
                 };
                 
-                let (new_balance, new_utxo_count, chain_clone) = post_sync_data;
-                
-                // 4. Save state asynchronously
-                tokio::spawn({
-                    let user_id = user_id.to_string();
-                    let chain = chain_clone;
-                    let state_manager = state_manager.clone();
-                    
-                    async move {
-                        if let Err(e) = state_manager.save_stable_chain(&user_id, &chain).await {
-                            warn!("Error saving StableChain for user {}: {}", user_id, e);
-                        }
-                    }
-                });
-
-                // 5. Check if new funds were found
-                if new_balance > prev_balance || new_utxo_count > prev_utxo_count {
-                    new_funds_found = true;
-                    debug!(
-                        "New funds for user {}: ${:.2} -> ${:.2}, UTXOs: {} -> {}",
-                        user_id, prev_balance, new_balance, prev_utxo_count, new_utxo_count
-                    );
-
-                    // 6. Handle webhook notification if new funds found
-                    if !webhook_url.is_empty() && new_funds_found {
-                        let webhook_data = json!({
-                            "event": "deposit",
-                            "user_id": user_id,
-                            "amount_usd": new_balance - prev_balance,
-                            "utxo_count": new_utxo_count,
-                            "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-                        });
-
-                        let user_id_owned = user_id.to_string();
-                        let webhook_url_owned = webhook_url.to_string();
-                        let webhook_manager = webhook_manager.clone();
+                // Handle webhook notification if new funds found
+                if !webhook_url.is_empty() && new_funds_found && config.webhook_enabled {
+                    let new_balance = {
+                        let wallets_lock = match timeout(Duration::from_secs(3), wallets.lock()).await {
+                            Ok(lock) => lock,
+                            Err(_) => return Err(PulserError::InternalError("Timeout acquiring wallets lock".to_string())),
+                        };
                         
-                        // Launch webhook in a separate task to not block sync
-                        tokio::spawn(async move {
-                            let payload = WebhookPayload {
-                                event: "deposit".to_string(),
-                                user_id: user_id_owned.clone(),
-                                data: webhook_data,
-                                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                            };
-                            
-                            if let Err(e) = webhook_manager.send(&webhook_url_owned, payload).await {
-                                warn!("Failed to send webhook for user {}: {}", user_id_owned, e);
-                            }
-                        });
-                    }
+                        match wallets_lock.get(user_id) {
+                            Some((_, chain)) => chain.stabilized_usd.0,
+                            None => prev_balance, // Fallback if wallet disappeared
+                        }
+                    };
+                    
+                    // Send webhook in the background
+                    let webhook_data = json!({
+                        "event": "deposit",
+                        "user_id": user_id,
+                        "amount_usd": new_balance - prev_balance,
+                        "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+                    });
+                    
+                    let user_id_owned = user_id.to_string();
+                    let webhook_url_owned = webhook_url.to_string();
+                    let webhook_manager = webhook_manager.clone();
+                    
+                    tokio::spawn(async move {
+                        let payload = WebhookPayload {
+                            event: "deposit".to_string(),
+                            user_id: user_id_owned.clone(),
+                            data: webhook_data,
+                            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                        };
+                        
+                        if let Err(e) = webhook_manager.send(&webhook_url_owned, payload).await {
+                            warn!("Failed to send webhook for user {}: {}", user_id_owned, e);
+                        }
+                    });
                 }
                 
                 // Success, no need for more retries
                 break;
             },
             Err(e) => {
-                warn!(
-                    "Error syncing wallet for user {} (attempt {}/3): {}",
-                    user_id,
-                    attempt + 1,
-                    e
-                );
-                if attempt < 2 {
-                    // Exponential backoff
-                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
-                    continue;
-                } else {
+                warn!("Error syncing wallet for user {} (attempt {}/3): {}", user_id, attempt + 1, e);
+                if attempt == 2 {
                     // All attempts failed
                     status::update_user_status_with_error(
                         user_id, "error", &format!("Sync failed: {}", e), &user_statuses
                     ).await;
-                    return Err(e);
+                    return Err(e.into());
                 }
             }
         }
@@ -612,14 +575,34 @@ pub async fn sync_user(
         "Sync completed successfully"
     };
     
-    // Update user status with a short-lived lock
+    // Update wallet and user status with the latest info
+    let (utxo_count, total_value_btc, total_value_usd) = {
+        let wallets_lock = match timeout(Duration::from_secs(3), wallets.lock()).await {
+            Ok(lock) => lock,
+            Err(_) => (0, 0.0, 0.0), // Default values if we can't get the lock
+        };
+        
+        match wallets_lock.get(user_id) {
+            Some((wallet, chain)) => {
+                let wallet_balance = wallet.wallet.balance();
+                (
+                    chain.utxos.len() as u32,
+                    wallet_balance.confirmed.to_sat() as f64 / 100_000_000.0,
+                    chain.stabilized_usd.0
+                )
+            },
+            None => (0, 0.0, 0.0),
+        }
+    };
+    
+    // Update user status with complete information
     let elapsed = start_time.elapsed().as_millis() as u64;
     status::update_user_status_full(
         user_id,
         "success",
-        0,
-        0.0,
-        0.0,
+        utxo_count,
+        total_value_btc,
+        total_value_usd,
         false,
         success_message,
         elapsed,

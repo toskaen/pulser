@@ -24,6 +24,8 @@ use crate::config::Config;
 use bdk_wallet::chain::local_chain::ChangeSet as LocalChainChangeSet;
 use std::collections::BTreeMap;
 use common::price_feed::PriceFeedExtensions;
+use common::types::UtxoOrigin;
+
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -363,7 +365,12 @@ let new_utxos = wallet_sync::sync_and_stabilize_utxos(
                 spent: utxo.spent,
                 stable_value_usd: utxo.usd_value.as_ref().map_or(0.0, |usd| usd.0),
                 keychain: "External".to_string(),
-                timestamp: chrono::Utc::now().timestamp() as u64,
+    first_seen_timestamp: chrono::Utc::now().timestamp() as u64,
+confirmation_timestamp: if utxo.confirmations > 0 { Some(chrono::Utc::now().timestamp() as u64) } else { None },
+    block_height: None, // Or actual block height if available
+    origin: UtxoOrigin::ExternalDeposit, // Default origin
+    parent_txid: None,
+    never_spend: false,
                 participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
                 spendable: utxo.confirmations >= 1,
                 derivation_path: "".to_string(),
@@ -397,7 +404,12 @@ let new_utxos = wallet_sync::sync_and_stabilize_utxos(
                     spent: utxo.is_spent,
                     stable_value_usd: 0.0,
                     keychain: "External".to_string(),
-                    timestamp: chrono::Utc::now().timestamp() as u64,
+    first_seen_timestamp: chrono::Utc::now().timestamp() as u64,
+    confirmation_timestamp: if confirmations > 0 { Some(chrono::Utc::now().timestamp() as u64) } else { None },
+    block_height: None, // Or actual block height if available
+    origin: UtxoOrigin::ExternalDeposit, // Default origin
+    parent_txid: None,
+    never_spend: false,
                     participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
                     spendable: confirmations >= 1,
                     derivation_path: "".to_string(),

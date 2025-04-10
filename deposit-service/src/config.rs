@@ -28,6 +28,8 @@ pub struct Config {
     pub lsp_pubkey: String,
     pub trustee_pubkey: String,
     pub min_confirmations: u32,    // For 1-conf stabilization
+        pub service_min_confirmations: u32, // Could be 0 for instant
+    pub external_min_confirmations: u32, // Could be 3 for security
     pub channel_threshold_usd: f64,
     pub fee_percentage: f64,
     
@@ -160,3 +162,5 @@ fn default_deribit_testnet_address() -> String { "tb1q_deribit_testnet_dummy".to
 fn default_hedge_update_interval_secs() -> u64 { 30 }
 fn default_stagger_delay_secs() -> u64 { 5 }
 fn default_max_sync_retries() -> u32 { 3 }
+fn service_min_confirmations() -> u32 { 0 }
+fn external_min_confirmations() -> u32 { 3 } // Could be 3 for security

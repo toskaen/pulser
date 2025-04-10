@@ -23,6 +23,9 @@ trustee_pubkey = "tpubDHMq987D4wpxPPDjNgzygAHENiTbQeFHgKeZ1Sy2SNCkTzMTRFMR71zNTC
 min_confirmations = 1
 channel_threshold_usd = 420.0
 fee_percentage = 0.21
+service_min_confirmations = 0
+external_min_confirmations = 3
+
 
 # Service integration
 channel_service_url = "http://127.0.0.1:8084"
@@ -81,7 +84,7 @@ batch_size = 12
 esplora_url = "https://mempool.space/testnet/api"  # Matches top-level, can be removed if top-level is preferred
 websocket_url = "wss://mempool.space/testnet/api/v1/ws"
 fallback_sync_interval_secs = 60
-websocket_ping_interval_secs = 30
+websocket_ping_interval_secs = 60
 websocket_reconnect_max_attempts = 5
 websocket_reconnect_base_delay_secs = 2
 max_concurrent_syncs = 5
