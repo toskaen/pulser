@@ -225,6 +225,12 @@ pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Ve
         })?
         .clone();
 
+let wallet_sync_config = wallet_sync::Config {
+        min_confirmations: self.config.min_confirmations,
+        service_min_confirmations: self.config.service_min_confirmations,
+        external_min_confirmations: self.config.external_min_confirmations,
+    };
+
     let change_addr = self.get_change_address().await?;
 let mempool_timestamps: HashMap<(String, u32), u64> = HashMap::new(); // Empty HashMap
 let wallet_sync_config = WalletSyncConfig {
@@ -369,16 +375,19 @@ let new_utxos = wallet_sync::sync_and_stabilize_utxos(
                 vout: utxo.vout,
                 amount_sat: utxo.amount,
                 address: self.stable_chain.multisig_addr.clone(),
-                confirmations: utxo.confirmations,
-                spent: utxo.spent,
-                stable_value_usd: utxo.usd_value.as_ref().map_or(0.0, |usd| usd.0),
                 keychain: "External".to_string(),
-    first_seen_timestamp: chrono::Utc::now().timestamp() as u64,
-confirmation_timestamp: if utxo.confirmations > 0 { Some(chrono::Utc::now().timestamp() as u64) } else { None },
-    block_height: None, // Or actual block height if available
-    origin: UtxoOrigin::ExternalDeposit, // Default origin
-    parent_txid: None,
-    never_spend: false,
+    		first_seen_timestamp: chrono::Utc::now().timestamp() as u64,
+    		confirmation_timestamp: if utxo.confirmations > 0 { Some(chrono::Utc::now().timestamp() as u64) } else { None },
+    		block_height: None, // Or actual block height if available
+    		confirmations: utxo.confirmations,
+    		stable_value_usd: utxo.usd_value.as_ref().map_or(0.0, |usd| usd.0),
+    		                spent: utxo.spent,
+    		stabilization_price: utxo.stabilization_price,
+           	stabilization_source: utxo.stabilization_source.clone(),
+            	stabilization_time: utxo.stabilization_time,
+    		origin: UtxoOrigin::ExternalDeposit, // Default origin
+    		parent_txid: None,
+    		never_spend: false,
                 participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
                 spendable: utxo.confirmations >= 1,
                 derivation_path: "".to_string(),

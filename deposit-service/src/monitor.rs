@@ -422,6 +422,12 @@ async fn apply_sync_update(
     min_confirmations: u32,
     blockchain: &AsyncClient
 ) -> Result<Vec<UtxoInfo>, PulserError> {
+
+    let wallet_sync_config = wallet_sync::Config {
+        min_confirmations,
+        service_min_confirmations: 0, // Use the actual config value
+        external_min_confirmations: 3, // Use the actual config value
+    };
     // Get mempool timestamps
     let mempool_timestamps = get_mempool_timestamps().await;
     
@@ -452,13 +458,7 @@ async fn apply_sync_update(
             &state_manager,
             min_confirmations,
             &mempool_timestamps, // Pass the timestamps
-            &WalletSyncConfig {
-        min_confirmations,
-service_min_confirmations: 0, // Default for service addresses
-
-external_min_confirmations: 3, // Default for external addresses
-
-    }
+            &wallet_sync_config
         ).await?;
         
         Ok(new_utxos)

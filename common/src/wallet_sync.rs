@@ -102,10 +102,18 @@ async fn process_new_confirmation(
     chain: &mut StableChain,
     price_feed: Arc<PriceFeed>,
 ) -> Result<(f64, String, f64), PulserError> {
-    if utxo.usd_value.is_some() {
-        debug!("UTXO {}:{} for user {} already stabilized at ${:.2}", 
-               utxo.txid, utxo.vout, user_id, utxo.usd_value.as_ref().unwrap().0); 
-        return Ok((utxo.usd_value.as_ref().unwrap().0, "existing".to_string(), 0.0));
+
+if utxo.usd_value.is_some() {
+        // Already stabilized - return existing data
+        let stable_value = utxo.usd_value.as_ref().unwrap().0;
+        let source = utxo.stabilization_source.clone().unwrap_or_else(|| "existing".to_string());
+        let price = utxo.stabilization_price.unwrap_or(0.0);
+        let basis = 0.0; // We don't have historical basis data
+        
+        debug!("UTXO {}:{} for user {} already stabilized at ${:.2} (price: ${:.2})", 
+               utxo.txid, utxo.vout, user_id, stable_value, price);
+               
+        return Ok((stable_value, source, basis));
     }
     
     let (stab_price, source, market_basis) = determine_stabilization_price(
@@ -117,9 +125,13 @@ async fn process_new_confirmation(
     let stable_value_usd = btc_amount * stab_price;
     utxo.usd_value = Some(crate::types::USD(stable_value_usd));
     
+     // Store the stabilization details
+    utxo.stabilization_price = Some(stab_price);
+    utxo.stabilization_source = Some(source.clone());
+    utxo.stabilization_time = Some(utils::now_timestamp() as u64);
+    
     info!("Stabilized UTXO for user {}: {}:{} | {} sats (${:.2} at ${:.2} using {})", 
           user_id, utxo.txid, utxo.vout, utxo.amount, stable_value_usd, stab_price, source);
-    
     // Log potential hedging benefit for analysis, even though price is always max(spot, futures)
     let futures_price = match price_feed.get_deribit_price().await {
         Ok(price) => price,
@@ -187,6 +199,11 @@ pub async fn sync_and_stabilize_utxos(
     // Get config values
     let service_min_confirmations = config.service_min_confirmations;
     let external_min_confirmations = config.external_min_confirmations;
+    
+    debug!(
+        "Using confirmation requirements for user {}: min={}, service={}, external={}",
+        user_id, min_confirmations, service_min_confirmations, external_min_confirmations
+    );
     
     let needs_price_fetch = chain.utxos.iter().any(|utxo| utxo.usd_value.is_none());
     let (stabilization_price, price_source, basis) = if needs_price_fetch {
@@ -405,8 +422,16 @@ for utxo in &previous_utxos {
                     user_id, &mut chain_utxo, chain, price_feed.clone()
                 ).await?;
                 
+                 debug!(
+            "Stabilizing UTXO {}:{} with {} confirmations (required: {}, origin: {:?})",
+            chain_utxo.txid, chain_utxo.vout, confirmations, required_confirmations, origin
+        );
+                
                 let stabilized_utxo = UtxoInfo {
                     stable_value_usd,
+                    stabilization_price: chain_utxo.stabilization_price,
+    stabilization_source: chain_utxo.stabilization_source.clone(),
+    stabilization_time: chain_utxo.stabilization_time,
                     ..utxo_info.clone()
                 };
                 
@@ -531,6 +556,9 @@ let (stable_value_usd, parent_tx) = if let Some(spent_inputs) = spent_utxos.get(
                 
                 let stabilized_utxo = UtxoInfo {
                     stable_value_usd,
+                    stabilization_price: chain_utxo.stabilization_price,
+    stabilization_source: chain_utxo.stabilization_source.clone(),
+    stabilization_time: chain_utxo.stabilization_time,
                     ..utxo_info.clone()
                 };
                 

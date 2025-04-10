@@ -81,6 +81,10 @@ pub struct UtxoInfo {
     pub stable_value_usd: f64,
     pub spent: bool,
     
+     pub stabilization_price: Option<f64>,     // BTC/USD price used for stabilization
+    pub stabilization_source: Option<String>, // Source of the price (e.g., "Spot", "Deribit", etc.)
+    pub stabilization_time: Option<u64>,      // When stabilization occurred
+    
     // New classification fields
     pub origin: UtxoOrigin,
     pub parent_txid: Option<String>,
@@ -515,6 +519,9 @@ pub struct Utxo {
     pub height: Option<u32>,
     pub usd_value: Option<USD>,
     pub spent: bool, // NEW: Aligns with BDK LocalOutput
+     pub stabilization_price: Option<f64>,     // BTC/USD price used for stabilization
+    pub stabilization_source: Option<String>, // Source of the price (e.g., "Spot", "Deribit", etc.)
+    pub stabilization_time: Option<u64>,      // When stabilization occurred
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -603,6 +610,16 @@ pub struct UtxoStatistics {
     pub ignored_deposits: u32,
     pub total_confirmed_value_btc: f64,
     pub total_stable_value_usd: f64,
+        pub price_data: PriceStatistics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceStatistics {
+    pub min_stabilization_price: f64,
+    pub max_stabilization_price: f64,
+    pub avg_stabilization_price: f64,
+    pub price_sources: HashMap<String, u32>,  // Count of UTXOs per price source
+    pub total_stabilized_utxos: u32,
 }
 
 impl ServiceStatus {

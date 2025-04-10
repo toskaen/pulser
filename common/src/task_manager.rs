@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Mutex};
 use std::time::{Duration, Instant};
 use log::{debug, warn, trace};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // Constants
 const TASK_LOCK_TIMEOUT_SECS: u64 = 3;
@@ -15,13 +16,25 @@ pub struct UserTaskLock {
     active_tasks: Arc<RwLock<HashMap<String, (Instant, String)>>>,
     // Mutex for task counters to track system load
     task_counters: Arc<Mutex<HashMap<String, u32>>>,
+        // New performance tracking fields
+       sync_time_total: Arc<AtomicU32>,
+    sync_time_count: Arc<AtomicU32>,
+    sync_time_max: Arc<AtomicU32>,
+    price_time_total: Arc<AtomicU32>,
+    price_time_count: Arc<AtomicU32>,
 }
+
 
 impl UserTaskLock {
     pub fn new() -> Self {
         Self {
-            active_tasks: Arc::new(RwLock::new(HashMap::new())),
+                        active_tasks: Arc::new(RwLock::new(HashMap::new())),
             task_counters: Arc::new(Mutex::new(HashMap::new())),
+            sync_time_total: Arc::new(AtomicU32::new(0)),
+            sync_time_count: Arc::new(AtomicU32::new(0)),
+            sync_time_max: Arc::new(AtomicU32::new(0)),
+            price_time_total: Arc::new(AtomicU32::new(0)),
+            price_time_count: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -183,6 +196,56 @@ impl UserTaskLock {
                 0
             }
         }
+    }
+    
+    pub fn record_sync_time(&self, duration_ms: u32) {
+        self.sync_time_total.fetch_add(duration_ms, Ordering::Relaxed);
+        self.sync_time_count.fetch_add(1, Ordering::Relaxed);
+        
+        // Update max sync time if this one was longer
+        let current_max = self.sync_time_max.load(Ordering::Relaxed);
+        if duration_ms > current_max {
+            self.sync_time_max.store(duration_ms, Ordering::Relaxed);
+        }
+    }
+    
+    pub fn record_price_fetch_time(&self, duration_ms: u32) {
+        self.price_time_total.fetch_add(duration_ms, Ordering::Relaxed);
+        self.price_time_count.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    // Method to get average sync time
+    pub fn get_avg_sync_time(&self) -> u32 {
+        let total = self.sync_time_total.load(Ordering::Relaxed);
+        let count = self.sync_time_count.load(Ordering::Relaxed);
+        if count == 0 {
+            return 0;
+        }
+        total / count
+    }
+    
+    // Method to get max sync time
+    pub fn get_max_sync_time(&self) -> u32 {
+        self.sync_time_max.load(Ordering::Relaxed)
+    }
+    
+    // Method to get average price fetch time
+    pub fn get_avg_price_fetch_time(&self) -> u32 {
+        let total = self.price_time_total.load(Ordering::Relaxed);
+        let count = self.price_time_count.load(Ordering::Relaxed);
+        if count == 0 {
+            return 0;
+        }
+        total / count
+    }
+    
+    // Extend get_task_counts to include performance metrics
+    pub async fn get_performance_metrics(&self) -> HashMap<String, u32> {
+        let mut metrics = HashMap::new();
+        metrics.insert("avg_sync_time_ms".to_string(), self.get_avg_sync_time());
+        metrics.insert("max_sync_time_ms".to_string(), self.get_max_sync_time());
+        metrics.insert("avg_price_fetch_time_ms".to_string(), self.get_avg_price_fetch_time());
+        metrics
     }
 }
 

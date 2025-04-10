@@ -213,7 +213,9 @@ status.active_syncs += 1;
         }
     };
 
-    let duration_ms = start_time.elapsed().as_millis() as u64;
+    let duration_ms = start_time.elapsed().as_millis() as u32;
+
+    active_tasks_manager.record_sync_time(duration_ms);
 
     // Update user status with duration
 let mut statuses = user_statuses.lock().await;
@@ -252,7 +254,8 @@ if status.total_utxos != total_utxos ||
     status.last_update = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 }
             }
-     
+         debug!("Sync for user {} completed in {}ms", user_id, duration_ms);
+
         Ok(warp::reply::json(&sync_result))
 }
 
@@ -407,6 +410,22 @@ pub async fn sync_user(
 ) -> Result<bool, PulserError> {
     let start_time = Instant::now();
     debug!("Starting sync for user {}", user_id);
+
+    // Create the wallet_sync config with PROPER confirmation requirements
+    let wallet_sync_config = wallet_sync::Config {
+        min_confirmations: config.min_confirmations,
+        service_min_confirmations: config.service_min_confirmations,
+        external_min_confirmations: config.external_min_confirmations,
+    };
+
+    // Explicitly log the confirmation requirements
+    debug!(
+        "Sync for user {} using confirmation requirements: min={}, service={}, external={}",
+        user_id, 
+        config.min_confirmations,
+        config.service_min_confirmations,
+        config.external_min_confirmations
+    );
 
     // Track if new funds are discovered
     let mut new_funds_found = false;

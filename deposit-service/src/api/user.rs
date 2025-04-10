@@ -26,6 +26,10 @@ struct TxInfo {
     amount: u64,                    // Total output value in satoshis
     is_spent: bool,                 // Are outputs spent?
     timestamp: Option<u64>,         // Unix timestamp of confirmation
+usd_value: Option<f64>,
+    stabilization_price: Option<f64>,
+    stabilization_source: Option<String>,
+    stabilization_time: Option<u64>,
 }
 
 // User status endpoint
@@ -139,13 +143,29 @@ async fn user_status_handler(
     
     debug!("Retrieved status for user {}: ${:.2}, {} utxos", user_id, stable_value_usd, utxo_count);
 
+    let detailed_utxos = chain.utxos.iter().map(|utxo| {
+        json!({
+            "txid": utxo.txid,
+            "vout": utxo.vout,
+            "amount_sats": utxo.amount,
+            "amount_btc": utxo.amount as f64 / 100_000_000.0,
+            "confirmations": utxo.confirmations,
+            "stable_value_usd": utxo.usd_value.as_ref().map(|usd| usd.0),
+            "height": utxo.height,
+            "stabilization_price": utxo.stabilization_price,
+            "stabilization_source": utxo.stabilization_source,
+            "stabilization_time": utxo.stabilization_time,
+            "spent": utxo.spent
+        })
+    }).collect::<Vec<_>>();
+
     // Return comprehensive user information
     Ok(warp::reply::json(&json!({
         "user_id": user_id,
         "status": {
             "sync_status": status.sync_status,
             "last_sync": status.last_sync,
-            "last_update_message": status.last_update_message,
+ "last_update_message": status.last_update_message,
             "confirmations_pending": status.confirmations_pending,
             "last_error": status.last_error,
             "last_success": status.last_success,
@@ -161,7 +181,8 @@ async fn user_status_handler(
             "address": status.current_deposit_address,
             "utxo_count": utxo_count,
             "last_deposit_time": status.last_deposit_time
-        }
+        },
+        "utxos": detailed_utxos  // Add the detailed UTXO information
     })))
 }
 
@@ -186,7 +207,6 @@ async fn user_txs_handler(
         return Err(PulserError::InvalidRequest("Invalid user ID format".to_string()))?;
     }
 
-    // Get transactions with improved error handling
     let transactions = match timeout(
         Duration::from_secs(OPERATION_TIMEOUT_SECS),
         acquire_lock_with_retry(&wallets, &user_id, "wallets", DEFAULT_LOCK_TIMEOUT_MS)
@@ -212,10 +232,20 @@ async fn user_txs_handler(
                                 bdk_chain::ChainPosition::Unconfirmed { .. } => (None, None),
                             };
                             
-                            // Find USD value in StableChain if available
-                            let usd_value = chain.utxos.iter()
+                            // Find the UTXO in the chain to get stabilization details
+                            let utxo_data = chain.utxos.iter()
                                 .find(|utxo| utxo.txid == tx_node.compute_txid().to_string())
-                                .and_then(|utxo| utxo.usd_value.as_ref().map(|usd| usd.0));
+                                .map(|utxo| {
+                                    (
+                                        utxo.usd_value.as_ref().map(|usd| usd.0),
+                                        utxo.stabilization_price,
+                                        utxo.stabilization_source.clone(),
+                                        utxo.stabilization_time
+                                    )
+                                });
+                                
+                            let (usd_value, stabilization_price, stabilization_source, stabilization_time) = 
+                                utxo_data.unwrap_or((None, None, None, None));
                                 
                             TxInfo {
                                 txid: tx_node.compute_txid().to_string(),
@@ -223,6 +253,10 @@ async fn user_txs_handler(
                                 amount,
                                 is_spent,
                                 timestamp,
+                                usd_value,
+                                stabilization_price,
+                                stabilization_source,
+                                stabilization_time,
                             }
                         })
                         .collect();
