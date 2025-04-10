@@ -1,13 +1,12 @@
 // common/src/types.rs
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use crate::PulserError;
 use crate::StateManager;
 use tokio::sync::{RwLock, Mutex, MutexGuard};
 use std::sync::Arc;
-
 
 pub trait Amount {
     fn to_sats(&self) -> u64;
@@ -55,20 +54,94 @@ impl fmt::Display for USD {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum UtxoOrigin {
+    ExternalDeposit,           // Normal deposit from user
+    WithdrawalChange,          // Change from a withdrawal transaction
+    UnexpectedChangeDeposit,   // Will be completely ignored
+    ServiceDeposit,            // From service operator
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UtxoInfo {
+    // Existing fields
     pub txid: String,
     pub vout: u32,
     pub amount_sat: u64,
     pub address: String,
     pub keychain: String,
-    pub timestamp: u64,
+    
+    // New blockchain tracking fields
+    pub first_seen_timestamp: u64,
+    pub confirmation_timestamp: Option<u64>,
+    pub block_height: Option<u32>,
+    
+    // Existing fields
     pub confirmations: u32,
-    pub participants: Vec<String>,
     pub stable_value_usd: f64,
+    pub spent: bool,
+    
+    // New classification fields
+    pub origin: UtxoOrigin,
+    pub parent_txid: Option<String>,
+    pub never_spend: bool,
+    
+    // Legacy fields with defaults for compatibility
+    pub participants: Vec<String>,
     pub spendable: bool,
     pub derivation_path: String,
-    pub spent: bool,
+}
+
+impl UtxoInfo {
+    pub fn from_utxo(utxo: &Utxo, address: &str, keychain: &str) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
+        
+        Self {
+            txid: utxo.txid.clone(),
+            vout: utxo.vout,
+            amount_sat: utxo.amount,
+            address: address.to_string(),
+            keychain: keychain.to_string(),
+            first_seen_timestamp: now,
+            confirmation_timestamp: if utxo.confirmations > 0 { Some(now) } else { None },
+            block_height: utxo.height,
+            confirmations: utxo.confirmations,
+            participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
+            stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
+            spendable: utxo.confirmations >= 1,
+            derivation_path: "".to_string(),
+            spent: utxo.spent,
+            origin: UtxoOrigin::ExternalDeposit, // Default origin
+            parent_txid: None,
+            never_spend: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TransactionType {
+    Deposit,
+    Withdrawal,
+    WithdrawalChange,
+    StabilizationAdjustment,
+    ReorgAdjustment,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionRecord {
+    pub timestamp: u64,
+    pub transaction_type: TransactionType,
+    pub txid: String,
+    pub amount_btc: f64,
+    pub value_usd: f64,
+    pub confirmations: u32,
+    pub block_height: Option<u32>,
+    pub current_btc_price: f64,
+    pub details: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,7 +157,7 @@ pub struct StableChain {
     pub user_id: u32,
     pub is_stable_receiver: bool,
     pub counterparty: String,
-    pub accumulated_btc: Bitcoin, // Option 2: Keep and sync with get_balance()
+    pub accumulated_btc: Bitcoin,
     pub stabilized_usd: USD,
     pub timestamp: i64,
     pub formatted_datetime: String,
@@ -105,10 +178,32 @@ pub struct StableChain {
     pub short_reduction_amount: Option<f64>,
     pub old_addresses: Vec<String>,
     pub history: Vec<UtxoInfo>,
-        pub change_log: Vec<ChangeEntry>,
-
+    pub change_log: Vec<ChangeEntry>,
+    
+    // New fields that were missing
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regular_utxos: Vec<Utxo>,
+    
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub change_utxos: Vec<Utxo>,
+    
+    // Track change addresses
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub change_address_mappings: HashMap<String, String>,
+    
+    // Add accounting by origin
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub stable_value_by_origin: HashMap<String, USD>,
+    
+    // Add detailed transaction history
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transaction_history: Vec<TransactionRecord>,
+    
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub trusted_service_addresses: HashSet<String>,
 }
 
+// 2. Update the load_or_create method to initialize all fields correctly
 impl StableChain {
     pub fn load_or_create(user_id: &str, address: &str, sc_dir: &str) -> Result<Self, crate::error::PulserError> {
         let sc_path = format!("{}/stable_chain_{}.json", sc_dir, user_id);
@@ -141,15 +236,23 @@ impl StableChain {
             short_reduction_amount: None,
             old_addresses: Vec::new(),
             history: Vec::new(),
-            change_log: Vec::new(), // Initialize empty change log
+            change_log: Vec::new(),
+            // Initialize new fields
+            regular_utxos: Vec::new(),
+            change_utxos: Vec::new(),
+            change_address_mappings: HashMap::new(),
+            stable_value_by_origin: HashMap::new(),
+            transaction_history: Vec::new(),
+            trusted_service_addresses: HashSet::new(),
         })
     }
+
     pub async fn update_with_transaction<F>(&mut self, 
                                            state_manager: &StateManager, 
                                            user_id: &str,
                                            update_fn: F) -> Result<(), PulserError>
     where
-        F: FnOnce(&mut StableChain) -> Result<(), PulserError>, // Replace Self with StableChain
+        F: FnOnce(&mut StableChain) -> Result<(), PulserError>, 
 
     {
         // Apply the update function to this chain
@@ -160,6 +263,74 @@ impl StableChain {
         state_manager.save_stable_chain(user_id, self).await
  
    }
+   
+    pub fn usable_stable_value(&self) -> USD {
+        // Implementation that uses stable_value_by_origin or falls back
+        if !self.stable_value_by_origin.is_empty() {
+            let total: f64 = self.stable_value_by_origin
+                .values()
+                .map(|usd| usd.0)
+                .sum();
+                
+            USD(total)
+        } else {
+            // Fall back to legacy method
+            self.stabilized_usd.clone()
+        }
+    }
+    
+    // Get spendable UTXOs (excluding unexpected deposits)
+    pub fn get_spendable_utxos(&self) -> Vec<&Utxo> {
+        self.utxos.iter()
+            .filter(|u| {
+                u.confirmations >= 1 && 
+                u.usd_value.is_some() && 
+                !u.spent
+            })
+            .collect()
+    }
+    
+    // Enhanced change log method
+    pub fn log_utxo_event(&mut self, event_type: &str, utxo: &UtxoInfo, details: Option<String>) {
+        let event = Event {
+            timestamp: crate::utils::now_timestamp(),
+            source: "deposit-service".to_string(),
+            kind: event_type.to_string(),
+            details: details.unwrap_or_else(|| format!("UTXO {}:{}", utxo.txid, utxo.vout)),
+        };
+        self.events.push(event);
+    }
+    
+    // Generate detailed transaction history
+    pub fn generate_transaction_history(&self) -> Vec<TransactionRecord> {
+        let mut records = Vec::new();
+        
+        // Process history entries
+        for utxo in &self.history {
+            if utxo.stable_value_usd > 0.0 && !utxo.spent {
+                let record = TransactionRecord {
+timestamp: utxo.first_seen_timestamp,
+                    transaction_type: TransactionType::Deposit,
+                    txid: utxo.txid.clone(),
+                    amount_btc: utxo.amount_sat as f64 / 100_000_000.0,
+                    value_usd: utxo.stable_value_usd,
+                    confirmations: utxo.confirmations,
+                    block_height: utxo.block_height,
+                    current_btc_price: self.raw_btc_usd,
+                    details: Some(format!("Deposit to {}", utxo.address)),
+                };
+                records.push(record);
+            }
+        }
+        
+        // Combine with existing transaction history
+        records.extend(self.transaction_history.clone());
+        
+        // Sort by timestamp (newest first)
+        records.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        
+        records
+    }
 
     pub fn is_ready_for_channel(&self, min_confirmations: u32, channel_threshold_usd: f64) -> bool {
         self.utxos.iter().all(|utxo| utxo.confirmations >= min_confirmations) &&
@@ -190,26 +361,6 @@ impl StableChain {
         // Keep log size reasonable - keep last 100 entries
         if self.change_log.len() > 100 {
             self.change_log = self.change_log.split_off(self.change_log.len() - 100);
-        }
-    }
-}
-
-
-impl UtxoInfo {
-    pub fn from_utxo(utxo: &Utxo, address: &str, keychain: &str) -> Self {
-        Self {
-            txid: utxo.txid.clone(),
-            vout: utxo.vout,
-            amount_sat: utxo.amount,
-            address: address.to_string(),
-            keychain: keychain.to_string(),
-            timestamp: chrono::Utc::now().timestamp() as u64,
-            confirmations: utxo.confirmations,
-            participants: vec!["user".to_string(), "lsp".to_string(), "trustee".to_string()],
-            stable_value_usd: utxo.usd_value.as_ref().unwrap_or(&USD(0.0)).0,
-            spendable: utxo.confirmations >= 1,
-            derivation_path: "".to_string(),
-            spent: utxo.spent, // Updated to use Utxo.spent
         }
     }
 }
@@ -419,9 +570,37 @@ pub struct ServiceStatus {
     pub price_update_count: u32,
     pub active_syncs: u32,
     pub websocket_active: bool,
+    #[serde(default)]
+    pub utxo_stats: Option<UtxoStatistics>,
     
+    #[serde(default)]
+    pub unusual_activity_detected: bool,
+    
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unusual_activity_details: Vec<String>,
 }
 
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UtxoStatistics {
+    pub regular_deposits: u32,
+    pub withdrawal_change: u32,
+    pub ignored_deposits: u32,
+    pub total_confirmed_value_btc: f64,
+    pub total_stable_value_usd: f64,
+}
+
+impl ServiceStatus {
+pub fn update_with_utxo_stats(&mut self, stats: UtxoStatistics, unusual_activity: Vec<String>) {
+    self.utxo_stats = Some(stats.clone());  // Clone stats here
+    self.unusual_activity_detected = !unusual_activity.is_empty();
+    self.unusual_activity_details = unusual_activity;
+    self.total_utxos = stats.regular_deposits + stats.withdrawal_change;
+    self.total_value_btc = stats.total_confirmed_value_btc;
+    self.total_value_usd = stats.total_stable_value_usd;
+}
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChangeEntry {
     pub timestamp: i64,

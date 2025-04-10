@@ -14,7 +14,7 @@ use futures::SinkExt;
 use futures::StreamExt;
 use tokio::time::sleep;
 use std::fmt;
-
+use bincode::config;
 
 use super::{PriceHistory, DEFAULT_CACHE_DURATION_SECS, PRICE_CACHE, WS_PING_INTERVAL_SECS, PRICE_UPDATE_INTERVAL_MS};
 use super::sources::{SourceManager, BinanceProvider, BitfinexProvider, KrakenProvider, DeribitProvider};
@@ -32,6 +32,8 @@ pub struct PriceFeed {
     last_deribit_update: Arc<RwLock<i64>>,
     client: Client,
     ws_manager: Arc<WebSocketManager>, // Added for WebSocket management
+        deribit_credentials: Option<(String, String)>,
+
 }
 
 impl fmt::Debug for PriceFeed {
@@ -44,6 +46,8 @@ impl fmt::Debug for PriceFeed {
             .finish_non_exhaustive()
     }
 }
+
+
 
 impl PriceFeed {
 pub fn new() -> Self {
@@ -64,6 +68,7 @@ pub fn new() -> Self {
         timeout_secs: 30,
         max_reconnect_attempts: 10,
         reconnect_base_delay_secs: 1,
+                endpoints: HashMap::new(), // Added field
     };
     let ws_manager = Arc::new(WebSocketManager::new(ws_config));
 
@@ -76,6 +81,7 @@ pub fn new() -> Self {
         last_deribit_update: Arc::new(RwLock::new(0)),
         client,
         ws_manager,
+      deribit_credentials: None,
     }
 }
     
@@ -150,46 +156,52 @@ let price_info = self.aggregator.as_ref().calculate_quality_adjusted_vwap(&resul
 
 pub async fn start_futures_feed(&self, shutdown_rx: &mut broadcast::Receiver<()>) -> Result<(), PulserError> {
     // Connect to Deribit via the WebSocketManager
-    let max_reconnect_attempts = 5;
+    let max_reconnect_attempts = 3;
     let base_delay_secs = 2;
     let mut attempt = 0;
+let endpoint = "wss://test.deribit.com/ws/api/v2";
+    // Create the subscription message with authentication
+let (client_id, client_secret) = self.deribit_credentials.as_ref()
+    .ok_or_else(|| PulserError::ConfigError("Deribit credentials not provided".to_string()))?;
 
-    // Create the subscription message
+let auth_message = json!({
+    "method": "public/auth",
+    "params": {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret
+    },
+    "id": 0
+}).to_string();
+
+    // Send auth and get response
+    let conn = self.ws_manager.subscribe(endpoint, &auth_message, PRICE_UPDATE_INTERVAL_MS).await?;
+    let mut stream = conn.stream.lock().await;
+    let auth_response = match stream.next().await {
+        Some(Ok(Message::Text(text))) => serde_json::from_str::<Value>(&text)
+            .map_err(|e| PulserError::ApiError(format!("Failed to parse Deribit auth response: {}", e)))?,
+        _ => return Err(PulserError::ApiError("No auth response from Deribit".to_string())),
+    };
+
+    // Check auth success and get token
+    let access_token = auth_response.get("result")
+        .and_then(|r| r.get("access_token"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| PulserError::ApiError("Deribit auth failed".to_string()))?;
+    info!("Successfully authenticated with Deribit WebSocket");
+
+    // Subscription message with token
     let subscription = json!({
         "method": "public/subscribe",
         "params": {
-            "channels": ["ticker.BTC-PERPETUAL.raw"]
+            "channels": ["ticker.BTC-PERPETUAL.raw"],
+            "access_token": access_token
         },
         "id": 1
     }).to_string();
-    
-    // Get the endpoint URL
-    let endpoint = "wss://test.deribit.com/ws/api/v2";
-    
-    // Try to connect with backoff
-    loop {
-        match self.ws_manager.subscribe(endpoint, &subscription, PRICE_UPDATE_INTERVAL_MS).await {
-            Ok(_) => {
-                info!("Successfully connected to Deribit WebSocket");
-                break;
-            }
-            Err(e) => {
-                attempt += 1;
-                if attempt >= max_reconnect_attempts {
-                    return Err(PulserError::NetworkError(
-                        format!("Failed to connect to Deribit after {} attempts: {}", 
-                        max_reconnect_attempts, e)
-                    ));
-                }
-                
-                // Exponential backoff
-                let delay = base_delay_secs * (1 << attempt);
-                warn!("Deribit connection failed (attempt {}/{}): {}. Retrying in {}s", 
-                     attempt, max_reconnect_attempts, e, delay);
-                sleep(Duration::from_secs(delay)).await;
-            }
-        }
-    }
+
+    self.ws_manager.send_message(endpoint, &subscription).await?;
+    info!("Subscribed to Deribit BTC-PERPETUAL ticker");
     
     // Set up price handling
     let price_clone = self.latest_deribit_price.clone();
@@ -432,20 +444,23 @@ pub async fn is_websocket_connected(&self) -> bool {
 pub async fn shutdown_websocket(&self) -> Option<Result<(), PulserError>> {
     info!("Closing all WebSocket connections...");
     
+    // 1. First try to send unsubscribe messages to all endpoints
     let futures = vec![
         self.send_unsubscribe_message("wss://test.deribit.com/ws/api/v2"),
         self.send_unsubscribe_message("wss://futures.kraken.com/ws/v1"),
         self.send_unsubscribe_message("wss://fstream.binance.com/ws/btcusdt@ticker"),
     ];
     
-    // Send all unsubscribe messages in parallel with a short timeout
+    // Wait for all unsubscribe messages to be sent with a short timeout
     let _ = tokio::time::timeout(Duration::from_millis(500), futures::future::join_all(futures)).await;
     
-    // Short pause for messages to be processed
+    // 2. Brief pause to allow unsubscribe messages to be processed
     tokio::time::sleep(Duration::from_millis(100)).await;
     
-    // Now close connections with a short timeout for each
-    self.ws_manager.force_close_all_with_timeout(Duration::from_secs(2)).await;
+    // 3. Force close all connections with a timeout for each
+if let Err(_) = tokio::time::timeout(Duration::from_secs(2), self.ws_manager.shutdown()).await {
+    warn!("WebSocket shutdown timed out");
+}
     
     Some(Ok(()))
 }
@@ -472,6 +487,12 @@ async fn send_unsubscribe_message(&self, endpoint: &str) -> Result<(), PulserErr
     }
     
     Ok(())
+}
+
+pub fn new_with_auth(client_id: String, client_secret: String) -> Self {
+    let mut feed = Self::new();
+    feed.deribit_credentials = Some((client_id, client_secret));
+    feed
 }
 
 }

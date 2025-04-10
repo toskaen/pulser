@@ -9,6 +9,7 @@ use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct BinanceResponse {
+    #[serde(rename = "lastPrice")]
     price: String,
     #[serde(rename = "weightedAvgPrice")]
     weighted_avg_price: String,

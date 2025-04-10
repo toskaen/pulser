@@ -80,7 +80,7 @@ impl HealthCheck for WebSocketCheck {
             if let Some(endpoint) = &self.endpoint {
                 if manager.is_connected(endpoint).await {
                     // Check if the connection is active recently
-                    if let Some(stats) = manager.get_connection_stats(endpoint).await {
+if let Some(stats) = manager.get_connection_stats(endpoint) {
                         if let Some(last_msg_time) = stats.last_message_time {
                             let inactivity_secs = last_msg_time.elapsed().as_secs();
                             if inactivity_secs > self.max_inactivity_secs {

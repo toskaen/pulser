@@ -1,11 +1,10 @@
 // common/src/storage.rs
+// common/src/storage.rs
 use serde::{Serialize, Deserialize};
-use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::error::PulserError;
 use log::{error, debug, info, warn, trace};
@@ -14,9 +13,12 @@ use bdk_wallet::ChangeSet;
 use crate::types::{StableChain, ServiceStatus}; // Added ServiceStatus
 use bincode;
 use crate::utils;
-
-#[cfg(unix)]
+use std::collections::{HashMap, HashSet};
+use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
+use tokio::fs as tokio_fs;  // Use a different name to avoid conflicts
+use std::fs;  // Standard library fs
+use crate::types::UtxoOrigin;
 
 // Constants
 const MUTEX_TIMEOUT_SECS: u64 = 5;
@@ -28,16 +30,46 @@ pub struct StateManager {
     pub data_dir: PathBuf,
     file_locks: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     price_cache: Arc<RwLock<(f64, i64)>>,
+    // Add in-memory cache for StableChain data
+    chain_cache: Arc<RwLock<HashMap<String, (StableChain, Instant, bool)>>>, // (data, last_access, dirty)
+    // Add cache for service status
+    status_cache: Arc<RwLock<Option<(ServiceStatus, Instant, bool)>>>, // (data, last_update, dirty)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawalDetails {
+    pub withdrawal_id: String,
+    pub amount_usd: f64,
+    pub remaining_usd: Option<f64>,
+    pub executed_timestamp: u64,
+    pub change_address: Option<String>,
+}
+
+struct TxLockGuard {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Drop for TxLockGuard {
+    fn drop(&mut self) {
+        // When the guard is dropped, delete the lock file to release the lock
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            // Just log errors, don't panic
+            warn!("Failed to remove lock file {}: {}", self.path.display(), e);
+        }
+    }
 }
 
 impl StateManager {
-    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            data_dir: data_dir.into(),
-            file_locks: Arc::new(RwLock::new(HashMap::new())),
-            price_cache: Arc::new(RwLock::new((0.0, 0))),
-        }
+pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+    Self {
+        data_dir: data_dir.into(),
+        file_locks: Arc::new(RwLock::new(HashMap::new())),
+        price_cache: Arc::new(RwLock::new((0.0, 0))),
+        chain_cache: Arc::new(RwLock::new(HashMap::new())),
+        status_cache: Arc::new(RwLock::new(None)),
     }
+}
 
     async fn get_file_lock(&self, path: &str) -> Result<Arc<Mutex<()>>, PulserError> {
         let read_result = tokio::time::timeout(
@@ -76,7 +108,38 @@ impl StateManager {
             }
         }
     }
-
+    
+async fn get_transaction_lock(&self, user_id: &str) -> Result<TxLockGuard, PulserError> {
+    let lock_path = self.data_dir.join("locks").join(format!("tx-{}.lock", user_id));
+    
+    // Create lock directory if it doesn't exist
+    if let Some(parent) = lock_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    
+    // Try to create the lock file - if it already exists, fail
+    let file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path) 
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(PulserError::StorageError(format!(
+                "Transaction lock already held for user {}", user_id
+            )));
+        },
+        Err(e) => return Err(PulserError::StorageError(format!(
+            "Failed to create lock file: {}", e
+        ))),
+    };
+    
+    // Return the lock guard
+    Ok(TxLockGuard { file, path: lock_path })
+}
+    
     pub async fn save<T: Serialize>(&self, file_path: &Path, data: &T) -> Result<(), PulserError> {
         let start_time = Instant::now();
         let full_path = self.data_dir.join(file_path);
@@ -87,7 +150,7 @@ impl StateManager {
 
         if let Some(parent) = full_path.parent() {
             if !parent.exists() {
-                fs::create_dir_all(parent)?;
+                tokio_fs::create_dir_all(parent).await?;
             }
         }
 
@@ -113,7 +176,7 @@ impl StateManager {
         }
 
         for attempt in 0..FILE_OPERATION_RETRIES {
-            match fs::rename(&temp_path, &full_path) {
+            match tokio_fs::rename(&temp_path, &full_path).await {
                 Ok(_) => break,
                 Err(e) => {
                     if attempt == FILE_OPERATION_RETRIES - 1 {
@@ -129,21 +192,24 @@ impl StateManager {
         }
 
         #[cfg(unix)]
-        fs::set_permissions(&full_path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| warn!("Failed to set permissions on {}: {}", full_path.display(), e)).ok();
+        if let Err(e) = tokio_fs::set_permissions(&full_path, Permissions::from_mode(0o600)).await {
+            warn!("Failed to set permissions on {}: {}", full_path.display(), e);
+        }
+        
         #[cfg(not(unix))]
-        fs::set_permissions(&full_path, fs::Permissions::from_mode(0o644))
-            .map_err(|e| warn!("Failed to set permissions on {}: {}", full_path.display(), e)).ok();
+        if let Err(e) = tokio_fs::set_permissions(&full_path, Permissions::from_mode(0o644)).await {
+            warn!("Failed to set permissions on {}: {}", full_path.display(), e);
+        }
 
         debug!("Saved {} in {}ms", path_str, start_time.elapsed().as_millis());
 
-if path_str.contains("stable_chain") {
-    if let Ok(chain_data) = serde_json::from_str::<StableChain>(&json) {
-        if let Err(e) = utils::validate_stablechain(&chain_data) {
-            warn!("Saved StableChain validation warning: {}", e);
+        if path_str.contains("stable_chain") {
+            if let Ok(chain_data) = serde_json::from_str::<StableChain>(&json) {
+                if let Err(e) = utils::validate_stablechain(&chain_data) {
+                    warn!("Saved StableChain validation warning: {}", e);
+                }
+            }
         }
-    }
-}
 
         Ok(())
     }
@@ -169,7 +235,7 @@ if path_str.contains("stable_chain") {
 
         let mut content = String::new();
         for attempt in 0..FILE_OPERATION_RETRIES {
-            match fs::read_to_string(&full_path) {
+            match tokio_fs::read_to_string(&full_path).await {
                 Ok(file_content) => {
                     content = file_content;
                     break;
@@ -202,28 +268,108 @@ if path_str.contains("stable_chain") {
     }
 
 pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain) -> Result<(), PulserError> {
+    // Validation logic you already have
     if let Err(e) = utils::validate_stablechain(stable_chain) {
         warn!("Validation warning before saving StableChain for user {}: {}", user_id, e);
     }
-    let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
-    info!("Saving StableChain for user {}: {} BTC (${:.2}), {} history entries", 
-        user_id, stable_chain.accumulated_btc.to_btc(), stable_chain.stabilized_usd.0, stable_chain.history.len());
-    self.save(&sc_path, stable_chain).await
-}
-
-    pub async fn load_stable_chain(&self, user_id: &str) -> Result<StableChain, PulserError> {
+    
+    // Update cache first
+    {
+        let mut cache = match tokio::time::timeout(
+            Duration::from_secs(RWLOCK_TIMEOUT_SECS), 
+            self.chain_cache.write()
+        ).await {
+            Ok(cache) => cache,
+            Err(_) => {
+                warn!("Timeout acquiring cache write lock for user {}", user_id);
+                // Continue with disk save even if we can't update cache
+                let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
+                return self.save(&sc_path, stable_chain).await;
+            }
+        };
+        
+        // Add or update cache entry
+        cache.insert(user_id.to_string(), (stable_chain.clone(), Instant::now(), true));
+    }
+    
+    // Check if this requires immediate persistence
+    let needs_immediate_save = self.needs_immediate_save(stable_chain);
+    
+    if needs_immediate_save {
         let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
-        match self.load(&sc_path).await {
-            Ok(chain) => {
-                debug!("Loaded StableChain for user {}", user_id);
-                Ok(chain)
-            },
-            Err(e) => {
-                debug!("Failed to load StableChain for user {}: {}", user_id, e);
-                Err(e)
+        info!("Saving critical StableChain for user {}: {} BTC (${:.2}), {} history entries", 
+              user_id, stable_chain.accumulated_btc.to_btc(), stable_chain.stabilized_usd.0, stable_chain.history.len());
+        
+        let result = self.save(&sc_path, stable_chain).await;
+        
+        // If save was successful, mark cache entry as clean
+        if result.is_ok() {
+            if let Ok(mut cache) = self.chain_cache.try_write() {
+                if let Some((_, last_access, dirty)) = cache.get_mut(user_id) {
+                    *dirty = false;
+                }
             }
         }
+        
+        return result;
     }
+    
+    // If not immediate save, just return success (will be flushed later)
+    Ok(())
+}
+
+// Helper method to determine if a change needs immediate persistence
+fn needs_immediate_save(&self, chain: &StableChain) -> bool {
+    // Check for critical changes that require immediate saving
+    if chain.events.iter().any(|e| e.kind == "deposit" || e.kind == "withdrawal" || 
+                               e.kind == "reorg" || e.kind == "channel_open") {
+        return true;
+    }
+    
+    // Check change log for critical changes
+    if let Some(last_change) = chain.change_log.last() {
+        match last_change.change_type.as_str() {
+            "deposit" | "withdrawal" | "blockchain_reorg" | "force_resync" | "channel_open" => return true,
+            _ => {}
+        }
+    }
+    
+    false
+}
+
+pub async fn load_stable_chain(&self, user_id: &str) -> Result<StableChain, PulserError> {
+    // Try to get from cache first
+    {
+        let mut cache = match tokio::time::timeout(
+            Duration::from_secs(RWLOCK_TIMEOUT_SECS), 
+            self.chain_cache.write() // Write lock because we update last_access
+        ).await {
+            Ok(cache) => cache,
+            Err(_) => {
+                warn!("Timeout acquiring cache write lock for user {}", user_id);
+                // Fall back to disk load
+                let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
+                return self.load(&sc_path).await;
+            }
+        };
+        
+        if let Some((chain, last_access, _)) = cache.get_mut(user_id) {
+            *last_access = Instant::now(); // Update access time
+            return Ok(chain.clone());
+        }
+    }
+    
+    // Not in cache, load from disk
+    let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
+    let chain: StableChain = self.load(&sc_path).await?;
+    
+    // Add to cache
+    if let Ok(mut cache) = self.chain_cache.try_write() {
+        cache.insert(user_id.to_string(), (chain.clone(), Instant::now(), false));
+    }
+    
+    Ok(chain)
+}
 
     pub async fn load_or_init_stable_chain(&self, user_id: &str, sc_dir: &str, multisig_addr: String) -> Result<StableChain, PulserError> {
         let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), user_id);
@@ -257,10 +403,16 @@ pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain)
             short_reduction_amount: None,
             old_addresses: Vec::new(),
             history: Vec::new(),
-                change_log: Vec::new(), // Added this field
-                
+            change_log: Vec::new(),
+            // Initialize new fields
+            regular_utxos: Vec::new(),
+            change_utxos: Vec::new(),
+            change_address_mappings: HashMap::new(),
+            stable_value_by_origin: HashMap::new(),
+            transaction_history: Vec::new(),
+            trusted_service_addresses: HashSet::new(),
         };
-
+        
         debug!("Initialized new StableChain for user {}", user_id);
         utils::validate_stablechain(&stable_chain)?;
         self.save(&sc_path, &stable_chain).await?;
@@ -270,10 +422,9 @@ pub async fn save_stable_chain(&self, user_id: &str, stable_chain: &StableChain)
     pub async fn save_changeset(&self, user_id: &str, changeset: &ChangeSet) -> Result<(), PulserError> {
         let path = utils::get_changeset_path(self.data_dir.to_str().unwrap_or("data"), user_id);
         let full_path = self.data_dir.join(&path);
-            let temp_path = full_path.with_extension("temp");
-
-let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Invalid UTF-8 path".to_string()))?;
         let temp_path = full_path.with_extension("temp");
+
+        let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Invalid UTF-8 path".to_string()))?;
 
         trace!("Saving changeset to: {}", path_str);
 
@@ -289,7 +440,7 @@ let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Inval
 
         let data = bincode::serialize(changeset)?;
         for attempt in 0..FILE_OPERATION_RETRIES {
-            match fs::write(&temp_path, &data) {
+            match tokio_fs::write(&temp_path, &data).await {
                 Ok(_) => break,
                 Err(e) => {
                     if attempt == FILE_OPERATION_RETRIES - 1 {
@@ -305,7 +456,7 @@ let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Inval
         }
 
         for attempt in 0..FILE_OPERATION_RETRIES {
-            match fs::rename(&temp_path, &full_path) {
+            match tokio_fs::rename(&temp_path, &full_path).await {
                 Ok(_) => break,
                 Err(e) => {
                     if attempt == FILE_OPERATION_RETRIES - 1 {
@@ -321,11 +472,14 @@ let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Inval
         }
 
         #[cfg(unix)]
-        fs::set_permissions(&full_path, fs::Permissions::from_mode(0o600))
-            .map_err(|e| warn!("Failed to set permissions on changeset file {}: {}", full_path.display(), e)).ok();
+        if let Err(e) = tokio_fs::set_permissions(&full_path, Permissions::from_mode(0o600)).await {
+            warn!("Failed to set permissions on changeset file {}: {}", full_path.display(), e);
+        }
+        
         #[cfg(not(unix))]
-        fs::set_permissions(&full_path, fs::Permissions::from_mode(0o644))
-            .map_err(|e| warn!("Failed to set permissions on changeset file {}: {}", full_path.display(), e)).ok();
+        if let Err(e) = tokio_fs::set_permissions(&full_path, Permissions::from_mode(0o644)).await {
+            warn!("Failed to set permissions on changeset file {}: {}", full_path.display(), e);
+        }
 
         debug!("Saved ChangeSet for user {} to {}", user_id, full_path.display());
         Ok(())
@@ -348,7 +502,7 @@ let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Inval
 
         let mut data = Vec::new();
         for attempt in 0..FILE_OPERATION_RETRIES {
-            match fs::read(&full_path) {
+            match tokio_fs::read(&full_path).await {
                 Ok(file_data) => {
                     data = file_data;
                     break;
@@ -370,11 +524,55 @@ let path_str = full_path.to_str().ok_or_else(|| PulserError::StorageError("Inval
         debug!("Loaded changeset for user {}", user_id);
         Ok(changeset)
     }
+    
+    pub async fn flush_dirty_chains(&self) -> Result<usize, PulserError> {
+    let mut flushed = 0;
+    let dirty_chains = {
+        let cache = match tokio::time::timeout(
+            Duration::from_secs(RWLOCK_TIMEOUT_SECS), 
+            self.chain_cache.read()
+        ).await {
+            Ok(cache) => cache,
+            Err(_) => {
+                warn!("Timeout acquiring cache read lock for flush");
+                return Ok(0);
+            }
+        };
+        
+        // Collect dirty chains
+        let mut dirty = Vec::new();
+        for (user_id, (chain, _, is_dirty)) in cache.iter() {
+            if *is_dirty {
+                dirty.push((user_id.clone(), chain.clone()));
+            }
+        }
+        dirty
+    };
+    
+    // Process each dirty chain outside the lock
+    for (user_id, chain) in dirty_chains {
+        let sc_path = utils::get_stablechain_path(self.data_dir.to_str().unwrap_or("data"), &user_id);
+        if let Err(e) = self.save(&sc_path, &chain).await {
+            warn!("Failed to flush dirty chain for user {}: {}", user_id, e);
+            continue;
+        }
+        
+        // Mark as clean
+        if let Ok(mut cache) = self.chain_cache.try_write() {
+            if let Some((_, _, dirty)) = cache.get_mut(&user_id) {
+                *dirty = false;
+                flushed += 1;
+            }
+        }
+    }
+    
+    Ok(flushed)
+}
 
     pub async fn update_price_cache(&self, price: f64, timestamp: i64) -> Result<(), PulserError> {
-let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SECS), self.price_cache.write()).await
-    .map_err(|_| PulserError::StorageError("Timeout acquiring write lock for price cache".to_string()))?;
-*price_cache = (price, timestamp);
+        let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SECS), self.price_cache.write()).await
+            .map_err(|_| PulserError::StorageError("Timeout acquiring write lock for price cache".to_string()))?;
+        *price_cache = (price, timestamp);
 
         Ok(())
     }
@@ -395,7 +593,6 @@ let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SE
         self.save(&path, status).await
     }
 
-    // Added: Load ServiceStatus from service_status.json
     pub async fn load_service_status(&self) -> Result<ServiceStatus, PulserError> {
         let path = PathBuf::from("service_status.json");
         if !self.data_dir.join(&path).exists() {
@@ -412,6 +609,9 @@ let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SE
                 price_update_count: 0,
                 active_syncs: 0,
                 websocket_active: false,
+                utxo_stats: None,
+                unusual_activity_detected: false,
+                unusual_activity_details: Vec::new(),
             };
             self.save(&path, &default_status).await?;
             return Ok(default_status);
@@ -427,17 +627,171 @@ let mut price_cache = tokio::time::timeout(Duration::from_secs(RWLOCK_TIMEOUT_SE
             }
         }
     }
-}
+    
+    pub async fn save_withdrawal_details(&self, user_id: &str, details: &WithdrawalDetails) -> Result<(), PulserError> {
+        let path = PathBuf::from(format!("user_{}/withdrawal_{}.json", user_id, details.withdrawal_id));
+        self.save(&path, details).await
+    }
+    
+    pub async fn load_withdrawal_details(&self, user_id: &str, withdrawal_id: &str) -> Result<WithdrawalDetails, PulserError> {
+        let path = PathBuf::from(format!("user_{}/withdrawal_{}.json", user_id, withdrawal_id));
+        self.load(&path).await
+    }
+    
+    pub async fn cleanup_failed_withdrawal(&self, user_id: &str, withdrawal_id: &str) -> Result<(), PulserError> {
+        // Implementation that removes orphaned mappings
+        let mut chain = self.load_stable_chain(user_id).await?;
+        
+        // Find and remove any change addresses associated with this withdrawal
+        let addresses_to_remove: Vec<String> = chain.change_address_mappings
+            .iter()
+            .filter(|(_, id)| id == &withdrawal_id)
+            .map(|(addr, _)| addr.clone())
+            .collect();
+        
+        for addr in addresses_to_remove {
+            chain.change_address_mappings.remove(&addr);
+        }
+        
+        // Save the updated chain
+        self.save_stable_chain(user_id, &chain).await?;
+        
+        // Try to remove the withdrawal details file
+        let path = PathBuf::from(format!("user_{}/withdrawal_{}.json", user_id, withdrawal_id));
+        let full_path = self.data_dir.join(&path);
+        if full_path.exists() {
+            if let Err(e) = std::fs::remove_file(&full_path) {
+                warn!("Failed to remove withdrawal details file: {}", e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn migrate_utxo_info(&self) -> Result<(), PulserError> {
+        // Implementation with detailed field migration and error handling
+        let users_dir = self.data_dir.join("users");
+        if !users_dir.exists() {
+            return Ok(());
+        }
+        
+        let entries = std::fs::read_dir(users_dir)?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(user_id) = path.file_name().and_then(|n| n.to_str()).and_then(|s| s.strip_prefix("user_")) {
+                    if let Ok(mut chain) = self.load_stable_chain(user_id).await {
+                        // Perform migration
+                        let mut updated = false;
+                        
+                        // Initialize new fields if needed
+                        if chain.regular_utxos.is_empty() && !chain.utxos.is_empty() {
+                            chain.regular_utxos = chain.utxos.clone();
+                            updated = true;
+                        }
+                        
+                        if chain.change_address_mappings.is_empty() {
+                            chain.change_address_mappings = HashMap::new();
+                            updated = true;
+                        }
+                        
+                        if chain.stable_value_by_origin.is_empty() {
+                            // Initialize with total from stabilized_usd
+                            let mut map = HashMap::new();
+                            map.insert("Legacy".to_string(), chain.stabilized_usd.clone());
+                            chain.stable_value_by_origin = map;
+                            updated = true;
+                        }
+                        
+                        if chain.trusted_service_addresses.is_empty() {
+                            chain.trusted_service_addresses = HashSet::new();
+                            updated = true;
+                        }
+                        
+                       if updated {
+                            if let Err(e) = self.save_stable_chain(user_id, &chain).await {
+                                warn!("Failed to save migrated chain for user {}: {}", user_id, e);
+                            } else {
+                                info!("Successfully migrated user {}", user_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn add_trusted_service_address(&self, user_id: &str, address: &str) -> Result<(), PulserError> {
+        let mut chain = self.load_stable_chain(user_id).await?;
+        
+        // Initialize trusted_service_addresses if it doesn't exist
+        if chain.trusted_service_addresses.is_empty() {
+            chain.trusted_service_addresses = HashSet::new();
+        }
+        
+        chain.trusted_service_addresses.insert(address.to_string());
+        info!("Added trusted service address {} for user {}", address, user_id);
+        
+        self.save_stable_chain(user_id, &chain).await
+    }
+    
+    pub async fn remove_trusted_service_address(&self, user_id: &str, address: &str) -> Result<(), PulserError> {
+        let mut chain = self.load_stable_chain(user_id).await?;
+        
+        // Remove the address if it exists
+        if chain.trusted_service_addresses.remove(address) {
+            info!("Removed trusted service address {} for user {}", address, user_id);
+            self.save_stable_chain(user_id, &chain).await?;
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn register_withdrawal_change(&self, user_id: &str, 
+        change_address: &str, withdrawal_id: &str, remaining_usd: f64
+    ) -> Result<(), PulserError> {
+        // Acquire transaction lock (implementation may vary)
+        let _lock = self.get_transaction_lock(user_id).await?;
+        
+        // Load chain
+        let mut chain = self.load_stable_chain(user_id).await?;
+        
+        // Register change address
+        chain.change_address_mappings.insert(
+            change_address.to_string(), 
+            withdrawal_id.to_string()
+        );
+        
+        // Save withdrawal details
+        let withdrawal_details = WithdrawalDetails {
+            withdrawal_id: withdrawal_id.to_string(),
+            amount_usd: 0.0,  // Will be updated during actual withdrawal
+            remaining_usd: Some(remaining_usd),
+            executed_timestamp: chrono::Utc::now().timestamp() as u64,
+            change_address: Some(change_address.to_string()),
+        };
+        
+        self.save_withdrawal_details(user_id, &withdrawal_details).await?;
+        
+        // Save chain
+        self.save_stable_chain(user_id, &chain).await?;
+        
+        Ok(())
+    }
+} // End of StateManager impl
 
 // Helper function for safe file writes
 fn write_file_safely(path: &Path, content: &str) -> io::Result<()> {
-    let mut file = match fs::File::create(path) {
+    let mut file = match std::fs::File::create(path) {
         Ok(file) => file,
         Err(e) => {
             if e.kind() == ErrorKind::NotFound {
                 if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                    fs::File::create(path)?
+                    std::fs::create_dir_all(parent)?;
+                    std::fs::File::create(path)?
                 } else {
                     return Err(e);
                 }
