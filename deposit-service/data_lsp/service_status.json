@@ -1,14 +1,26 @@
 {
   "up_since": 1743532136,
-  "last_update": 1744103421,
+  "last_update": 1744284967,
   "version": "unknown",
   "users_monitored": 3,
-  "total_utxos": 4,
-  "total_value_btc": 0.00032239,
-  "total_value_usd": 25.56322175998293,
-  "health": "degraded",
-  "last_price": 79200.75277210523,
-  "price_update_count": 42,
+  "total_utxos": 5,
+  "total_value_btc": 0.00056217,
+  "total_value_usd": 45.92198074408089,
+  "health": "healthy",
+  "last_price": 81741.83377922775,
+  "price_update_count": 45,
   "active_syncs": 0,
-  "websocket_active": false
+  "websocket_active": true,
+  "utxo_stats": null,
+  "unusual_activity_detected": false,
+  "resource_usage": {
+    "cpu_percent": 0.0,
+    "memory_mb": 0.0,
+    "disk_operations_per_min": 0
+  },
+  "performance": {
+    "avg_sync_time_ms": 0,
+    "avg_price_fetch_time_ms": 0,
+    "max_sync_time_ms": 0
+  }
 }

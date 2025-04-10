@@ -612,6 +612,8 @@ pub async fn load_stable_chain(&self, user_id: &str) -> Result<StableChain, Puls
                 utxo_stats: None,
                 unusual_activity_detected: false,
                 unusual_activity_details: Vec::new(),
+                resource_usage: None,  // Added
+            performance: None,     // Added
             };
             self.save(&path, &default_status).await?;
             return Ok(default_status);

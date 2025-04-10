@@ -25,7 +25,7 @@ use bdk_wallet::chain::local_chain::ChangeSet as LocalChainChangeSet;
 use std::collections::BTreeMap;
 use common::price_feed::PriceFeedExtensions;
 use common::types::UtxoOrigin;
-
+use common::wallet_sync::Config as WalletSyncConfig;
 
 lazy_static::lazy_static! {
     pub static ref LOGGED_ADDRESSES: Mutex<HashMap<String, Address>> = Mutex::new(HashMap::new());
@@ -226,18 +226,26 @@ pub async fn update_stable_chain(&mut self, price_info: &PriceInfo) -> Result<Ve
         .clone();
 
     let change_addr = self.get_change_address().await?;
+let mempool_timestamps: HashMap<(String, u32), u64> = HashMap::new(); // Empty HashMap
+let wallet_sync_config = WalletSyncConfig {
+    min_confirmations: self.config.min_confirmations,
+    service_min_confirmations: self.config.service_min_confirmations,
+    external_min_confirmations: self.config.external_min_confirmations,
+};
 
 let new_utxos = wallet_sync::sync_and_stabilize_utxos(
     &self.stable_chain.user_id.to_string(),
     &mut self.wallet,
     &self.blockchain,
     &mut self.stable_chain,
-    self.price_feed.clone(), // Pass the price_feed directly
-    price_info,              // Pass the price_info
+    self.price_feed.clone(),
+    price_info,
     &current_addr,
     &change_addr,
     &self.state_manager,
     self.config.min_confirmations,
+    &mempool_timestamps,
+    &wallet_sync_config
 ).await?;
 
         self.stable_chain.timestamp = chrono::Utc::now().timestamp();

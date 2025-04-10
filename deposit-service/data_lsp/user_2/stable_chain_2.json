@@ -3,13 +3,13 @@
   "is_stable_receiver": false,
   "counterparty": "unknown",
   "accumulated_btc": {
-    "sats": 30939
+    "sats": 54917
   },
-  "stabilized_usd": 24.45856625998293,
-  "timestamp": 1743534757,
-  "formatted_datetime": "2025-04-01T19:12:37.206671103+00:00",
+  "stabilized_usd": 44.86057992542501,
+  "timestamp": 1744284577,
+  "formatted_datetime": "2025-04-10T11:29:37.052789639+00:00",
   "sc_dir": "data_lsp/user_2",
-  "raw_btc_usd": 79044.30079547163,
+  "raw_btc_usd": 81741.83377922775,
   "prices": {},
   "multisig_addr": "tb1p27te30wdxnl2wl67j9gw3vfa55qzse46qu03ytus4rdg8lvuamus60mg89",
   "utxos": [
@@ -17,30 +17,40 @@
       "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 2004,
+      "confirmations": 11784,
       "script_pubkey": "51206035364a49fa4b57af87f8cd172a63c69c0b22d5d8b33366f508f71bd071ffec",
-      "height": 2004,
-      "usd_value": 1.1050325,
+      "height": 4146350,
+      "usd_value": 1.0614008186558814,
       "spent": false
     },
     {
       "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
       "vout": 0,
       "amount": 1000,
-      "confirmations": 684,
+      "confirmations": 10464,
       "script_pubkey": "5120f14867dd80ebac9fa03b0a97c534cacfcd8a20a90776e809f5fff02caa4c2243",
-      "height": 684,
-      "usd_value": 0.82391,
+      "height": 4147670,
+      "usd_value": 0.816462168196832,
       "spent": false
     },
     {
       "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
       "vout": 1,
       "amount": 28639,
-      "confirmations": 144,
+      "confirmations": 9924,
       "script_pubkey": "512041f96637e8b44b6a73f29390fab21b79fa48a06edad5a9f9581da3b120720b67",
-      "height": 144,
-      "usd_value": 22.52962375998293,
+      "height": 4148210,
+      "usd_value": 23.382660034989065,
+      "spent": false
+    },
+    {
+      "txid": "8be4b24f9fc9de7030901c4f8bc3fcda9587b3a8fbfe02a06e4c23c91f736c9d",
+      "vout": 0,
+      "amount": 23978,
+      "confirmations": 174,
+      "script_pubkey": "51204dd7a46f641ffa86f39e829edeacb778aebff0463bbd9fe880ec534acca0af81",
+      "height": 4157960,
+      "usd_value": 19.60005690358323,
       "spent": false
     }
   ],
@@ -55,49 +65,57 @@
   "last_hedge_time": 0,
   "short_reduction_amount": null,
   "old_addresses": [
-    "tb1pvq6nvjjflf940tu8lrx3w2nrc6wqkgk4mzenxeh4prm3h5r3llkqf5ykfm",
     "tb1p79yx0hvqawkflgpmp2tu2dx2elxc5g9fqamwsz04llcze2jvyfpsd0qavy",
-    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
-    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
-    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
-    "tb1pfht6gmmyrlagduu7s20dat9h0zhtluzx8w7el6yqa3f54n9q47qs7335uu"
+    "tb1pfht6gmmyrlagduu7s20dat9h0zhtluzx8w7el6yqa3f54n9q47qs7335uu",
+    "tb1pvq6nvjjflf940tu8lrx3w2nrc6wqkgk4mzenxeh4prm3h5r3llkqf5ykfm",
+    "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq"
   ],
   "history": [
-    {
-      "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
-      "vout": 0,
-      "amount_sat": 1000,
-      "address": "tb1p79yx0hvqawkflgpmp2tu2dx2elxc5g9fqamwsz04llcze2jvyfpsd0qavy",
-      "keychain": "External",
-      "timestamp": 1743956730,
-      "confirmations": 240,
-      "participants": [
-        "user",
-        "lsp",
-        "trustee"
-      ],
-      "stable_value_usd": 0.82391,
-      "spendable": true,
-      "derivation_path": "",
-      "spent": false
-    },
     {
       "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
       "vout": 1,
       "amount_sat": 1300,
       "address": "tb1pvq6nvjjflf940tu8lrx3w2nrc6wqkgk4mzenxeh4prm3h5r3llkqf5ykfm",
       "keychain": "External",
-      "timestamp": 1743540777,
-      "confirmations": 1,
+      "first_seen_timestamp": 1744284578,
+      "confirmation_timestamp": 1744284578,
+      "block_height": 4146350,
+      "confirmations": 11216,
+      "stable_value_usd": 1.0614008186558814,
+      "spent": false,
+      "origin": "ExternalDeposit",
+      "parent_txid": null,
+      "never_spend": false,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 1.1050325,
       "spendable": true,
-      "derivation_path": "",
-      "spent": false
+      "derivation_path": ""
+    },
+    {
+      "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
+      "vout": 0,
+      "amount_sat": 1000,
+      "address": "tb1p79yx0hvqawkflgpmp2tu2dx2elxc5g9fqamwsz04llcze2jvyfpsd0qavy",
+      "keychain": "External",
+      "first_seen_timestamp": 1744284603,
+      "confirmation_timestamp": 1744284603,
+      "block_height": 4147670,
+      "confirmations": 9930,
+      "stable_value_usd": 0.816462168196832,
+      "spent": false,
+      "origin": "ExternalDeposit",
+      "parent_txid": null,
+      "never_spend": false,
+      "participants": [
+        "user",
+        "lsp",
+        "trustee"
+      ],
+      "spendable": true,
+      "derivation_path": ""
     },
     {
       "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
@@ -105,101 +123,156 @@
       "amount_sat": 28639,
       "address": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
       "keychain": "External",
-      "timestamp": 1744053006,
-      "confirmations": 0,
+      "first_seen_timestamp": 1744284616,
+      "confirmation_timestamp": 1744284616,
+      "block_height": 4148210,
+      "confirmations": 9410,
+      "stable_value_usd": 23.382660034989065,
+      "spent": false,
+      "origin": "ExternalDeposit",
+      "parent_txid": null,
+      "never_spend": false,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 0.0,
-      "spendable": false,
-      "derivation_path": "",
-      "spent": false
+      "spendable": true,
+      "derivation_path": ""
     },
     {
-      "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
-      "vout": 1,
-      "amount_sat": 28639,
-      "address": "tb1pg8ukvdlgk39k5uljjwg04vsm08ay3grwmt26n72crk3mzgrjpdnser3mdq",
+      "txid": "8be4b24f9fc9de7030901c4f8bc3fcda9587b3a8fbfe02a06e4c23c91f736c9d",
+      "vout": 0,
+      "amount_sat": 23978,
+      "address": "tb1pfht6gmmyrlagduu7s20dat9h0zhtluzx8w7el6yqa3f54n9q47qs7335uu",
       "keychain": "External",
-      "timestamp": 1744053760,
-      "confirmations": 4,
+      "first_seen_timestamp": 1744284878,
+      "confirmation_timestamp": 1744284878,
+      "block_height": 4157960,
+      "confirmations": 32,
+      "stable_value_usd": 19.60005690358323,
+      "spent": false,
+      "origin": "ExternalDeposit",
+      "parent_txid": null,
+      "never_spend": false,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 22.52962375998293,
       "spendable": true,
-      "derivation_path": "",
-      "spent": false
+      "derivation_path": ""
     }
   ],
   "change_log": [
     {
-      "timestamp": 1743540777,
+      "timestamp": 1744284578,
+      "change_type": "hedging_benefit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.0005163186558814203,
+      "service": "price-feed",
+      "details": "Hedging benefit at basis -0.05% (backwardation)"
+    },
+    {
+      "timestamp": 1744284578,
       "change_type": "deposit",
       "btc_delta": 0.000013,
-      "usd_delta": 1.1050325,
-      "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
-    },
-    {
-      "timestamp": 1743889782,
-      "change_type": "force_resync",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "Full history resync with 1 new UTXOs"
-    },
-    {
-      "timestamp": 1743940886,
-      "change_type": "force_resync",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "Full history resync with 1 new UTXOs"
-    },
-    {
-      "timestamp": 1743956730,
-      "change_type": "force_resync",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "Full history resync with 1 new UTXOs"
-    },
-    {
-      "timestamp": 1744021664,
-      "change_type": "force_resync",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
-      "service": "deposit-service",
-      "details": "Full history resync with 0 new UTXOs"
-    },
-    {
-      "timestamp": 1744053006,
-      "change_type": "deposit",
-      "btc_delta": 0.0,
-      "usd_delta": 0.0,
+      "usd_delta": 1.0614008186558814,
       "service": "deposit-service",
       "details": "1 UTXOs confirmed using cached, basis 0.00%"
     },
     {
-      "timestamp": 1744053760,
+      "timestamp": 1744284603,
       "change_type": "hedging_benefit",
       "btc_delta": 0.0,
-      "usd_delta": 0.005193454982929779,
+      "usd_delta": 0.00039716819683199844,
       "service": "price-feed",
-      "details": "Hedging benefit at basis -0.02% (backwardation)"
+      "details": "Hedging benefit at basis -0.05% (backwardation)"
     },
     {
-      "timestamp": 1744053760,
+      "timestamp": 1744284603,
+      "change_type": "deposit",
+      "btc_delta": 0.00001,
+      "usd_delta": 0.816462168196832,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed using cached, basis 0.00%"
+    },
+    {
+      "timestamp": 1744284616,
+      "change_type": "hedging_benefit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.011374499989067033,
+      "service": "price-feed",
+      "details": "Hedging benefit at basis -0.05% (backwardation)"
+    },
+    {
+      "timestamp": 1744284616,
       "change_type": "deposit",
       "btc_delta": 0.00028639,
-      "usd_delta": 22.52962375998293,
+      "usd_delta": 23.382660034989065,
       "service": "deposit-service",
-      "details": "1 UTXOs confirmed using Spot (backwardation -0.02%), basis -0.02%"
+      "details": "1 UTXOs confirmed using cached, basis 0.00%"
+    },
+    {
+      "timestamp": 1744284878,
+      "change_type": "hedging_benefit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.012548593583229462,
+      "service": "price-feed",
+      "details": "Hedging benefit at basis -0.06% (backwardation)"
+    },
+    {
+      "timestamp": 1744284878,
+      "change_type": "deposit",
+      "btc_delta": 0.00023978,
+      "usd_delta": 19.60005690358323,
+      "service": "deposit-service",
+      "details": "1 UTXOs confirmed using cached, basis 0.00%"
     }
-  ]
+  ],
+  "regular_utxos": [
+    {
+      "txid": "3834e01ce3e45fbc877c7140ad5e79ae3ee4abf88e06f9bc878b27599b125483",
+      "vout": 1,
+      "amount": 1300,
+      "confirmations": 11784,
+      "script_pubkey": "51206035364a49fa4b57af87f8cd172a63c69c0b22d5d8b33366f508f71bd071ffec",
+      "height": 4146350,
+      "usd_value": 1.0614008186558814,
+      "spent": false
+    },
+    {
+      "txid": "129e4ceecd2c19d897c74f87381b4bd752e6493b8029b214a497db074e44b2b3",
+      "vout": 0,
+      "amount": 1000,
+      "confirmations": 10464,
+      "script_pubkey": "5120f14867dd80ebac9fa03b0a97c534cacfcd8a20a90776e809f5fff02caa4c2243",
+      "height": 4147670,
+      "usd_value": 0.816462168196832,
+      "spent": false
+    },
+    {
+      "txid": "3cd1e305b6ea637bf0c3367ab2556939f95c22f30b4070848152f851cd42bb84",
+      "vout": 1,
+      "amount": 28639,
+      "confirmations": 9924,
+      "script_pubkey": "512041f96637e8b44b6a73f29390fab21b79fa48a06edad5a9f9581da3b120720b67",
+      "height": 4148210,
+      "usd_value": 23.382660034989065,
+      "spent": false
+    },
+    {
+      "txid": "8be4b24f9fc9de7030901c4f8bc3fcda9587b3a8fbfe02a06e4c23c91f736c9d",
+      "vout": 0,
+      "amount": 23978,
+      "confirmations": 174,
+      "script_pubkey": "51204dd7a46f641ffa86f39e829edeacb778aebff0463bbd9fe880ec534acca0af81",
+      "height": 4157960,
+      "usd_value": 19.60005690358323,
+      "spent": false
+    }
+  ],
+  "stable_value_by_origin": {
+    "ExternalDeposit": 44.86057992542501
+  }
 }

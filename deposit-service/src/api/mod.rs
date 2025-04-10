@@ -102,7 +102,7 @@ pub fn routes(
     config: Arc<Config>,
     health_checker: Arc<HealthChecker>, // Add health_checker parameter
 ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {
-    health::health(health_checker)
+health::health(health_checker, price_feed.clone(), config.esplora_url.clone())
         .or(user::user_status(wallets.clone(), user_statuses.clone()))
         .or(user::user_txs(wallets.clone()))
         .or(user::user_address(wallets.clone(), user_statuses.clone()))
@@ -137,6 +137,6 @@ pub fn routes(
             user_statuses.clone(),
             price_feed.clone(),
         ))
-            .or(service_routes(state_manager.clone())); // Add this line
+            .or(service_routes(state_manager.clone())) // Add this line
 
 }

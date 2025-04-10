@@ -578,9 +578,23 @@ pub struct ServiceStatus {
     
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unusual_activity_details: Vec<String>,
+        pub resource_usage: Option<ResourceUsage>,
+    pub performance: Option<PerformanceMetrics>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceUsage {
+    pub cpu_percent: f64,
+    pub memory_mb: f64,
+    pub disk_operations_per_min: u32,
+}
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceMetrics {
+    pub avg_sync_time_ms: u32,
+    pub avg_price_fetch_time_ms: u32,
+    pub max_sync_time_ms: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UtxoStatistics {

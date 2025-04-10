@@ -1,9 +1,9 @@
+// Fixed version of deposit-service/src/main.rs
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use tokio::sync::{mpsc, broadcast, Mutex};
 use std::collections::{HashMap};
 use std::fs;
-use std::path::PathBuf;
 use std::path::Path;
 use std::io::Write; // Required for formatter
 use log::{info, warn, debug, error, trace, LevelFilter};
@@ -14,7 +14,7 @@ use common::price_feed::{PriceFeed, PriceFeedExtensions};
 use common::price_feed::http_sources::fetch_btc_usd_price;
 use common::storage::StateManager;
 use common::task_manager::{UserTaskLock, ScopedTask};
-use common::types::{PriceInfo, UserStatus, ServiceStatus, StableChain};
+use common::types::{PriceInfo, UserStatus, ServiceStatus, StableChain, ResourceUsage, PerformanceMetrics};
 use deposit_service::api;
 use deposit_service::config::Config;
 use deposit_service::wallet::DepositWallet;
@@ -32,7 +32,9 @@ use deposit_service::monitor::monitor_deposits;
 use common::websocket::WebSocketManager;
 use tokio::sync::Semaphore;
 use common::price_feed::http_sources;
-
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
 // Constants
 const STATUS_UPDATE_INTERVAL_SECS: u64 = 60;
@@ -730,7 +732,7 @@ let webhook_manager_for_monitor = webhook_manager.clone();
         }
     });
     
-    // Start deposit monitor
+// Start deposit monitor
     let monitor_handle = tokio::spawn({
         let config = config.clone();
         let wallets = wallets.clone();
@@ -744,7 +746,7 @@ let webhook_manager_for_monitor = webhook_manager.clone();
         let state_manager = state_manager.clone();
         let service_status = service_status.clone();
         let shutdown_tx_clone = shutdown_tx.clone();
-    let webhook_manager = webhook_manager_for_monitor; // Use the cloned variable here
+        let webhook_manager = webhook_manager_for_monitor; // Use the cloned variable here
 
         async move {
             monitor_deposits(
@@ -760,7 +762,7 @@ let webhook_manager_for_monitor = webhook_manager.clone();
                 blockchain,
                 state_manager,
                 service_status,
-                    webhook_manager,  // Add this parameter
+                webhook_manager,  // Add this parameter
             ).await?;
             info!("Monitor handle completed");
             Ok::<(), PulserError>(())
@@ -857,6 +859,8 @@ let webhook_manager_for_monitor = webhook_manager.clone();
             Ok::<(), PulserError>(())
         }
     });
+    
+let price_info_for_status = price_info.clone();
 
     // Start status update handler  
 let status_update_handle = tokio::spawn({
@@ -936,9 +940,10 @@ let status_update_handle = tokio::spawn({
                             status.last_update = timestamp;
                             
                             // Update price sources if we have them
-                            if let Ok(price_guard) = tokio::time::timeout(Duration::from_secs(1), price_info.lock()).await {
-                                status.update_price_sources(&price_guard);
-                            }
+                            if let Ok(price_guard) = tokio::time::timeout(Duration::from_secs(1), price_info_for_status.lock()).await {
+                            status.last_price = price_guard.raw_btc_usd;
+                            status.price_update_count += 1;
+                        }
                             
                             // Update WebSocket status
                             let ws_active = price_feed.is_websocket_connected().await;
@@ -952,7 +957,11 @@ let status_update_handle = tokio::spawn({
                                 } else { 
                                     Some("WebSocket disconnected".to_string()) 
                                 };
-                                status.update_component_health("websocket", ws_status, ws_reason);
+                                
+                                // Note: We need to handle WebSocket issues differently
+                                if !ws_active {
+                                    status.health = "websocket_issue".to_string();
+                                }
                             }
                             
                             // Update blockchain status every 5 minutes
@@ -976,15 +985,17 @@ let status_update_handle = tokio::spawn({
                                                     let block_time = block.time.timestamp as u64;
                                                     let tip_age = now.saturating_sub(block_time);
                                                     
-                                                    status.update_blockchain_status(
-                                                        true, tip_height as u32, tip_age as u32
-                                                    );
+                                                    if tip_age > 3600 { // Over an hour old
+                                                        status.health = "blockchain outdated".to_string();
+                                                    }
                                                 }
                                             }
                                         },
                                         Err(e) => {
                                             warn!("Failed to get blockchain height: {}", e);
-                                            status.update_blockchain_status(false, 0, 0);
+                                            if status.health == "healthy" {
+                                                status.health = "blockchain disconnected".to_string();
+                                            }
                                         }
                                     }
                                     
@@ -1016,12 +1027,19 @@ let status_update_handle = tokio::spawn({
                             
                             // Update status based on health checker components
                             let health_status = health_checker.check_all();
-                            for (component, status_str) in &health_status.components {
-                                let reason = health_status.details.get(component)
+                            for (component_name, status_str) in &health_status.components {
+                                let reason = health_status.details.get(component_name)
                                     .and_then(|details| details.get("reason").and_then(|r| r.as_str()))
                                     .map(|s| s.to_string());
                                     
-                                status.update_component_health(component, status_str, reason);
+                                // Update health status based on component health
+                                if component_name == "blockchain" && status_str != "healthy" {
+                                    status.health = "blockchain_issue".to_string();
+                                } else if component_name == "price_feed" && status_str != "healthy" {
+                                    status.health = "price_feed_issue".to_string();
+                                } else if component_name == "websocket" && status_str != "healthy" {
+                                    status.health = "websocket_issue".to_string();
+                                }
                             }
                             
                             debug!("Updated ServiceStatus: {} users, {:.8} BTC, ${:.2} USD, health: {}", 
@@ -1057,10 +1075,6 @@ let status_update_handle = tokio::spawn({
                             }
                         };
                         
-                        // Use atomic to track last saved hash to avoid redundant saves
-                        static LAST_SAVED_HASH: AtomicU64 = AtomicU64::new(0);
-                        static LAST_SAVE_TIME: AtomicU64 = AtomicU64::new(0);
-                        
                         // Create a hash of important fields
                         let hash_input = format!("{:.8}{:.2}{}{}", 
                             status_copy.total_value_btc,
@@ -1069,18 +1083,17 @@ let status_update_handle = tokio::spawn({
                             status_copy.health
                         );
                         
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        let mut hasher = DefaultHasher::new();
                         hash_input.hash(&mut hasher);
                         let hash = hasher.finish();
                         
+                        static LAST_SAVED_HASH: AtomicU64 = AtomicU64::new(0);
+                        static LAST_SAVE_TIME: AtomicU64 = AtomicU64::new(0);
                         let last_hash = LAST_SAVED_HASH.load(Ordering::SeqCst);
                         let last_save = LAST_SAVE_TIME.load(Ordering::SeqCst);
+
                         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-                        
-                        // Save if:
-                        // 1. Hash is different (important stats changed)
-                        // 2. OR health status changed (critical to save immediately)
-                        // 3. OR it's been over 5 minutes since last save
+
                         let should_save = hash != last_hash || (now - last_save) > 300;
                         
                         if should_save {
@@ -1184,7 +1197,7 @@ let save_status_handle = tokio::spawn({
     let price_feed = price_feed.clone();
     let webhook_manager = webhook_manager.clone();
     let active_tasks_manager = active_tasks_manager.clone();
-        let wallets = wallets.clone(); // Add this
+    let wallets = wallets.clone(); // Add this
     let mut shutdown_rx = shutdown_tx.subscribe();
     
     async move {

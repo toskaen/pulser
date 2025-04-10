@@ -31,7 +31,8 @@ use bdk_chain::spk_client::SyncResponse as UpdatedSyncState;
 use bdk_chain::spk_client::SyncRequest;
 use common::UtxoInfo;
 use lazy_static::lazy_static;
-
+use common::wallet_sync::Config as WalletSyncConfig;
+use bincode::config;
 
 // Constants
 const MAX_CONCURRENT_SYNCS: usize = 5;
@@ -451,6 +452,13 @@ async fn apply_sync_update(
             &state_manager,
             min_confirmations,
             &mempool_timestamps, // Pass the timestamps
+            &WalletSyncConfig {
+        min_confirmations,
+service_min_confirmations: 0, // Default for service addresses
+
+external_min_confirmations: 3, // Default for external addresses
+
+    }
         ).await?;
         
         Ok(new_utxos)

@@ -5,11 +5,11 @@
   "accumulated_btc": {
     "sats": 1300
   },
-  "stabilized_usd": 1.1046555,
-  "timestamp": 1743534735,
-  "formatted_datetime": "2025-04-01T19:12:15.623476465+00:00",
+  "stabilized_usd": 1.0614008186558814,
+  "timestamp": 1744284577,
+  "formatted_datetime": "2025-04-10T11:29:37.426832976+00:00",
   "sc_dir": "data_lsp/user_1",
-  "raw_btc_usd": 79044.30079547163,
+  "raw_btc_usd": 81741.83377922775,
   "prices": {},
   "multisig_addr": "tb1pyasjd7s8aue93pw9n6g6l5nprt95rnmmh2t0k89ux5r9yr6vpchs64d9v8",
   "utxos": [
@@ -17,10 +17,10 @@
       "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
       "vout": 1,
       "amount": 1300,
-      "confirmations": 2029,
+      "confirmations": 11809,
       "script_pubkey": "512053908d6e2c119a6adcb573006d20f86933908bd336b2656c77128e42b1c9ba5b",
-      "height": 2029,
-      "usd_value": 1.1046555,
+      "height": 4146325,
+      "usd_value": 1.0614008186558814,
       "spent": false
     }
   ],
@@ -44,27 +44,55 @@
       "amount_sat": 1300,
       "address": "tb1p2wgg6m3vzxdx4h94wvqx6g8cdyeepz7nx6ex2mrhz28y9vwfhfdsgk509r",
       "keychain": "External",
-      "timestamp": 1743535515,
-      "confirmations": 3,
+      "first_seen_timestamp": 1744284578,
+      "confirmation_timestamp": 1744284578,
+      "block_height": 4146325,
+      "confirmations": 11241,
+      "stable_value_usd": 1.0614008186558814,
+      "spent": false,
+      "origin": "ExternalDeposit",
+      "parent_txid": null,
+      "never_spend": false,
       "participants": [
         "user",
         "lsp",
         "trustee"
       ],
-      "stable_value_usd": 1.1046555,
       "spendable": true,
-      "derivation_path": "",
-      "spent": false
+      "derivation_path": ""
     }
   ],
   "change_log": [
     {
-      "timestamp": 1743535515,
+      "timestamp": 1744284578,
+      "change_type": "hedging_benefit",
+      "btc_delta": 0.0,
+      "usd_delta": 0.0005163186558814203,
+      "service": "price-feed",
+      "details": "Hedging benefit at basis -0.05% (backwardation)"
+    },
+    {
+      "timestamp": 1744284578,
       "change_type": "deposit",
       "btc_delta": 0.000013,
-      "usd_delta": 1.1046555,
+      "usd_delta": 1.0614008186558814,
       "service": "deposit-service",
-      "details": "1 UTXOs confirmed"
+      "details": "1 UTXOs confirmed using cached, basis 0.00%"
     }
-  ]
+  ],
+  "regular_utxos": [
+    {
+      "txid": "05158d3b4f1aa3c66a69876fa4c43abc476e1d2373200c5d00cd2660a42a5fe1",
+      "vout": 1,
+      "amount": 1300,
+      "confirmations": 11809,
+      "script_pubkey": "512053908d6e2c119a6adcb573006d20f86933908bd336b2656c77128e42b1c9ba5b",
+      "height": 4146325,
+      "usd_value": 1.0614008186558814,
+      "spent": false
+    }
+  ],
+  "stable_value_by_origin": {
+    "ExternalDeposit": 1.0614008186558814
+  }
 }

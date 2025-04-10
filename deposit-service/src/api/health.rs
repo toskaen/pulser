@@ -282,7 +282,7 @@ impl CommonHealthCheck for EnhancedWebSocketCheck {
         
         let result = if is_connected {
             // Check connection stats for recent activity
-            if let Some(stats) = self.manager.get_connection_stats(&self.endpoint).await {
+            if let Some(stats) = self.manager.get_connection_stats(&self.endpoint) {
                 if let Some(last_msg_time) = stats.last_message_time {
                     let inactivity_secs = last_msg_time.elapsed().as_secs();
                     

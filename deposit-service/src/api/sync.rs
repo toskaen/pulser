@@ -26,6 +26,7 @@ use crate::wallet::DepositWallet;
 use common::webhook::{WebhookManager, WebhookPayload};
 use crate::config::Config;
 use crate::api::status;
+use common::wallet_sync::Config as WalletSyncConfig;
 
 // Constants for timeouts and concurrency control
 const DEFAULT_LOCK_TIMEOUT_MS: u64 = 1000;
@@ -162,10 +163,8 @@ async fn sync_user_handler(
     };
 
     // Update service status to increment active syncs
-    match service_status.lock().await {
-        Ok(mut status) => status.active_syncs += 1,
-        Err(_) => warn!("Failed to acquire service status lock for user {}", user_id),
-    }
+let mut status = service_status.lock().await;
+status.active_syncs += 1;
 
     // Update user status to indicate sync is in progress
     status::update_user_status_simple(&user_id, "syncing", "Sync in progress", &user_statuses).await;
@@ -217,21 +216,16 @@ async fn sync_user_handler(
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     // Update user status with duration
-    match user_statuses.lock().await {
-        Ok(mut statuses) => {
-            if let Some(status) = statuses.get_mut(&user_id) {
-                status.sync_duration_ms = duration_ms;
-                status.last_sync = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-            }
-        },
-        Err(_) => warn!("Failed to acquire user status lock for update"),
-    }
+let mut statuses = user_statuses.lock().await;
+if let Some(status) = statuses.get_mut(&user_id) {
+    status.sync_duration_ms = duration_ms;
+    status.last_sync = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+}
 
     // Update service statistics
-    match service_status.lock().await {
-        Ok(mut status) => {
-            status.active_syncs = status.active_syncs.saturating_sub(1);
-            
+let mut status = service_status.lock().await;
+status.active_syncs = status.active_syncs.saturating_sub(1);
+
             // Only update overall stats if we can get the wallets lock with a short timeout
             if let Ok(wallets_lock) = timeout(Duration::from_secs(2), wallets.lock()).await {
                 // Update global statistics only when needed (use atomic fetch operations inside)
@@ -241,20 +235,25 @@ async fn sync_user_handler(
                 let total_value_usd = wallets_lock.values().map(|(_, c)| c.stabilized_usd.0).sum();
                 
                 // Only update if values actually changed to avoid unnecessary writes
-                if status.total_utxos != total_utxos || 
-                   (status.total_value_btc - total_value_btc).abs() > 0.00001 || 
-                   (status.total_value_usd - total_value_usd).abs() > 0.01 {
-                    status.total_utxos = total_utxos;
-                    status.total_value_btc = total_value_btc;
-                    status.total_value_usd = total_value_usd;
-                    status.last_update = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                }
+let btc_value1: f64 = status.total_value_btc;
+let btc_value2: f64 = total_value_btc;
+let btc_diff: f64 = (btc_value1 - btc_value2).abs();
+
+let usd_value1: f64 = status.total_value_usd;
+let usd_value2: f64 = total_value_usd;  
+let usd_diff: f64 = (usd_value1 - usd_value2).abs();
+
+if status.total_utxos != total_utxos || 
+   btc_diff > 0.00001_f64 || 
+   usd_diff > 0.01_f64 {
+    status.total_utxos = total_utxos;
+    status.total_value_btc = total_value_btc;
+    status.total_value_usd = total_value_usd;
+    status.last_update = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+}
             }
-        },
-        Err(_) => warn!("Failed to acquire service status lock for update"),
-    }
-    
-    Ok(warp::reply::json(&sync_result))
+     
+        Ok(warp::reply::json(&sync_result))
 }
 
 // Force sync handler - "last resort" complete wallet resync
@@ -482,19 +481,27 @@ pub async fn sync_user(
                     // Get a change address for UTXO stabilization
                     let change_addr = wallet.wallet.reveal_next_address(KeychainKind::Internal).address;
                     
-                    // Synchronize UTXOs and stabilize them
-                    match wallet_sync::sync_and_stabilize_utxos(
-                        user_id,
-                        &mut wallet.wallet,
-                        esplora,
-                        chain,
-                        price_feed.clone(),
-                        &current_price,
-                        &deposit_address,
-                        &change_addr,
-                        &state_manager,
-                        config.min_confirmations,
-                    ).await {
+let mempool_timestamps = HashMap::new(); // Empty HashMap
+let wallet_sync_config = WalletSyncConfig {
+    min_confirmations: config.min_confirmations,
+    service_min_confirmations: config.service_min_confirmations,
+    external_min_confirmations: config.external_min_confirmations,
+};
+
+match wallet_sync::sync_and_stabilize_utxos(
+    user_id,
+    &mut wallet.wallet,
+    esplora,
+    chain,
+    price_feed.clone(),
+    &current_price,
+    &deposit_address,
+    &change_addr,
+    &state_manager,
+    config.min_confirmations,
+    &mempool_timestamps,
+    &wallet_sync_config
+).await {
                         Ok(_) => {
                             // New funds check
                             new_funds_found = chain.stabilized_usd.0 > prev_balance || chain.utxos.len() > prev_utxo_count;
@@ -576,12 +583,11 @@ pub async fn sync_user(
     };
     
     // Update wallet and user status with the latest info
-    let (utxo_count, total_value_btc, total_value_usd) = {
-        let wallets_lock = match timeout(Duration::from_secs(3), wallets.lock()).await {
-            Ok(lock) => lock,
-            Err(_) => (0, 0.0, 0.0), // Default values if we can't get the lock
-        };
-        
+   let (utxo_count, total_value_btc, total_value_usd) = match timeout(
+    Duration::from_secs(3),
+    wallets.lock()
+).await {
+    Ok(wallets_lock) => {
         match wallets_lock.get(user_id) {
             Some((wallet, chain)) => {
                 let wallet_balance = wallet.wallet.balance();
@@ -593,7 +599,9 @@ pub async fn sync_user(
             },
             None => (0, 0.0, 0.0),
         }
-    };
+    },
+    Err(_) => (0, 0.0, 0.0), // Default values if we can't get the lock
+};
     
     // Update user status with complete information
     let elapsed = start_time.elapsed().as_millis() as u64;
