@@ -12,7 +12,7 @@ Common Library
 
 Error handling and types used across services
 Price feed integration with multiple providers
-State management for persistent storage
+State management for persistent storage.
 Utilities and helper functions
 
 Deposit Service
